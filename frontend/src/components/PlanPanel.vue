@@ -9,6 +9,10 @@
               class="flex h-7 w-7 items-center justify-center cursor-pointer hover:bg-[var(--fill-tsp-gray-main)] rounded-md">
               <ChevronDown class="text-[var(--icon-tertiary)]" :size="16" />
             </div>
+            <div @click="emit('close')"
+              class="flex h-7 w-7 items-center justify-center cursor-pointer hover:bg-[var(--fill-tsp-gray-main)] rounded-md">
+              <X class="text-[var(--icon-tertiary)]" :size="16" />
+            </div>
           </div>
         </div>
       </div>
@@ -36,9 +40,9 @@
         </div>
       </div>
     </div>
-    <div v-if="!isExpanded" @click="togglePanel"
-      class="flex flex-row items-start justify-between pe-3 relative clickable border border-black/8 dark:border-[var(--border-main)] bg-[var(--background-menu-white)] rounded-[16px] sm:rounded-[12px] shadow-[0px_0px_1px_0px_rgba(0,_0,_0,_0.05),_0px_8px_32px_0px_rgba(0,_0,_0,_0.04)] z-99">
-      <div class="flex-1 min-w-0 relative overflow-hidden">
+    <div v-if="!isExpanded"
+      class="flex flex-row items-start justify-between pe-3 relative border border-black/8 dark:border-[var(--border-main)] bg-[var(--background-menu-white)] rounded-[16px] sm:rounded-[12px] shadow-[0px_0px_1px_0px_rgba(0,_0,_0,_0.05),_0px_8px_32px_0px_rgba(0,_0,_0,_0.04)] z-99">
+      <div class="flex-1 min-w-0 relative overflow-hidden cursor-pointer" @click="togglePanel">
         <div class="w-full" style="height: 36px; --offset: -36px;">
           <div class="w-full">
             <div class="flex items-start gap-2.5 w-full px-4 py-2 truncate">
@@ -53,11 +57,17 @@
           </div>
         </div>
       </div>
-      <button
-        class="flex h-full cursor-pointer justify-center gap-2 hover:opacity-80 flex-shrink-0 items-start py-2.5">
-        <span class="text-xs text-[var(--text-tertiary)] hidden sm:flex">{{ planProgress }}</span>
-        <ChevronUp class="text-[var(--icon-tertiary)]" :size="16" />
-      </button>
+      <div class="flex items-center h-full gap-1 py-2">
+        <button @click="togglePanel"
+          class="flex h-7 items-center cursor-pointer justify-center gap-2 hover:opacity-80 flex-shrink-0 px-1">
+          <span class="text-xs text-[var(--text-tertiary)] hidden sm:flex">{{ planProgress }}</span>
+          <ChevronUp class="text-[var(--icon-tertiary)]" :size="16" />
+        </button>
+        <button @click.stop="emit('close')"
+          class="flex h-7 w-7 items-center justify-center cursor-pointer hover:bg-[var(--fill-tsp-gray-main)] rounded-md flex-shrink-0">
+          <X class="text-[var(--icon-tertiary)]" :size="16" />
+        </button>
+      </div>
     </div>
   </div>
 </template>
@@ -65,7 +75,7 @@
 <script setup lang="ts">
 import { ref, computed } from 'vue';
 import { useI18n } from 'vue-i18n';
-import { ChevronUp, ChevronDown, Clock } from 'lucide-vue-next';
+import { ChevronUp, ChevronDown, Clock, X } from 'lucide-vue-next';
 import StepSuccessIcon from './icons/StepSuccessIcon.vue';
 import type { PlanEventData } from '../types/event';
 
@@ -74,6 +84,7 @@ interface Props {
 }
 
 const props = defineProps<Props>();
+const emit = defineEmits<{ close: [] }>();
 
 const { t } = useI18n();
 
