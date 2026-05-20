@@ -7,7 +7,7 @@ import tempfile
 import os
 import io
 
-from app.infrastructure.external.sandbox.docker_sandbox import DockerSandbox
+from app.infrastructure.external.sandbox.e2b_sandbox import E2BSandbox
 from app.domain.models.tool_result import ToolResult
 
 logger = logging.getLogger(__name__)
@@ -15,9 +15,8 @@ logger = logging.getLogger(__name__)
 
 @pytest.fixture
 def sandbox_instance():
-    """Create a DockerSandbox instance for testing"""
-    # Use localhost for testing (assumes sandbox is running locally)
-    return DockerSandbox(ip="127.0.0.1", container_name="test-sandbox")
+    """Create an E2BSandbox instance for testing — requires E2B_API_KEY env var."""
+    pytest.skip("E2B integration test — run manually with a live E2B sandbox")
 
 
 @pytest.fixture

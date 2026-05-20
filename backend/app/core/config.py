@@ -45,16 +45,9 @@ class Settings(BaseSettings):
     redis_db: int = 0
     redis_password: str | None = None
     
-    # Sandbox configuration
+    # Sandbox configuration (E2B)
     sandbox_address: str | None = None
-    sandbox_image: str | None = None
-    sandbox_name_prefix: str | None = None
     sandbox_ttl_minutes: int | None = 30
-    sandbox_network: str | None = None  # Docker network bridge name
-    sandbox_chrome_args: str | None = ""
-    sandbox_https_proxy: str | None = None
-    sandbox_http_proxy: str | None = None
-    sandbox_no_proxy: str | None = None
 
     # Browser engine configuration
     browser_engine: str = "browser_use"  # "playwright" or "browser_use"
@@ -97,15 +90,11 @@ class Settings(BaseSettings):
     extra_headers: dict | None = None
     
     # Claw (OpenClaw) configuration
-    claw_enabled: bool = True
-    claw_image: str = "simpleyyt/manus-claw"
-    claw_name_prefix: str = "manus-claw"
-    claw_ttl_seconds: int = 3600
-    claw_network: str | None = None  # Docker network bridge name for claw containers
-    claw_ready_timeout: int = 300  # Max seconds to wait for claw container to become ready
-    claw_address: str | None = None  # If set, use this fixed host instead of creating Docker containers
-    claw_api_key: str | None = None  # Static API key accepted by the LLM proxy (for dev/fixed container)
-    manus_api_base_url: str = "http://backend:8000"  # URL of this backend accessible from claw containers
+    claw_enabled: bool = False
+    claw_ready_timeout: int = 300
+    claw_address: str | None = None
+    claw_api_key: str | None = None
+    manus_api_base_url: str = "http://localhost:8000"
 
     # MCP configuration
     mcp_config_path: str = "/etc/mcp.json"
