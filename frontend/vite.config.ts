@@ -15,11 +15,11 @@ export default defineConfig({
     }
   },
   optimizeDeps: {
-    exclude: ['lucide-vue-next'],
+    exclude: ['lucide-vue-next', '@novnc/novnc'],
   },
   server: {
-    host: true,
-    port: 5173,
+    host: '0.0.0.0',
+    port: 5000,
     allowedHosts: true,
     ...(process.env.BACKEND_URL && {
       proxy: {
