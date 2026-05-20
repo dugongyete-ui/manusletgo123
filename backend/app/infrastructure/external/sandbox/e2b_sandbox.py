@@ -42,11 +42,9 @@ class E2BSandbox(Sandbox):
     @classmethod
     async def create(cls) -> Sandbox:
         """Create a new E2B sandbox instance using our custom template"""
-        settings = get_settings()
         api_key = os.getenv("E2B_API_KEY")
-        # Template ID yang baru saja kita bangun
-        template_id = "efb1pjfnzc3d7di190ms" 
-        
+        template_id = os.getenv("E2B_TEMPLATE_ID", "efb1pjfnzc3d7di190ms")
+
         logger.info(f"Creating E2B sandbox from template: {template_id}")
         e2b_sandbox = await asyncio.to_thread(
             E2BSandboxSDK.create,

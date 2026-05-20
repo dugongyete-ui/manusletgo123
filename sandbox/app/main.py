@@ -70,6 +70,11 @@ app.add_exception_handler(StarletteHTTPException, http_exception_handler)
 app.add_exception_handler(RequestValidationError, validation_exception_handler)
 app.add_exception_handler(Exception, general_exception_handler)
 
+# Health check endpoint
+@app.get("/health")
+async def health():
+    return {"status": "ok"}
+
 # Register routes
 app.include_router(api_router, prefix="/api/v1")
 
