@@ -136,7 +136,7 @@ class AgentService:
     
     async def get_all_sessions(self, user_id: str) -> List[SessionSummary]:
         """Get all sessions for a specific user (lightweight summaries)"""
-        logger.info(f"Getting all sessions for user {user_id}")
+        logger.debug(f"Getting all sessions for user {user_id}")
         return await self._session_repository.find_summaries_by_user_id(user_id)
 
     async def delete_session(self, session_id: str, user_id: str) -> None:

@@ -976,6 +976,35 @@ class E2BSandbox(Sandbox):
     # Factory class methods
     # ------------------------------------------------------------------
 
+    async def _pre_install_packages(self) -> None:
+        """
+        Pre-install all Python packages needed for document processing so
+        the agent never has to pip-install at task time.
+
+        Packages: python-pptx, pdfplumber, python-docx, pandas, openpyxl,
+                  python-magic, and poppler-utils (for pdftotext CLI).
+
+        This is called once right after a NEW sandbox is created.
+        Reconnected sandboxes (cls.get) skip this — packages persist.
+        Uses a marker file /tmp/.deps_installed to make it idempotent.
+        """
+        cmd = (
+            # Skip if already done (idempotent across rare double-create races)
+            "[ -f /tmp/.deps_installed ] && echo 'DEPS_CACHED' && exit 0; "
+            # Install apt packages silently
+            "sudo apt-get install -y -qq poppler-utils 2>&1 | tail -2; "
+            # Install pip packages
+            "pip3 install -q --no-warn-script-location "
+            "python-pptx pdfplumber python-docx pandas openpyxl python-magic 2>&1 | tail -5; "
+            # Write marker
+            "touch /tmp/.deps_installed && echo 'DEPS_INSTALLED'"
+        )
+        try:
+            out = await self._run_admin_cmd(cmd, timeout=120)
+            logger.info("Pre-install packages: %s", (out or "").strip()[-200:])
+        except Exception as exc:
+            logger.warning("Pre-install packages failed (non-fatal): %s", exc)
+
     @classmethod
     async def create(cls) -> "E2BSandbox":
         """
@@ -983,6 +1012,8 @@ class E2BSandbox(Sandbox):
 
         After creation, starts Chrome installation in the background so it
         is available by the time the agent first needs the browser tool.
+        Pre-installs all document-processing Python packages so the agent
+        never has to download them at task time.
         """
         settings = get_settings()
         api_key = settings.e2b_api_key
@@ -1000,7 +1031,10 @@ class E2BSandbox(Sandbox):
             api_key=api_key,
             timeout=timeout_seconds,
         )
-        return cls(e2b_sandbox)
+        instance = cls(e2b_sandbox)
+        # Pre-install document packages in background — doesn't block startup
+        asyncio.create_task(instance._pre_install_packages())
+        return instance
 
     @classmethod
     async def get(cls, id: str) -> "E2BSandbox":
