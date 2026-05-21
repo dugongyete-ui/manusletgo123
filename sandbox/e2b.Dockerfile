@@ -49,20 +49,15 @@ RUN curl -fsSL https://dl.google.com/linux/linux_signing_key.pub \
 RUN update-alternatives --install /usr/bin/python3 python3 /usr/bin/python3.10 1 \
     && update-alternatives --install /usr/bin/pip pip /usr/bin/pip3 1
 
-# ── Layer 4: Python packages (all in one layer, --break-system-packages    ─
-#            needed on Ubuntu 22.04 + pip ≥ 23 / PEP 668)                  ─
-RUN pip3 install --break-system-packages \
-    # Sandbox HTTP server
+# ── Layer 4: Python packages ───────────────────────────────────────────────
+RUN pip3 install \
     "fastapi>=0.121.2" \
     "uvicorn>=0.38.0" \
     "pydantic>=2.12.4" \
     "pydantic-settings>=2.12.0" \
     "python-multipart>=0.0.20" \
     "email-validator>=2.3.0" \
-    # VNC websocket bridge
     websockify \
-    # Playwright — pre-installed so _fix_chrome() fallback works instantly
-    # without hitting pip permission errors at runtime.
     playwright
 
 # ── Layer 5: Playwright Chromium browser binary (fallback if apt Chrome     ─
