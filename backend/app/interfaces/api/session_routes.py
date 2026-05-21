@@ -59,6 +59,14 @@ async def get_session(
         is_shared=session.is_shared
     ))
 
+@router.delete("", response_model=APIResponse[None])
+async def delete_all_sessions(
+    current_user: User = Depends(get_current_user),
+    agent_service: AgentService = Depends(get_agent_service)
+) -> APIResponse[None]:
+    await agent_service.delete_all_sessions(current_user.id)
+    return APIResponse.success()
+
 @router.delete("/{session_id}", response_model=APIResponse[None])
 async def delete_session(
     session_id: str,

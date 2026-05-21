@@ -74,6 +74,10 @@ class SessionRepository(Protocol):
     async def delete(self, session_id: str) -> None:
         """Delete a session"""
         ...
+
+    async def delete_all_by_user_id(self, user_id: str) -> int:
+        """Delete all sessions belonging to a user, returns count deleted"""
+        ...
     
     async def get_all(self) -> List[Session]:
         """Get all sessions"""

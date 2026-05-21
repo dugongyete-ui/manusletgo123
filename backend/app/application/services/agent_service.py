@@ -151,6 +151,13 @@ class AgentService:
         await self._session_repository.delete(session_id)
         logger.info(f"Session {session_id} deleted successfully")
 
+    async def delete_all_sessions(self, user_id: str) -> int:
+        """Delete all sessions for a user"""
+        logger.info(f"Deleting all sessions for user {user_id}")
+        count = await self._session_repository.delete_all_by_user_id(user_id)
+        logger.info(f"Deleted {count} sessions for user {user_id}")
+        return count
+
     async def stop_session(self, session_id: str, user_id: str) -> None:
         """Stop a session, ensuring it belongs to the user"""
         logger.info(f"Stopping session {session_id} for user {user_id}")

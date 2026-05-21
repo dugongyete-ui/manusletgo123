@@ -70,9 +70,8 @@
 
             <!-- 分组标题 -->
             <div
-              class="group flex items-center justify-between ps-[10px] pe-[2px] py-[2px] h-[36px] gap-[12px] flex-shrink-0 cursor-pointer hover:bg-[var(--fill-tsp-white-light)] transition-colors rounded-[10px]"
-              @click="isAllTasksCollapsed = !isAllTasksCollapsed">
-              <div class="flex items-center flex-1 min-w-0 gap-0.5">
+              class="group flex items-center justify-between ps-[10px] pe-[2px] py-[2px] h-[36px] gap-[12px] flex-shrink-0 rounded-[10px]">
+              <div class="flex items-center flex-1 min-w-0 gap-0.5 cursor-pointer hover:bg-[var(--fill-tsp-white-light)] transition-colors rounded-[10px] px-1 h-full" @click="isAllTasksCollapsed = !isAllTasksCollapsed">
                 <span class="text-[13px] leading-[18px] text-[var(--text-tertiary)] font-medium min-w-0 truncate tracking-[-0.091px]">
                   {{ t('All Tasks') }}
                 </span>
@@ -82,6 +81,16 @@
                   :class="isAllTasksCollapsed ? 'rotate-180' : 'rotate-90'"
                   stroke="var(--icon-tertiary)" />
               </div>
+              <button
+                v-if="sessions.length > 0"
+                @click="handleDeleteAll"
+                :disabled="deletingAll"
+                class="shrink-0 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center w-6 h-6 rounded-md hover:bg-[var(--fill-tsp-white-dark)] disabled:cursor-not-allowed"
+                :title="t('Delete all chats')"
+              >
+                <Trash2 v-if="!deletingAll" :size="13" class="text-[var(--icon-tertiary)]" />
+                <div v-else class="w-3 h-3 border border-[var(--icon-tertiary)] border-t-transparent rounded-full animate-spin"></div>
+              </button>
             </div>
 
             <!-- 会话列表 -->
@@ -127,13 +136,13 @@
 </template>
 
 <script setup lang="ts">
-import { PanelLeft, SquarePen, Command, MessageSquareDashed, ChevronUp, Sun, Moon } from 'lucide-vue-next';
+import { PanelLeft, SquarePen, Command, MessageSquareDashed, ChevronUp, Sun, Moon, Trash2 } from 'lucide-vue-next';
 import { useTheme } from '../composables/useTheme';
 import SessionItem from './SessionItem.vue';
 import { useLeftPanel } from '../composables/useLeftPanel';
 import { ref, onMounted, watch, onUnmounted } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
-import { getSessionsSSE, getSessions } from '../api/agent';
+import { getSessionsSSE, getSessions, deleteAllSessions } from '../api/agent';
 import { getCachedClientConfig } from '../api/config';
 import { ListSessionItem } from '../types/response';
 import { useI18n } from 'vue-i18n';
@@ -150,6 +159,7 @@ const isAllTasksCollapsed = ref(false)
 const isListScrolled = ref(false)
 const clawEnabled = ref(false)
 const scrollContainerRef = ref<HTMLElement | null>(null)
+const deletingAll = ref(false)
 
 const handleListScroll = () => {
   if (scrollContainerRef.value) {
@@ -204,6 +214,20 @@ const handleClawClick = () => {
 const handleSessionDeleted = (sessionId: string) => {
   console.log('handleSessionDeleted', sessionId)
   sessions.value = sessions.value.filter(session => session.session_id !== sessionId);
+}
+
+const handleDeleteAll = async () => {
+  if (!confirm(t('Delete all chats? This cannot be undone.'))) return
+  deletingAll.value = true
+  try {
+    await deleteAllSessions()
+    sessions.value = []
+    router.push('/')
+  } catch (error) {
+    console.error('Failed to delete all sessions:', error)
+  } finally {
+    deletingAll.value = false
+  }
 }
 
 // Handle keyboard shortcuts
