@@ -2,7 +2,7 @@
 set -e
 
 echo "========================================"
-echo "  AI Manus x E2B — Install Script"
+echo "  AI Manus × Claw — Install Script"
 echo "========================================"
 
 # ── 0. Prerequisites check ────────────────────────────────────────────────────
@@ -105,6 +105,15 @@ python3 -m pip install $PIP_FLAGS -q \
   "rich>=14.2.0" \
   "async-lru>=2.0.0" \
   "debugpy>=1.8.17"
+
+# ── 4b. File extraction dependencies ─────────────────────────────────────────
+echo "      Installing file-extraction dependencies..."
+python3 -m pip install $PIP_FLAGS -q \
+  "python-docx>=1.2.0" \
+  "python-pptx>=1.0.0" \
+  "pdfplumber>=0.11.0" \
+  "pandas>=2.0.0" \
+  "openpyxl>=3.1.0"
 
 echo "      Utility dependencies installed"
 
