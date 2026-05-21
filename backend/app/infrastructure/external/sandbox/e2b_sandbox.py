@@ -68,31 +68,41 @@ class E2BSandbox(Sandbox):
 
     async def _run_admin_cmd(self, cmd: str, timeout: int = 30) -> str:
         """
-        Run a one-shot admin command in the sandbox shell and return stdout.
+        Run a one-shot admin command directly via the E2B SDK's built-in
+        commands.run() — this bypasses the custom sandbox shell HTTP API
+        entirely, so it works even when that service is not yet ready or
+        has output-reader issues.
 
-        The sandbox shell service starts an async output-reader coroutine via
-        ``asyncio.create_task``.  Because the sandbox's event loop never yields
-        between ``process.wait()`` completing and our follow-up ``view`` call,
-        the output-reader has no chance to flush stdout before we read it back.
-
-        Sleeping briefly between the ``wait`` and ``view`` calls gives the
-        *sandbox's* event loop an idle window to run that output-reader task.
+        Falls back to the legacy HTTP shell API if the SDK call fails.
         """
+        # ── Primary path: E2B SDK commands.run() ─────────────────────────
+        try:
+            result = await asyncio.to_thread(
+                self.e2b_sandbox.commands.run,
+                cmd,
+                timeout=float(timeout),
+            )
+            output = (result.stdout or "") + (result.stderr or "")
+            logger.debug("SDK admin cmd exit=%s output_len=%d", result.exit_code, len(output))
+            return output
+        except Exception as sdk_exc:
+            logger.warning(
+                "SDK commands.run failed (%s): %s — falling back to shell HTTP API",
+                cmd[:60], sdk_exc,
+            )
+
+        # ── Fallback: legacy custom shell HTTP API ────────────────────────
         session = f"{_SYS_BASE_SESSION}_{os.urandom(4).hex()}"
         try:
             await self._exec_raw(session, _UBUNTU_HOME, cmd)
             await self._wait_raw(session, timeout)
-            # Yield time to the sandbox event loop so its async output-reader
-            # coroutine can flush the subprocess stdout pipe before we read it.
             await asyncio.sleep(2.0)
             view = await self._view_raw(session)
             data = view.data
             if data is None:
                 return ""
             if isinstance(data, dict):
-                # ShellViewResult.model_dump() → {"output":"…","session_id":"…","console":…}
                 output = str(data.get("output", "") or "")
-                # If still empty, the output-reader may have needed more time.
                 if not output:
                     await asyncio.sleep(2.0)
                     view2 = await self._view_raw(session)
@@ -102,7 +112,7 @@ class E2BSandbox(Sandbox):
                 return output
             return str(data or "")
         except Exception as exc:
-            logger.warning("Admin cmd failed (%s): %s", cmd[:60], exc)
+            logger.warning("Fallback admin cmd failed (%s): %s", cmd[:60], exc)
             return ""
 
     async def _exec_raw(self, session_id: str, exec_dir: str, command: str) -> ToolResult:
