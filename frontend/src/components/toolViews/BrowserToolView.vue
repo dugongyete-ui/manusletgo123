@@ -42,6 +42,7 @@ import { ToolContent } from '@/types/message';
 import { ref, watch } from 'vue';
 import { useI18n } from 'vue-i18n';
 import { getFileDownloadUrl } from '@/api/file';
+import { API_CONFIG } from '@/api/client';
 import TakeOverIcon from '@/components/icons/TakeOverIcon.vue';
 
 const props = defineProps<{
@@ -61,6 +62,16 @@ watch(
       return;
     }
     try {
+      // The backend SSE layer replaces the file_id with a signed URL path
+      // (e.g. "/api/v1/files/<id>?signature=...") before streaming to the
+      // frontend.  If screenshotId is already a path/URL, use it directly
+      // instead of trying to create a second signed URL from it.
+      if (screenshotId.startsWith('/') || screenshotId.startsWith('http')) {
+        imageUrl.value = screenshotId.startsWith('http')
+          ? screenshotId
+          : `${API_CONFIG.host}${screenshotId}`;
+        return;
+      }
       const url = await getFileDownloadUrl({ file_id: screenshotId });
       imageUrl.value = url;
     } catch {

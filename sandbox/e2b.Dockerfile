@@ -7,7 +7,7 @@ ENV PATH="/usr/local/bin:$PATH"
 # Base system packages (omit chromium-browser snap stub)
 RUN apt-get update && apt-get install -y \
     sudo bc curl wget gnupg ca-certificates software-properties-common \
-    xvfb x11vnc xterm socat supervisor \
+    xvfb x11vnc xterm supervisor \
     python3.10 python3.10-venv python3.10-dev python3-pip \
     nodejs \
     fonts-noto-cjk fonts-noto-color-emoji \
@@ -34,6 +34,7 @@ WORKDIR /app
 COPY pyproject.toml ./
 COPY app ./app
 COPY supervisord.conf ./supervisord.conf
+COPY cdp_proxy.py ./cdp_proxy.py
 
 RUN pip3 install \
     "fastapi>=0.121.2" \

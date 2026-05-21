@@ -1,4 +1,5 @@
 import asyncio
+import base64
 import os
 import io
 import logging
@@ -231,15 +232,188 @@ class E2BSandbox(Sandbox):
                     )
                     logger.info("deb install: %s", deb_out[:500] if deb_out else "(empty)")
 
-        # ── Restart supervisord chrome service ────────────────────────────
-        # Chrome is in [group:services] so supervisorctl needs "services:chrome"
+        # ── Patch supervisord.conf in-place ──────────────────────────────
+        # Ensure --user-data-dir, --remote-allow-origins=*, and singleton
+        # lock cleanup are all present. These may be absent in older template
+        # builds. Each patch is guarded so it is idempotent.
+        patch_out = await self._run_admin_cmd(
+            # 1) Add --user-data-dir if missing
+            "grep -q 'user-data-dir' /app/supervisord.conf || "
+            "sudo sed -i 's|--remote-debugging-port=8222|"
+            "--user-data-dir=/tmp/chrome-profile "
+            "--remote-debugging-port=8222|g' /app/supervisord.conf; "
+            # 2) Add --remote-allow-origins=* if missing
+            "grep -q 'remote-allow-origins' /app/supervisord.conf || "
+            "sudo sed -i 's|--remote-debugging-port=8222|"
+            "--remote-debugging-port=8222 --remote-allow-origins=*|g' "
+            "/app/supervisord.conf; "
+            "echo CONF_PATCHED; "
+            # 3) Remove the invalid --display=:1 CLI flag (DISPLAY is set via env)
+            "sudo sed -i '/--display=:1/d' /app/supervisord.conf 2>/dev/null || true; "
+            # 4) Remove singleton lock so next Chrome start owns the debug port
+            "rm -rf /tmp/chrome-profile/SingletonLock "
+            "/tmp/chrome-profile/SingletonCookie "
+            "/tmp/chrome-profile/SingletonSocket 2>/dev/null; "
+            "echo LOCK_CLEANED",
+            timeout=15,
+        )
+        logger.info("supervisord.conf patch: %s", patch_out[:300] if patch_out else "(empty)")
+
+        # ── Deploy CDP proxy (replaces socat on port 9222) ────────────────
+        # Chrome's DNS-rebinding protection rejects HTTP requests where the
+        # Host header is not localhost or an IP address.  E2B tunnels always
+        # set a host like 9222-<id>.e2b.app, which Chrome rejects.
+        # The CDP proxy rewrites the Host header → localhost:8222 for every
+        # incoming HTTP/WebSocket request, and also rewrites ws://localhost
+        # URLs in HTTP response bodies to wss://EXTERNAL so browser_use can
+        # connect to the WebSocket debugger from outside the sandbox.
+        await self._deploy_cdp_proxy()
+
+        # ── Restart supervisord chrome + cdpproxy services ────────────────
         restart_out = await self._run_admin_cmd(
+            "sudo supervisorctl -c /app/supervisord.conf stop services:chrome 2>&1; "
+            "sleep 1; "
+            "sudo supervisorctl -c /app/supervisord.conf reread 2>&1; "
+            "sudo supervisorctl -c /app/supervisord.conf update 2>&1; "
             "sudo supervisorctl -c /app/supervisord.conf start services:chrome 2>&1; "
-            "sleep 2; "
-            "sudo supervisorctl -c /app/supervisord.conf status services:chrome 2>&1",
+            "sleep 4; "
+            "sudo supervisorctl -c /app/supervisord.conf status 2>&1",
             timeout=30,
         )
-        logger.info("Chrome supervisor restart: %s", restart_out[:300] if restart_out else "(empty)")
+        logger.info("Chrome supervisor restart: %s", restart_out[:400] if restart_out else "(empty)")
+
+    async def _deploy_cdp_proxy(self) -> None:
+        """
+        Deploy the CDP Host-header proxy (cdp_proxy.py) to the sandbox and
+        ensure supervisord manages it instead of socat on port 9222.
+
+        Idempotent — safe to call on both old (socat) and new (cdpproxy)
+        template builds.
+        """
+        proxy_script = (
+            "#!/usr/bin/env python3\n"
+            '"""CDP Host-header proxy for E2B sandboxes (auto-deployed at runtime)."""\n'
+            "import asyncio, re, sys\n"
+            'CHROME_HOST="127.0.0.1"; CHROME_PORT=8222; PROXY_PORT=9222\n'
+            "EXTERNAL_HOST=sys.argv[1] if len(sys.argv)>1 else \"\"\n"
+            "async def _pipe(r,w):\n"
+            "    try:\n"
+            "        while True:\n"
+            "            d=await r.read(65536)\n"
+            "            if not d: break\n"
+            "            w.write(d); await w.drain()\n"
+            "    except: pass\n"
+            "    finally:\n"
+            "        try: w.close()\n"
+            "        except: pass\n"
+            "def _rewrite(body,ext):\n"
+            "    if not ext: return body\n"
+            "    b=ext.encode()\n"
+            '    body=body.replace(b"ws://localhost:8222",b"wss://"+b)\n'
+            '    body=body.replace(b"ws://localhost/",b"wss://"+b+b"/")\n'
+            "    return body\n"
+            "def _fix_cl(resp,nb,ob):\n"
+            "    if len(nb)==len(ob): return resp\n"
+            '    sep=resp.find(b"\\r\\n\\r\\n")\n'
+            "    if sep<0: return resp\n"
+            '    h=re.sub(rb"(?i)content-length:\\s*\\d+",b"Content-Length: "+str(len(nb)).encode(),resp[:sep])\n'
+            '    return h+b"\\r\\n\\r\\n"+nb\n'
+            "async def _handle(cr,cw):\n"
+            "    global EXTERNAL_HOST\n"
+            "    try:\n"
+            '        buf=b""\n'
+            '        while b"\\r\\n\\r\\n" not in buf:\n'
+            "            c=await asyncio.wait_for(cr.read(4096),30)\n"
+            "            if not c: return\n"
+            "            buf+=c\n"
+            '        sep=buf.index(b"\\r\\n\\r\\n"); raw=buf[:sep]; tail=buf[sep+4:]\n'
+            "        ws=False; nl=[]\n"
+            '        for ln in raw.split(b"\\r\\n"):\n'
+            '            if ln.lower().startswith(b"host:"):\n'
+            "                orig=ln[5:].strip().decode(errors=\"replace\")\n"
+            '                if not EXTERNAL_HOST and orig and "localhost" not in orig:\n'
+            "                    EXTERNAL_HOST=orig\n"
+            '                    print(f"CDPproxy: learned ext={EXTERNAL_HOST}",flush=True)\n'
+            '                nl.append(b"Host: localhost:8222")\n'
+            "            else:\n"
+            '                if b"websocket" in ln.lower(): ws=True\n'
+            "                nl.append(ln)\n"
+            "        xr,xw=await asyncio.wait_for(asyncio.open_connection(CHROME_HOST,CHROME_PORT),10)\n"
+            '        xw.write(b"\\r\\n".join(nl)+b"\\r\\n\\r\\n"+tail); await xw.drain()\n'
+            "        if ws:\n"
+            "            await asyncio.gather(_pipe(cr,xw),_pipe(xr,cw),return_exceptions=True); return\n"
+            '        resp=b""\n'
+            "        try:\n"
+            "            while True:\n"
+            "                ch=await asyncio.wait_for(xr.read(65536),20)\n"
+            "                if not ch: break\n"
+            "                resp+=ch\n"
+            '                if b"\\r\\n\\r\\n" not in resp: continue\n'
+            '                he=resp.index(b"\\r\\n\\r\\n"); hl=resp[:he].lower()\n'
+            '                ci=hl.find(b"content-length:")\n'
+            "                if ci>=0:\n"
+            '                    cl=int(hl[ci:].split(b"\\r\\n")[0].split(b":")[1].strip())\n'
+            "                    if len(resp)>=he+4+cl: break\n"
+            "        except asyncio.TimeoutError: pass\n"
+            '        if b"\\r\\n\\r\\n" in resp:\n'
+            '            he=resp.index(b"\\r\\n\\r\\n"); ob=resp[he+4:]; nb=_rewrite(ob,EXTERNAL_HOST)\n'
+            "            resp=_fix_cl(resp,nb,ob)\n"
+            "        cw.write(resp); await cw.drain()\n"
+            "        try: xw.close()\n"
+            "        except: pass\n"
+            "    except: pass\n"
+            "    finally:\n"
+            "        try: cw.close()\n"
+            "        except: pass\n"
+            "async def main():\n"
+            '    srv=await asyncio.start_server(_handle,"0.0.0.0",PROXY_PORT)\n'
+            "    print(f\"CDPproxy :9222->8222 ext={EXTERNAL_HOST or '(auto)'}\",flush=True)\n"
+            "    async with srv: await srv.serve_forever()\n"
+            "asyncio.run(main())\n"
+        )
+        # Use base64 to safely write the proxy script — avoids heredoc quoting issues
+        proxy_b64 = base64.b64encode(proxy_script.encode()).decode()
+        write_out = await self._run_admin_cmd(
+            f"echo '{proxy_b64}' | base64 -d | sudo tee /app/cdp_proxy.py > /dev/null "
+            "&& sudo chmod +x /app/cdp_proxy.py && echo PROXY_WRITTEN",
+            timeout=10,
+        )
+        logger.info("CDP proxy write: %s", write_out[:200] if write_out else "(empty)")
+
+        # Patch supervisord.conf: replace [program:socat] with [program:cdpproxy]
+        # and update the group line.  All ops are idempotent.
+        conf_patch = (
+            # Kill any running socat on 9222
+            "sudo pkill -f 'socat TCP-LISTEN:9222' 2>/dev/null || true; "
+            # If conf has [program:socat], replace with [program:cdpproxy]
+            "python3 -c \""
+            "import re,subprocess;"
+            "conf=open('/app/supervisord.conf').read();"
+            "if '[program:socat]' in conf:"
+            "  conf=re.sub(r'\\[program:socat\\].*?(?=\\[|\\Z)',"
+            "    '[program:cdpproxy]\\n"
+            "command=python3 /app/cdp_proxy.py\\n"
+            "autostart=true\\nautorestart=true\\n"
+            "stdout_logfile=/tmp/cdpproxy.log\\n"
+            "stderr_logfile=/tmp/cdpproxy_err.log\\n"
+            "priority=30\\nstartsecs=2\\n\\n',"
+            "    conf,flags=re.DOTALL);"
+            "conf=re.sub(r'programs=([^\\n]+)',"
+            "  lambda m: 'programs='+','.join(dict.fromkeys("
+            "    x.strip() for x in m.group(1).replace('socat','cdpproxy').split(',') if x.strip())),"
+            "  conf);"
+            "open('/app/supervisord.conf','w').write(conf);"
+            "print('CONF_PATCHED');"
+            "\" 2>&1; "
+            # Reload supervisord so new config takes effect (restarts all services cleanly)
+            "sudo supervisorctl -c /app/supervisord.conf reread 2>&1; "
+            "sudo supervisorctl -c /app/supervisord.conf update 2>&1; "
+            "sleep 2; "
+            "sudo supervisorctl -c /app/supervisord.conf status services:cdpproxy 2>&1 || true; "
+            "echo PROXY_SETUP_DONE"
+        )
+        proxy_out = await self._run_admin_cmd(conf_patch, timeout=20)
+        logger.info("CDP proxy setup: %s", proxy_out[:400] if proxy_out else "(empty)")
 
     # ------------------------------------------------------------------
     # Lifecycle
@@ -284,7 +458,7 @@ class E2BSandbox(Sandbox):
         Also handles Chrome stuck in BACKOFF: if Chrome has been in BACKOFF
         for too many consecutive attempts, we trigger the same fix routine.
         """
-        # Phase 1 — wait for core services (app, xvfb, socat, x11vnc, websockify)
+        # Phase 1 — wait for core services (app, xvfb, cdpproxy, x11vnc, websockify)
         # These are fast and typically ready within 30 s.
         max_retries = 40
         retry_interval = 2

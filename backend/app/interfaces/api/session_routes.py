@@ -143,7 +143,7 @@ async def chat(
             session_id=session_id,
             user_id=current_user.id,
             message=request.message,
-            timestamp=datetime.fromtimestamp(request.timestamp) if request.timestamp else None,
+            timestamp=datetime.fromtimestamp(request.timestamp / 1000 if request.timestamp > 1e10 else request.timestamp) if request.timestamp else None,
             event_id=request.event_id,
             attachments=request.attachments
         ):

@@ -53,9 +53,16 @@ class AgentDomainService:
         sandbox = None
         sandbox_id = session.sandbox_id
         if sandbox_id:
-            sandbox = await self._sandbox_cls.get(sandbox_id)
-            if sandbox:
-                await sandbox.ensure_sandbox()
+            try:
+                sandbox = await self._sandbox_cls.get(sandbox_id)
+                if sandbox:
+                    await sandbox.ensure_sandbox()
+            except Exception as exc:
+                logger.warning(
+                    "Failed to reconnect to existing sandbox %s (%s) — creating a new one",
+                    sandbox_id, exc,
+                )
+                sandbox = None
         if not sandbox:
             sandbox = await self._sandbox_cls.create()
             session.sandbox_id = sandbox.id
