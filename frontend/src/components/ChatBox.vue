@@ -1,7 +1,7 @@
 <template>
     <div class="pb-3 relative bg-[var(--background-gray-main)]">
         <div
-            class="flex flex-col gap-3 rounded-[22px] transition-all relative bg-[var(--fill-input-chat)] py-3 max-h-[300px] shadow-[0px_12px_32px_0px_rgba(0,0,0,0.02)] border border-black/8 dark:border-[var(--border-main)]">
+            class="flex flex-col gap-3 rounded-[22px] transition-all relative bg-[var(--fill-input-chat)] py-3 max-h-[300px] shadow-[0px_12px_32px_0px_rgba(0,0,0,0.08)] border border-black/8 dark:border-[var(--border-dark)]">
             <ChatBoxFiles ref="chatBoxFileListRef" :attachments="attachments" />
             <div class="overflow-y-auto pl-4 pr-2">
                 <textarea
