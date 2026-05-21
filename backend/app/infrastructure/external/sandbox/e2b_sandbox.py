@@ -190,12 +190,20 @@ class E2BSandbox(Sandbox):
             # ── Step 1: Playwright (most reliable — no snap/apt issues) ───
             logger.info("Attempting Playwright Chromium install…")
             pw_out = await self._run_admin_cmd(
-                "pip3 install --quiet playwright 2>&1 | tail -3 && "
-                "python3 -m playwright install chromium 2>&1 | tail -5 && "
-                "CHROME=$(find /root/.cache /home/ubuntu/.cache -name 'chrome' -type f 2>/dev/null | head -1); "
+                # Try sudo pip first (works on E2B sandbox); fall back to --user flag
+                # if sudo pip is unavailable. --break-system-packages bypasses PEP 668
+                # on Ubuntu 22.04+ which otherwise blocks pip writes to system dirs.
+                "(sudo pip3 install --quiet --break-system-packages playwright 2>&1 "
+                " || pip3 install --quiet --break-system-packages playwright 2>&1 "
+                " || pip3 install --quiet --user playwright 2>&1) | tail -5; "
+                # Install the Chromium browser bundle (runs as current user)
+                "(sudo python3 -m playwright install chromium 2>&1 "
+                " || python3 -m playwright install chromium 2>&1 "
+                " || python3 -m playwright install --with-deps chromium 2>&1) | tail -5; "
+                "CHROME=$(find /root/.cache /home /tmp -name 'chrome' -type f 2>/dev/null | head -1); "
                 "echo FOUND=$CHROME; "
                 "[ -n \"$CHROME\" ] && sudo ln -sf \"$CHROME\" /usr/bin/chromium-browser && echo PLAYWRIGHT_OK",
-                timeout=300,
+                timeout=360,
             )
             logger.info("Playwright install: %s", pw_out[:500] if pw_out else "(empty)")
 
