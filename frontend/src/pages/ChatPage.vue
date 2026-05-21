@@ -106,8 +106,8 @@
             :hideHeader="isConsecutiveAssistant(messages, index)"
             @toolClick="handleToolClick" />
 
-          <!-- Loading indicator -->
-          <LoadingIndicator v-if="isLoading" :text="$t('Thinking')" />
+          <!-- Loading indicator — hidden while streaming acknowledgment chunks -->
+          <LoadingIndicator v-if="isLoading && !streamingMessageContent" :text="$t('Thinking')" />
         </div>
 
         <div class="flex flex-col bg-[var(--background-gray-main)] sticky bottom-0">
@@ -140,6 +140,7 @@ import {
   StepEventData,
   ToolEventData,
   MessageEventData,
+  MessageChunkEventData,
   ErrorEventData,
   TitleEventData,
   PlanEventData,
@@ -181,6 +182,7 @@ const createInitialState = () => ({
   lastTool: undefined as ToolContent | undefined,
   lastEventId: undefined as string | undefined,
   cancelCurrentChat: null as (() => void) | null,
+  streamingMessageContent: null as MessageContent | null,
   attachments: [] as FileInfo[],
   shareMode: 'private' as 'private' | 'public', // Default to private mode
   linkCopied: false,
@@ -205,6 +207,7 @@ const {
   lastTool,
   lastEventId,
   cancelCurrentChat,
+  streamingMessageContent,
   attachments,
   shareMode,
   linkCopied,
@@ -257,6 +260,30 @@ watch(messages, async () => {
 
 const getLastStep = (): StepContent | undefined => {
   return messages.value.filter(message => message.type === 'step').pop()?.content as StepContent;
+}
+
+// Handle streaming message chunk event
+const handleMessageChunkEvent = (chunkData: MessageChunkEventData) => {
+  if (!streamingMessageContent.value) {
+    // First chunk — push a new assistant message and hold a reference to its content
+    const content: MessageContent = {
+      content: chunkData.content,
+      timestamp: chunkData.timestamp,
+    };
+    messages.value.push({
+      type: 'assistant',
+      content,
+    });
+    streamingMessageContent.value = content;
+  } else {
+    // Subsequent chunks — append to the existing streaming message
+    streamingMessageContent.value.content += chunkData.content;
+  }
+
+  if (chunkData.done) {
+    // Stream finished — detach the reference so the next message starts fresh
+    streamingMessageContent.value = null;
+  }
 }
 
 // Handle message event
@@ -350,7 +377,12 @@ const handlePlanEvent = (planData: PlanEventData) => {
 // Main event handler function
 const handleEvent = (event: AgentSSEEvent) => {
   if (event.event === 'message') {
+    // A full assistant message arrived — clear any in-progress streaming bubble
+    // to avoid a duplicate (the acknowledge stream already showed it token-by-token)
+    streamingMessageContent.value = null;
     handleMessageEvent(event.data as MessageEventData);
+  } else if (event.event === 'message_chunk') {
+    handleMessageChunkEvent(event.data as MessageChunkEventData);
   } else if (event.event === 'tool') {
     handleToolEvent(event.data as ToolEventData);
   } else if (event.event === 'step') {

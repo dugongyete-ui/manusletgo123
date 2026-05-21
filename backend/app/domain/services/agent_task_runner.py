@@ -11,6 +11,7 @@ from app.domain.models.event import (
     ErrorEvent,
     TitleEvent,
     MessageEvent,
+    MessageChunkEvent,
     DoneEvent,
     ToolEvent,
     WaitEvent,
@@ -81,7 +82,10 @@ class AgentTaskRunner(TaskRunner):
     async def _put_and_add_event(self, task: Task, event: AgentEvent) -> None:
         event_id = await task.output_stream.put(event.model_dump_json())
         event.id = event_id
-        await self._session_repository.add_event(self._session_id, event)
+        # MessageChunkEvents are transient streaming tokens — stream them to the
+        # client in real time but do NOT persist them to the session history.
+        if not isinstance(event, MessageChunkEvent):
+            await self._session_repository.add_event(self._session_id, event)
     
     async def _pop_event(self, task: Task) -> AgentEvent:
         event_id, event_str = await task.input_stream.pop()
