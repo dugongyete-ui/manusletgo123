@@ -242,6 +242,10 @@ class AgentTaskRunner(TaskRunner):
 
                 vision_images = []
                 extracted_file_blocks: list[str] = []
+                # Track which file_ids were successfully server-extracted so we
+                # can exclude them from the sandbox attachments list — the AI
+                # must NOT see the same file twice (once as text, once as a path).
+                server_extracted_ids: set[str] = set()
 
                 for attachment in attachments_list:
                     if not attachment.file_id:
@@ -273,18 +277,22 @@ class AgentTaskRunner(TaskRunner):
                                 extracted_file_blocks.append(
                                     f"<file name=\"{fname}\">\n{extracted}\n</file>"
                                 )
+                                # Mark as successfully extracted — exclude from sandbox paths
+                                server_extracted_ids.add(attachment.file_id)
                                 logger.info(
                                     f"Server-extracted {fname} ({len(raw)} bytes → {len(extracted)} chars)"
                                 )
                         except Exception as fe:
-                            logger.warning(f"Server extraction failed for {fname}: {fe}")
+                            # Extraction failed — keep it in attachments so the
+                            # agent can still attempt sandbox-based extraction
+                            logger.warning(f"Server extraction failed for {fname}, keeping as attachment: {fe}")
 
                 # Prepend extracted file content to the message so the AI sees it immediately
                 if extracted_file_blocks:
                     files_block = "\n\n".join(extracted_file_blocks)
                     message = (
                         f"The following file(s) have been pre-extracted for you. "
-                        f"You can analyze them directly without running any shell commands.\n\n"
+                        f"Analyze the content directly — do NOT run any extraction commands.\n\n"
                         f"{files_block}\n\n"
                         f"---\n"
                         f"User request: {message}"
@@ -293,9 +301,18 @@ class AgentTaskRunner(TaskRunner):
                         f"Injected {len(extracted_file_blocks)} extracted file(s) into message"
                     )
 
+                # Only pass sandbox paths for files that were NOT server-extracted.
+                # Passing already-extracted files would make the AI think there
+                # are duplicate files (original name + prefixed sandbox name).
+                sandbox_attachments = [
+                    a.file_path
+                    for a in attachments_list
+                    if a.file_path and a.file_id not in server_extracted_ids
+                ]
+
                 message_obj = Message(
                     message=message,
-                    attachments=[a.file_path for a in attachments_list if a.file_path],
+                    attachments=sandbox_attachments,
                     vision_images=vision_images,
                 )
                 

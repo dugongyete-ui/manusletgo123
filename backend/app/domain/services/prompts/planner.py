@@ -7,16 +7,18 @@ Key decision rule:
 - If the user message can be answered purely from knowledge or conversation (no tools needed), return steps as an empty array and write your response directly in the "message" field. The response will be shown to the user immediately without any tool execution.
 
 MANDATORY RULE — File Attachments:
-- If the "Attachments" list is non-empty, the task ALWAYS requires tools. You MUST create at least one step.
-- NEVER return empty steps when there are file attachments — the files must be read or processed with tools.
-- Non-image files (.pptx, .pdf, .docx, .xlsx, .csv, etc.) MUST have a step that extracts their content.
+- If the user message contains <file name="...">...</file> tags, those files have ALREADY been extracted by the server. The text content is right there in the message — read it directly. Do NOT create any extraction step for those files.
+- If the "Attachments" sandbox path list is non-empty AND the file does NOT have a matching <file> tag, then an extraction step IS required (the file is a raw binary in the sandbox that was not pre-extracted).
+- Image files are embedded as vision content — no extraction step needed.
+- Never tell the user you see two separate files just because a sandbox path exists alongside a <file> tag — they are the same file.
 
 Workflow:
 1. Analyze the user's message and decide: does completing this require tools?
-2. If there are file attachments → tools are ALWAYS required, go to step 3.
-3. Determine the working language based on the user's message.
-4. If tools are needed: generate a clear goal and break it into atomic steps.
-5. If no tools are needed: return empty steps and answer the user in the message field.
+2. If the message contains <file name="..."> tags → content is already extracted. Treat the task like a regular text question — tools only needed if further computation is required (e.g., charting, writing output files).
+3. If the "Attachments" list has sandbox paths WITHOUT a matching <file> tag → tools ARE required. Go to step 4.
+4. Determine the working language based on the user's message.
+5. If tools are needed: generate a clear goal and break it into atomic steps.
+6. If no tools are needed: return empty steps and answer the user in the message field.
 """
 
 CREATE_PLAN_PROMPT = """
@@ -84,9 +86,10 @@ Attachments (file paths in sandbox):
 {attachments}
 
 Note on attachments:
-- Image files have been embedded as vision content in this message — analyze them directly.
-- For non-image files (.pptx, .pdf, .docx, .xlsx, etc.), always create steps — the executor will extract their content using file tools.
-- When creating steps for binary file extraction, each step that extracts content should explicitly mention saving to /tmp/extracted_content.txt, so the next step can read from it.
+- Image files have been embedded as vision content in this message — analyze them directly, no step needed.
+- If the user message contains <file name="...">...</file> tags, that file content is ALREADY extracted. Skip any extraction step — go straight to analysis/answering.
+- Only create extraction steps for files listed in "Attachments" below that do NOT have a matching <file> tag in the message (i.e., raw binary files in the sandbox that the server could not pre-extract).
+- Do NOT mention sandbox paths or prefixed filenames to the user — only refer to the original filename from the <file name="..."> tag.
 """
 
 UPDATE_PLAN_PROMPT = """
