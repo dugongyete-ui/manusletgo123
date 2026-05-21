@@ -163,11 +163,18 @@ class E2BSandbox(Sandbox):
         diag = await self._run_admin_cmd(
             "echo DIAG_START; "
             "whoami; "
-            "ls /usr/bin/chrom* /usr/bin/google-chrome* 2>&1; "
+            # Check for any usable Chrome/Chromium binary
+            "ls /usr/bin/google-chrome /usr/bin/playwright-chromium "
+            "   /usr/bin/chromium-browser /usr/bin/chromium 2>&1; "
+            # Check pre-installed Playwright Chromium (new template)
+            "PWCHROME=$(find /opt/playwright-browsers -name 'chrome' -type f "
+            "           2>/dev/null | head -1); "
+            "echo PW_PREINSTALLED=$PWCHROME; "
+            "pip3 show playwright 2>/dev/null | grep -q 'Version' && echo PW_PKG_OK || echo PW_PKG_MISSING; "
             "curl -sSf --connect-timeout 5 https://dl.google.com/robots.txt 2>&1 | head -1",
             timeout=20,
         )
-        logger.info("Chrome fix diagnostic: %s", diag[:400] if diag else "(empty — shell exec broken!)")
+        logger.info("Chrome fix diagnostic: %s", diag[:600] if diag else "(empty — shell exec broken!)")
 
         if not diag:
             logger.error(
@@ -176,33 +183,50 @@ class E2BSandbox(Sandbox):
             )
             return
 
-        # Check if a *real* Google Chrome binary exists (not the Ubuntu snap stub).
-        # The snap stub at /usr/bin/chromium-browser is just a shell script that calls
-        # snap, which doesn't work in containers.  We only skip install if the genuine
-        # google-chrome binary is present.
+        # A *real* usable Chrome binary exists if:
+        # (a) google-chrome is present (apt install, new Dockerfile)
+        # (b) playwright-chromium symlink exists (new Dockerfile layer 5)
+        # (c) Playwright Chromium binary found in /opt/playwright-browsers
         has_real_chrome = (
-            "google-chrome" in diag
-            and "No such file" not in diag
+            ("google-chrome" in diag and "No such file" not in diag.split("PW_PREINSTALLED")[0])
+            or "playwright-chromium" in diag.split("No such file")[0]
+            or ("PW_PREINSTALLED=" in diag and "PW_PREINSTALLED=\n" not in diag
+                and "PW_PREINSTALLED= " not in diag)
         )
+
         if has_real_chrome:
-            logger.info("Google Chrome already installed — skipping download, just restarting…")
+            logger.info("Usable Chrome/Chromium binary found — skipping download, just restarting…")
         else:
             # ── Step 1: Playwright (most reliable — no snap/apt issues) ───
+            # In the new Dockerfile, playwright is pre-installed as a system
+            # package.  If the pip package is missing we install it first,
+            # then download/link the Chromium binary.
             logger.info("Attempting Playwright Chromium install…")
             pw_out = await self._run_admin_cmd(
-                # Try sudo pip first (works on E2B sandbox); fall back to --user flag
-                # if sudo pip is unavailable. --break-system-packages bypasses PEP 668
-                # on Ubuntu 22.04+ which otherwise blocks pip writes to system dirs.
-                "(sudo pip3 install --quiet --break-system-packages playwright 2>&1 "
-                " || pip3 install --quiet --break-system-packages playwright 2>&1 "
-                " || pip3 install --quiet --user playwright 2>&1) | tail -5; "
-                # Install the Chromium browser bundle (runs as current user)
+                # Install playwright Python package if not already present.
+                # Try sudo --break-system-packages first (Ubuntu 22.04+), then
+                # --user as final fallback.
+                "python3 -c 'import playwright' 2>/dev/null || "
+                "  (sudo pip3 install --quiet --break-system-packages playwright 2>&1 "
+                "   || pip3 install --quiet --break-system-packages playwright 2>&1 "
+                "   || pip3 install --quiet --user playwright 2>&1) | tail -3; "
+                # Install Chromium browser binary to /opt/playwright-browsers
+                # (PLAYWRIGHT_BROWSERS_PATH set in environment so it lands in the
+                # right place for both root and ubuntu user).
+                "export PLAYWRIGHT_BROWSERS_PATH=/opt/playwright-browsers; "
+                "sudo mkdir -p /opt/playwright-browsers; "
                 "(sudo python3 -m playwright install chromium 2>&1 "
-                " || python3 -m playwright install chromium 2>&1 "
-                " || python3 -m playwright install --with-deps chromium 2>&1) | tail -5; "
-                "CHROME=$(find /root/.cache /home /tmp -name 'chrome' -type f 2>/dev/null | head -1); "
+                " || python3 -m playwright install chromium 2>&1) | tail -5; "
+                # Create symlink so supervisord chrome command can find the binary
+                "CHROME=$(find /opt/playwright-browsers /root/.cache /home "
+                "         -name 'chrome' -type f 2>/dev/null | head -1); "
                 "echo FOUND=$CHROME; "
-                "[ -n \"$CHROME\" ] && sudo ln -sf \"$CHROME\" /usr/bin/chromium-browser && echo PLAYWRIGHT_OK",
+                "[ -n \"$CHROME\" ] "
+                "  && sudo chmod +x \"$CHROME\" "
+                "  && sudo ln -sf \"$CHROME\" /usr/bin/playwright-chromium "
+                "  && sudo ln -sf \"$CHROME\" /usr/bin/chromium-browser "
+                "  && sudo chmod -R a+rX /opt/playwright-browsers "
+                "  && echo PLAYWRIGHT_OK",
                 timeout=360,
             )
             logger.info("Playwright install: %s", pw_out[:500] if pw_out else "(empty)")
