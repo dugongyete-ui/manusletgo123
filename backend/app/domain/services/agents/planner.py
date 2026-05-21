@@ -113,6 +113,33 @@ class PlannerAgent(BaseAgent):
             logger.warning(f"Vision model image analysis failed: {e}")
             return ""
 
+    async def _get_previous_file_names(self) -> list:
+        """Scan conversation memory for file names analyzed in previous turns.
+
+        Looks for <file name="..."> patterns in stored HumanMessages so that
+        follow-up questions about previously uploaded files can reference them.
+        Returns a deduplicated list of file names in order of first appearance.
+        """
+        import re
+        await self._ensure_memory()
+        names = []
+        seen = set()
+        for msg in self.memory.get_messages():
+            content = ""
+            if hasattr(msg, "content"):
+                if isinstance(msg.content, str):
+                    content = msg.content
+                elif isinstance(msg.content, list):
+                    content = " ".join(
+                        part.get("text", "") if isinstance(part, dict) else str(part)
+                        for part in msg.content
+                    )
+            for n in re.findall(r'<file name="([^"]+)">', content):
+                if n not in seen:
+                    seen.add(n)
+                    names.append(n)
+        return names
+
     async def acknowledge(self, message: Message) -> AsyncGenerator[BaseEvent, None]:
         """Stream an acknowledgment in < 1 s before full JSON planning begins.
 
@@ -152,6 +179,19 @@ class PlannerAgent(BaseAgent):
                 "Acknowledge that you can see the image(s) and will analyze them."
             )
 
+        # 4. No current file — check conversation history for files from prior turns.
+        #    This ensures follow-up questions ("tell me more about that file") are
+        #    acknowledged correctly instead of asking for clarification.
+        if not attachment_context:
+            prev_files = await self._get_previous_file_names()
+            if prev_files:
+                attachment_context = (
+                    f"\n\nNote: Earlier in this conversation the user shared these file(s): "
+                    f"{', '.join(prev_files)}. "
+                    "If the user's request relates to those files, acknowledge that you remember "
+                    "the content and will use it to answer. Do NOT say there is no file attached."
+                )
+
         prompt = (
             f"The user sent you this request: {message.message}{attachment_context}\n\n"
             "Respond naturally to acknowledge their request before you start working on it. "
@@ -170,8 +210,27 @@ class PlannerAgent(BaseAgent):
             logger.warning(f"Acknowledge streaming failed, skipping: {e}")
 
     async def create_plan(self, message: Message) -> AsyncGenerator[BaseEvent, None]:
+        # If the current message has no pre-extracted files, check conversation
+        # history for files from earlier turns.  Injecting their names helps the
+        # planner understand that follow-up questions ("tell me more", "kirim isi
+        # nya") refer to those previously analyzed documents.
+        prev_files_note = ""
+        if "<file name=" not in message.message:
+            prev_file_names = await self._get_previous_file_names()
+            if prev_file_names:
+                prev_files_note = (
+                    f"\n\nConversation context — files analyzed earlier in this session "
+                    f"(their full content is in your conversation history): "
+                    f"{', '.join(prev_file_names)}. "
+                    "If the user's request is about any of these files, answer using the "
+                    "content already in your memory. Do NOT say there is no file available."
+                )
+                logger.info(
+                    f"Injecting previous file context into create_plan: {prev_file_names}"
+                )
+
         base_prompt = CREATE_PLAN_PROMPT.format(
-            message=message.message,
+            message=message.message + prev_files_note,
             attachments="\n".join(message.attachments)
         )
 
