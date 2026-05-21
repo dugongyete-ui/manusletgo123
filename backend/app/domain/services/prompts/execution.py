@@ -69,12 +69,14 @@ Attachments (file paths in sandbox):
 Note on attachments:
 - Image files (jpg, png, gif, webp) have been embedded directly in this message as vision content — you can already see them above. Do NOT use file_read on image files.
 - For plain text, code, markdown, CSV files: use file_read tool directly on the sandbox path.
-- For binary/Office files — NEVER ask the user to re-send; extract their content with shell commands:
-  - .pptx/.ppt  → `python3 -c "from pptx import Presentation; prs=Presentation('/path/to/file.pptx'); [print(sh.text) for sl in prs.slides for sh in sl.shapes if hasattr(sh,'text')]"`
-  - .docx/.doc  → `python3 -c "from docx import Document; doc=Document('/path/to/file.docx'); print('\n'.join(p.text for p in doc.paragraphs))"`
-  - .pdf        → `pdftotext /path/to/file.pdf - 2>/dev/null` (or `python3 -c "import pdfplumber; ..."`)
-  - .xlsx/.xls  → `python3 -c "import pandas as pd; print(pd.read_excel('/path/to/file.xlsx').to_string())"`
+- For binary/Office files — NEVER ask the user to re-send; extract content and SAVE IT TO A FILE (never just print to stdout):
+  - .pptx/.ppt  → `python3 -c "from pptx import Presentation; prs=Presentation('/path/to/file.pptx'); open('/tmp/extracted_content.txt','w').write('\n'.join(sh.text for sl in prs.slides for sh in sl.shapes if hasattr(sh,'text')))"`
+  - .docx/.doc  → `python3 -c "from docx import Document; doc=Document('/path/to/file.docx'); open('/tmp/extracted_content.txt','w').write('\n'.join(p.text for p in doc.paragraphs))"`
+  - .pdf        → `pdftotext /path/to/file.pdf /tmp/extracted_content.txt 2>/dev/null || python3 -c "import pdfplumber; f=pdfplumber.open('/path/to/file.pdf'); open('/tmp/extracted_content.txt','w').write('\n'.join(p.extract_text() or '' for p in f.pages))"`
+  - .xlsx/.xls  → `python3 -c "import pandas as pd; open('/tmp/extracted_content.txt','w').write(pd.read_excel('/path/to/file.xlsx').to_string())"`
   - Install missing packages first: `pip3 install python-pptx python-docx pdfplumber pandas openpyxl`
+  - After extracting: ALWAYS verify with `ls -la /tmp/extracted_content.txt && head -5 /tmp/extracted_content.txt`
+  - Then use file_read tool on `/tmp/extracted_content.txt` — NEVER try to read binary files directly or from stdout
 - Uploaded files from user are in the sandbox at the paths listed under "Attachments" above.
 
 Working Language:

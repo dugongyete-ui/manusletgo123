@@ -120,7 +120,9 @@ class AgentTaskRunner(TaskRunner):
         """Download file from storage to sandbox"""
         try:
             file_data, file_info = await self._file_storage.download_file(file_id, self._user_id)
-            file_path = "/home/ubuntu/upload/" + file_info.filename
+            # Use file_id prefix to prevent name collisions between uploads
+            safe_name = f"{file_id[:8]}_{file_info.filename}" if file_info.filename else file_id
+            file_path = "/home/ubuntu/upload/" + safe_name
             result = await self._sandbox.file_upload(file_data, file_path)
             if result.success:
                 file_info.file_path = file_path

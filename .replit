@@ -59,23 +59,23 @@ outputType = "console"
 name = "backend-imports"
 author = "agent"
 
-[[workflows.workflow.tasks]]
-task = "shell.exec"
-args = "cd backend && python3 -c \"import sys; sys.path.insert(0, '.'); [__import__(m) for m in ['app.core.config','app.domain.external.sandbox','app.infrastructure.external.sandbox.e2b_sandbox','app.domain.services.tools.shell','app.domain.services.tools.file','app.domain.services.agents.execution','app.domain.services.agents.planner','app.application.services.agent_service']]; print('ALL OK')\""
-
 [workflows.workflow.metadata]
 isValidation = true
+
+[[workflows.workflow.tasks]]
+task = "shell.exec"
+args = "cd backend && python3 -c \"import sys; sys.path.insert(0, '.'); [__import__(m) for m in ['app.core.config','app.domain.services.agents.planner','app.domain.services.agents.execution','app.domain.services.flows.plan_act','app.domain.services.agent_task_runner','app.domain.services.agent_domain_service','app.domain.services.prompts.system','app.domain.services.prompts.execution','app.domain.services.prompts.planner']]; print('PASSED')\""
 
 [[workflows.workflow]]
 name = "backend-syntax"
 author = "agent"
 
-[[workflows.workflow.tasks]]
-task = "shell.exec"
-args = "cd backend && python3 -c \"import ast, os; [ast.parse(open(os.path.join(r,f)).read()) for r,d,fs in os.walk('app') if '__pycache__' not in r for f in fs if f.endswith('.py')]; print('NO SYNTAX ERRORS')\""
-
 [workflows.workflow.metadata]
 isValidation = true
+
+[[workflows.workflow.tasks]]
+task = "shell.exec"
+args = "cd backend && python3 -c \"import ast, os; [ast.parse(open(os.path.join(r,f)).read()) for r,d,fs in os.walk('app') if '__pycache__' not in r for f in fs if f.endswith('.py')]; print('PASSED')\""
 
 [[ports]]
 localPort = 5000
@@ -84,6 +84,7 @@ externalPort = 80
 [[ports]]
 localPort = 8000
 externalPort = 8000
+exposeLocalhost = true
 
 [deployment]
 deploymentTarget = "static"

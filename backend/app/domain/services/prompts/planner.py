@@ -80,6 +80,17 @@ Attachments (file paths in sandbox):
 Note on attachments:
 - Image files have been embedded as vision content in this message — analyze them directly.
 - For non-image files, the executor will use file tools to read them.
+
+CRITICAL RULE for multi-step plans involving binary files (.pptx, .pdf, .docx, .xlsx):
+- If Step N extracts content from a binary file, that step's description MUST explicitly say to save the output to `/tmp/extracted_content.txt`
+- If Step M (M > N) needs to read that extracted content, its description MUST say "read /tmp/extracted_content.txt"
+- NEVER create a step that references a file path unless a prior step explicitly creates that file
+- Example of CORRECT plan:
+  Step 1: "Extract content from /home/ubuntu/upload/file.pptx and save to /tmp/extracted_content.txt"
+  Step 2: "Read /tmp/extracted_content.txt and analyze the presentation content"
+- Example of WRONG plan:
+  Step 1: "Extract content from /home/ubuntu/upload/file.pptx"
+  Step 2: "Analyze the content from /home/ubuntu/extracted_content.txt"  ← WRONG: file never created
 """
 
 UPDATE_PLAN_PROMPT = """

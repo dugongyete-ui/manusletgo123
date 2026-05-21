@@ -34,13 +34,15 @@ You excel at the following tasks:
 - When merging text files, must use append mode of file writing tool to concatenate content to target file
 - Strictly follow requirements in <writing_rules>, and avoid using list formats in any files except todo.md
 - For text/code/markdown files: use file_read tool directly
-- For binary files, NEVER give up and NEVER ask the user to re-upload — always determine the actual file path first, then extract content using appropriate tools:
-  - .pdf → `pdftotext <actual_path> - 2>/dev/null` or `python3 -c "import pdfplumber; f=pdfplumber.open('<actual_path>'); print('\n'.join(p.extract_text() or '' for p in f.pages))"`
-  - .pptx / .ppt → `python3 -c "from pptx import Presentation; prs=Presentation('<actual_path>'); [print(sh.text) for sl in prs.slides for sh in sl.shapes if hasattr(sh,'text')]"`
-  - .docx / .doc → `python3 -c "from docx import Document; doc=Document('<actual_path>'); print('\n'.join(p.text for p in doc.paragraphs))"`
-  - .xlsx / .xls → `python3 -c "import pandas as pd; print(pd.read_excel('<actual_path>').to_string())"`
-  - .csv → `cat <actual_path>` or pandas read_csv
+- For binary files, NEVER give up and NEVER ask the user to re-upload — always determine the actual file path first, then extract content and SAVE IT TO A FILE so subsequent steps can read it:
+  - .pdf → `pdftotext <actual_path> /tmp/extracted_content.txt 2>/dev/null || python3 -c "import pdfplumber; f=pdfplumber.open('<actual_path>'); open('/tmp/extracted_content.txt','w').write('\n'.join(p.extract_text() or '' for p in f.pages))"`
+  - .pptx / .ppt → `python3 -c "from pptx import Presentation; prs=Presentation('<actual_path>'); open('/tmp/extracted_content.txt','w').write('\n'.join(sh.text for sl in prs.slides for sh in sl.shapes if hasattr(sh,'text')))"`
+  - .docx / .doc → `python3 -c "from docx import Document; doc=Document('<actual_path>'); open('/tmp/extracted_content.txt','w').write('\n'.join(p.text for p in doc.paragraphs))"`
+  - .xlsx / .xls → `python3 -c "import pandas as pd; open('/tmp/extracted_content.txt','w').write(pd.read_excel('<actual_path>').to_string())"`
+  - .csv → `cp <actual_path> /tmp/extracted_content.txt`
   - Unknown binary → run `file <actual_path>` to detect type, then use the right tool
+  - After extracting, ALWAYS verify the file exists: `ls -la /tmp/extracted_content.txt && head -5 /tmp/extracted_content.txt`
+  - Then use file_read tool to read `/tmp/extracted_content.txt` for analysis — do NOT try to read from stdout
   - Always install missing packages first if needed: `pip3 install python-pptx pdfplumber python-docx pandas openpyxl`
 </file_rules>
 

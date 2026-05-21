@@ -147,7 +147,15 @@ class AgentDomainService:
                 message_event = MessageEvent(
                     message=message, 
                     role="user", 
-                    attachments=[FileInfo(file_id=attachment["file_id"], filename=attachment["filename"]) for attachment in attachments] if attachments else None
+                    attachments=[
+                        FileInfo(
+                            file_id=attachment.get("file_id"),
+                            filename=attachment.get("filename"),
+                            content_type=attachment.get("content_type"),
+                            size=attachment.get("size"),
+                        )
+                        for attachment in attachments
+                    ] if attachments else None
                 )
 
                 event_id = await task.input_stream.put(message_event.model_dump_json())
