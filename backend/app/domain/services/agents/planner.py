@@ -119,8 +119,23 @@ class PlannerAgent(BaseAgent):
         Uses LangChain astream() so the very first token reaches the client as
         soon as the model starts responding — typically well under one second.
         """
+        # Build attachment context so the AI can acknowledge uploaded files by name/type
+        attachment_context = ""
+        if message.attachments:
+            file_names = [a.split("/")[-1] for a in message.attachments if a]
+            if file_names:
+                attachment_context = (
+                    f"\n\nThe user also uploaded the following file(s): {', '.join(file_names)}. "
+                    "Acknowledge these files naturally — mention that you can see them and will work with them."
+                )
+        if message.vision_images and not message.attachments:
+            attachment_context = (
+                "\n\nThe user also uploaded image(s). "
+                "Acknowledge that you can see the image(s) and will analyze them."
+            )
+
         prompt = (
-            f"The user sent you this request: {message.message}\n\n"
+            f"The user sent you this request: {message.message}{attachment_context}\n\n"
             "Respond naturally to acknowledge their request before you start working on it. "
             "Use the same language the user used."
         )
