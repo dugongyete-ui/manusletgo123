@@ -6,8 +6,8 @@
       'width: 24px; transition: width 0.36s cubic-bezier(0.4, 0, 0.2, 1);'">
     <div
       :class="isLeftPanelShow ?
-        'flex flex-col overflow-hidden bg-[var(--background-nav)] h-full opacity-100 translate-x-0' :
-        'flex flex-col overflow-hidden bg-[var(--background-nav)] fixed top-1 start-1 bottom-1 z-[1] border-1 dark:border-[1px] border-[var(--border-main)] dark:border-[var(--border-light)] rounded-xl shadow-[0px_8px_32px_0px_rgba(0,0,0,0.16),0px_0px_0px_1px_rgba(0,0,0,0.06)] opacity-0 pointer-events-none -translate-x-10'"
+        'relative flex flex-col overflow-hidden bg-[var(--background-nav)] h-full opacity-100 translate-x-0' :
+        'relative flex flex-col overflow-hidden bg-[var(--background-nav)] fixed top-1 start-1 bottom-1 z-[1] border-1 dark:border-[1px] border-[var(--border-main)] dark:border-[var(--border-light)] rounded-xl shadow-[0px_8px_32px_0px_rgba(0,0,0,0.16),0px_0px_0px_1px_rgba(0,0,0,0.06)] opacity-0 pointer-events-none -translate-x-10'"
       :style="(isLeftPanelShow ? 'width: 300px;' : 'width: 0px;') + ' transition: opacity 0.2s, transform 0.2s, width 0.2s;'">
 
       <!-- 顶部折叠按钮 -->
@@ -62,7 +62,7 @@
         </div>
 
         <!-- 所有任务分组标题 + 会话列表 -->
-        <div class="flex flex-col flex-1 min-h-0 -mx-[8px] mt-[4px] overflow-hidden">
+        <div class="flex flex-col flex-1 min-h-0 -mx-[8px] mt-[4px] overflow-hidden" style="padding-bottom: 48px;">
           <div class="w-full border-t border-[var(--border-main)] transition-opacity duration-200" :class="isListScrolled ? 'opacity-100' : 'opacity-0'"></div>
 
           <!-- 滚动容器：标题 + 列表一起滚动 -->
@@ -105,12 +105,30 @@
         </div>
 
       </div>
+
+      <!-- Dark mode toggle — fixed bottom of panel -->
+      <div class="absolute bottom-0 left-0 right-0 px-[8px] pb-[10px] pt-[8px] border-t border-[var(--border-main)] bg-[var(--background-nav)]">
+        <button
+          @click="toggleTheme"
+          class="flex items-center w-full rounded-[10px] cursor-pointer transition-colors gap-[12px] h-[36px] ps-[9px] pe-[2px] hover:bg-[var(--fill-tsp-white-light)]"
+          :title="theme === 'dark' ? t('Switch to light mode') : t('Switch to dark mode')"
+        >
+          <div class="shrink-0 size-[18px] flex items-center justify-center">
+            <Sun v-if="theme === 'dark'" :size="18" class="text-[var(--icon-secondary)]" />
+            <Moon v-else :size="18" class="text-[var(--icon-secondary)]" />
+          </div>
+          <div class="flex-1 min-w-0 text-[14px] text-[var(--text-secondary)] text-left truncate">
+            {{ theme === 'dark' ? t('Light Mode') : t('Dark Mode') }}
+          </div>
+        </button>
+      </div>
     </div>
   </div>
 </template>
 
 <script setup lang="ts">
-import { PanelLeft, SquarePen, Command, MessageSquareDashed, ChevronUp } from 'lucide-vue-next';
+import { PanelLeft, SquarePen, Command, MessageSquareDashed, ChevronUp, Sun, Moon } from 'lucide-vue-next';
+import { useTheme } from '../composables/useTheme';
 import SessionItem from './SessionItem.vue';
 import { useLeftPanel } from '../composables/useLeftPanel';
 import { ref, onMounted, watch, onUnmounted } from 'vue';
@@ -121,6 +139,7 @@ import { ListSessionItem } from '../types/response';
 import { useI18n } from 'vue-i18n';
 
 const { t } = useI18n()
+const { theme, toggleTheme } = useTheme()
 const { isLeftPanelShow, toggleLeftPanel } = useLeftPanel()
 const route = useRoute()
 const router = useRouter()

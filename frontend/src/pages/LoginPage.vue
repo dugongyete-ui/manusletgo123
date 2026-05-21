@@ -1,5 +1,5 @@
 <template>
-  <div class="w-full min-h-[100vh] relative bg-[var(--background-gray-main)] dark:bg-[#050505]">
+  <div class="w-full min-h-[100vh] relative bg-[var(--background-gray-main)]">
     <div class="sticky top-0 left-0 w-full z-[10] px-[48px] max-sm:px-[12px] max-sm:bg-[var(--background-gray-login)]">
       <div class="w-full h-[60px] mx-auto flex items-center justify-between text-[var(--text-primary)]">
         <a href="/">
@@ -8,6 +8,14 @@
             <ManusLogoTextIcon />
           </div>
         </a>
+        <button
+          @click="toggleTheme"
+          class="flex items-center gap-2 px-3 h-8 rounded-lg text-[var(--text-secondary)] hover:bg-[var(--fill-tsp-white-main)] transition-colors text-sm"
+          :title="theme === 'dark' ? t('Switch to light mode') : t('Switch to dark mode')"
+        >
+          <Sun v-if="theme === 'dark'" :size="16" />
+          <Moon v-else :size="16" />
+        </button>
       </div>
     </div>
     <div
@@ -43,7 +51,8 @@
 import { ref, onMounted, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
-import { Bot } from 'lucide-vue-next'
+import { Bot, Sun, Moon } from 'lucide-vue-next'
+import { useTheme } from '@/composables/useTheme'
 import ManusLogoTextIcon from '@/components/icons/ManusLogoTextIcon.vue'
 import LoginForm from '@/components/login/LoginForm.vue'
 import RegisterForm from '@/components/login/RegisterForm.vue'
@@ -51,6 +60,7 @@ import ResetPasswordForm from '@/components/login/ResetPasswordForm.vue'
 import { useAuth } from '@/api'
 
 const { t } = useI18n()
+const { theme, toggleTheme } = useTheme()
 
 const router = useRouter()
 const { isAuthenticated } = useAuth()
