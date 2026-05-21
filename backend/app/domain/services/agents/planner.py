@@ -59,12 +59,9 @@ class PlannerAgent(BaseAgent):
         soon as the model starts responding — typically well under one second.
         """
         prompt = (
-            "Acknowledge the user's request with a warm, helpful response. "
-            "Explain what you understand from their request, what steps you plan to take, "
-            "and what the user can expect. Be specific and detailed — 3 to 6 sentences is ideal. "
-            "Use the same language as the user's message. "
-            "Do NOT start with 'I' — open naturally, e.g. 'Sure,', 'Tentu,', 'Baik,', 'Of course,', 'Siap,'. "
-            f"\n\nUser's request: {message.message}"
+            f"The user sent you this request: {message.message}\n\n"
+            "Respond naturally to acknowledge their request before you start working on it. "
+            "Use the same language the user used."
         )
         try:
             full_text = ""
