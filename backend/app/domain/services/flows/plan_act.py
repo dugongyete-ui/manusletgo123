@@ -160,10 +160,15 @@ class PlanActFlow(BaseFlow):
                     if isinstance(event, PlanEvent) and event.status == PlanStatus.CREATED:
                         self.plan = event.plan
 
-                        # Safety net: if planner returned 0 steps but message has
-                        # non-image file attachments, inject a default processing step
-                        # so the executor actually reads the files.
-                        if len(self.plan.steps) == 0 and message.attachments:
+                        # Safety net: if planner returned 0 steps but there are
+                        # raw sandbox attachments (files the server could NOT
+                        # pre-extract), inject a default step so the executor
+                        # still reads those files.
+                        # Do NOT inject when <file> tags are already in the
+                        # message — that means content is already available and
+                        # the planner correctly chose to answer directly.
+                        has_pre_extracted = "<file name=" in message.message
+                        if len(self.plan.steps) == 0 and message.attachments and not has_pre_extracted:
                             from app.domain.models.plan import Step as PlanStep
                             file_list = "\n".join(message.attachments)
                             self.plan.steps = [PlanStep(
@@ -177,7 +182,7 @@ class PlanActFlow(BaseFlow):
                             )]
                             logger.warning(
                                 f"Agent {self._agent_id}: planner returned 0 steps with "
-                                f"{len(message.attachments)} attachment(s) — injected default step"
+                                f"{len(message.attachments)} raw attachment(s) — injected default step"
                             )
 
                         logger.info(f"Agent {self._agent_id} created plan successfully with {len(self.plan.steps)} steps")

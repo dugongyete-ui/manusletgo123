@@ -67,40 +67,38 @@ Attachments (file paths in sandbox):
 {attachments}
 
 Note on attachments:
-- Image files (jpg, png, gif, webp) have been embedded directly in this message as vision content — you can already see them above. Do NOT use file_read on image files.
-- For plain text, code, markdown, CSV files: use file_read tool directly on the sandbox path.
-- For binary/Office files — NEVER ask the user to re-send. NEVER use python3 -c "..." inline — always use the file_write tool to write a script, then execute it:
+- FIRST — check the User Message above for <file name="...">...</file> tags. If they exist, that file's text content is ALREADY fully extracted and available right there in the message. Read it directly — do NOT write any extraction script, do NOT run any shell command for that file, do NOT reference the sandbox path for that file. Just analyze the text inside the <file> tags.
+- Image files (jpg, png, gif, webp) have been embedded directly in this message as vision content — analyze them directly. Do NOT use file_read on image files.
+- For plain text, code, markdown, CSV files listed in Attachments: use file_read tool directly on the sandbox path.
+- For binary/Office files in Attachments that do NOT have a matching <file> tag in the message — NEVER use python3 -c "..." inline. Always use file_write to write a script, then execute it:
 
-  STEP 1 — Use file_write tool to write /tmp/extract.py with the appropriate script:
+  STEP 1 — file_write to /tmp/extract.py with the appropriate script:
 
-    .pptx/.ppt script:
+    .pptx/.ppt:
       from pptx import Presentation
       prs = Presentation("ACTUAL_FILE_PATH")
       lines = [sh.text for sl in prs.slides for sh in sl.shapes if hasattr(sh, "text") and sh.text.strip()]
       open("/tmp/extracted_content.txt", "w").write("\n".join(lines))
       print("Done:", len(lines), "blocks")
 
-    .docx/.doc script:
+    .docx/.doc:
       from docx import Document
       doc = Document("ACTUAL_FILE_PATH")
       text = "\n".join(p.text for p in doc.paragraphs if p.text.strip())
       open("/tmp/extracted_content.txt", "w").write(text)
       print("Done")
 
-    .xlsx/.xls script:
+    .xlsx/.xls:
       import pandas as pd
       df = pd.read_excel("ACTUAL_FILE_PATH")
       open("/tmp/extracted_content.txt", "w").write(df.to_string())
       print("Done:", df.shape)
 
-    .pdf: use shell directly — `pdftotext ACTUAL_FILE_PATH /tmp/extracted_content.txt`
+    .pdf: `pdftotext ACTUAL_FILE_PATH /tmp/extracted_content.txt`
 
-  STEP 2 — Run the script: `python3 /tmp/extract.py`
-  STEP 3 — Verify: `ls -la /tmp/extracted_content.txt && head -20 /tmp/extracted_content.txt`
-  STEP 4 — Use file_read tool on /tmp/extracted_content.txt to read the content
-
-  Install if needed: `pip3 install python-pptx python-docx pdfplumber pandas openpyxl`
-- Uploaded files from user are in the sandbox at the paths listed under "Attachments" above.
+  STEP 2 — `python3 /tmp/extract.py`
+  STEP 3 — `ls -la /tmp/extracted_content.txt && head -20 /tmp/extracted_content.txt`
+  STEP 4 — file_read on /tmp/extracted_content.txt
 
 Working Language:
 {language}
