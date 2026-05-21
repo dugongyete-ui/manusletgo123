@@ -159,16 +159,37 @@ class PlanActFlow(BaseFlow):
                 async for event in self.planner.create_plan(message):
                     if isinstance(event, PlanEvent) and event.status == PlanStatus.CREATED:
                         self.plan = event.plan
-                        logger.info(f"Agent {self._agent_id} created plan successfully with {len(event.plan.steps)} steps")
+
+                        # Safety net: if planner returned 0 steps but message has
+                        # non-image file attachments, inject a default processing step
+                        # so the executor actually reads the files.
+                        if len(self.plan.steps) == 0 and message.attachments:
+                            from app.domain.models.plan import Step as PlanStep
+                            file_list = "\n".join(message.attachments)
+                            self.plan.steps = [PlanStep(
+                                id="1",
+                                description=(
+                                    f"Extract and analyze the content of the uploaded file(s):\n"
+                                    f"{file_list}\n"
+                                    f"Save extracted text to /tmp/extracted_content.txt, "
+                                    f"then read it and respond to the user's request."
+                                )
+                            )]
+                            logger.warning(
+                                f"Agent {self._agent_id}: planner returned 0 steps with "
+                                f"{len(message.attachments)} attachment(s) — injected default step"
+                            )
+
+                        logger.info(f"Agent {self._agent_id} created plan successfully with {len(self.plan.steps)} steps")
                         yield TitleEvent(title=event.plan.title)
-                        if len(event.plan.steps) == 0:
+                        if len(self.plan.steps) == 0:
                             # Direct chat: plan.message IS the full answer — show it
                             yield MessageEvent(role="assistant", message=event.plan.message)
                         # else: acknowledgment already served as the user-facing intro message
                     yield event
                 logger.info(f"Agent {self._agent_id} state changed from {AgentStatus.PLANNING} to {AgentStatus.EXECUTING}")
                 self.status = AgentStatus.EXECUTING
-                if len(event.plan.steps) == 0:
+                if len(self.plan.steps) == 0:
                     logger.info(f"Agent {self._agent_id} created plan successfully with no steps")
                     self.status = AgentStatus.COMPLETED
                     

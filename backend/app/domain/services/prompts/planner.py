@@ -6,11 +6,17 @@ Key decision rule:
 - If the user message requires using tools (file operations, shell commands, web browsing, code execution, research, data processing, etc.), create one or more steps.
 - If the user message can be answered purely from knowledge or conversation (no tools needed), return steps as an empty array and write your response directly in the "message" field. The response will be shown to the user immediately without any tool execution.
 
+MANDATORY RULE — File Attachments:
+- If the "Attachments" list is non-empty, the task ALWAYS requires tools. You MUST create at least one step.
+- NEVER return empty steps when there are file attachments — the files must be read or processed with tools.
+- Non-image files (.pptx, .pdf, .docx, .xlsx, .csv, etc.) MUST have a step that extracts their content.
+
 Workflow:
 1. Analyze the user's message and decide: does completing this require tools?
-2. Determine the working language based on the user's message.
-3. If tools are needed: generate a clear goal and break it into atomic steps.
-4. If no tools are needed: return empty steps and answer the user in the message field.
+2. If there are file attachments → tools are ALWAYS required, go to step 3.
+3. Determine the working language based on the user's message.
+4. If tools are needed: generate a clear goal and break it into atomic steps.
+5. If no tools are needed: return empty steps and answer the user in the message field.
 """
 
 CREATE_PLAN_PROMPT = """
@@ -79,18 +85,8 @@ Attachments (file paths in sandbox):
 
 Note on attachments:
 - Image files have been embedded as vision content in this message — analyze them directly.
-- For non-image files, the executor will use file tools to read them.
-
-CRITICAL RULE for multi-step plans involving binary files (.pptx, .pdf, .docx, .xlsx):
-- If Step N extracts content from a binary file, that step's description MUST explicitly say to save the output to `/tmp/extracted_content.txt`
-- If Step M (M > N) needs to read that extracted content, its description MUST say "read /tmp/extracted_content.txt"
-- NEVER create a step that references a file path unless a prior step explicitly creates that file
-- Example of CORRECT plan:
-  Step 1: "Extract content from /home/ubuntu/upload/file.pptx and save to /tmp/extracted_content.txt"
-  Step 2: "Read /tmp/extracted_content.txt and analyze the presentation content"
-- Example of WRONG plan:
-  Step 1: "Extract content from /home/ubuntu/upload/file.pptx"
-  Step 2: "Analyze the content from /home/ubuntu/extracted_content.txt"  ← WRONG: file never created
+- For non-image files (.pptx, .pdf, .docx, .xlsx, etc.), always create steps — the executor will extract their content using file tools.
+- When creating steps for binary file extraction, each step that extracts content should explicitly mention saving to /tmp/extracted_content.txt, so the next step can read from it.
 """
 
 UPDATE_PLAN_PROMPT = """
