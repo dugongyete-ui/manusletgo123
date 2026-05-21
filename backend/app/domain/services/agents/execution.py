@@ -45,7 +45,7 @@ class ExecutionAgent(BaseAgent):
         )
     
     async def execute_step(self, plan: Plan, step: Step, message: Message) -> AsyncGenerator[BaseEvent, None]:
-        message = EXECUTION_PROMPT.format(
+        prompt = EXECUTION_PROMPT.format(
             step=step.description, 
             message=message.message,
             attachments="\n".join(message.attachments),
@@ -53,7 +53,7 @@ class ExecutionAgent(BaseAgent):
         )
         step.status = ExecutionStatus.RUNNING
         yield StepEvent(status=StepStatus.STARTED, step=step)
-        async for event in self.execute(message):
+        async for event in self.execute(prompt):
             if isinstance(event, ErrorEvent):
                 step.status = ExecutionStatus.FAILED
                 step.error = event.error

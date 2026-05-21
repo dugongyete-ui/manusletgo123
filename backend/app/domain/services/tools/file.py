@@ -39,7 +39,7 @@ class FileToolkit(BaseToolkit):
             file=file,
             start_line=start_line,
             end_line=end_line,
-            sudo=sudo
+            sudo=bool(sudo),
         )
     
     @tool(parse_docstring=True)
@@ -73,10 +73,10 @@ class FileToolkit(BaseToolkit):
         return await self.sandbox.file_write(
             file=file, 
             content=final_content,
-            append=append,
-            leading_newline=False,  # Already handled in final_content
-            trailing_newline=False,  # Already handled in final_content
-            sudo=sudo
+            append=bool(append),
+            leading_newline=False,
+            trailing_newline=False,
+            sudo=bool(sudo),
         )
     
     @tool(parse_docstring=True)
@@ -100,7 +100,7 @@ class FileToolkit(BaseToolkit):
             file=file,
             old_str=old_str,
             new_str=new_str,
-            sudo=sudo
+            sudo=bool(sudo),
         )
     
     @tool(parse_docstring=True)
@@ -121,7 +121,7 @@ class FileToolkit(BaseToolkit):
         return await self.sandbox.file_search(
             file=file,
             regex=regex,
-            sudo=sudo
+            sudo=bool(sudo),
         )
     
     @tool(parse_docstring=True)

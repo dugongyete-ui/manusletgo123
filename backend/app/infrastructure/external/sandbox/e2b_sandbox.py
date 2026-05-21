@@ -3,10 +3,10 @@ import base64
 import os
 import io
 import logging
-from typing import Optional, BinaryIO
+from typing import Optional, BinaryIO, cast
 import httpx
 from e2b import Sandbox as E2BSandboxSDK
-from e2b.sandbox.commands.command_handle import CommandExitException
+from e2b.sandbox.commands.command_handle import CommandExitException, CommandResult
 from app.domain.external.sandbox import Sandbox, Browser
 from app.infrastructure.external.browser.browser_use_browser import BrowserUseBrowser
 from app.infrastructure.external.browser.playwright_browser import PlaywrightBrowser
@@ -123,11 +123,11 @@ class E2BSandbox(Sandbox):
         """
         # ── Primary path: E2B SDK commands.run() ─────────────────────────
         try:
-            result = await asyncio.to_thread(
+            result = cast(CommandResult, await asyncio.to_thread(
                 self.e2b_sandbox.commands.run,
                 cmd,
                 timeout=float(timeout),
-            )
+            ))
             output = (result.stdout or "") + (result.stderr or "")
             logger.debug("SDK admin cmd exit=%s output_len=%d", result.exit_code, len(output))
             return output

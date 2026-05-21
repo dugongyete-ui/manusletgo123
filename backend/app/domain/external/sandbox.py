@@ -91,7 +91,7 @@ class Sandbox(Protocol):
         append: bool = False, 
         leading_newline: bool = False, 
         trailing_newline: bool = False, 
-        sudo: bool = False
+        sudo: Optional[bool] = False
     ) -> ToolResult:
         """Write content to file
         
@@ -111,8 +111,8 @@ class Sandbox(Protocol):
     async def file_read(
         self, 
         file: str, 
-        start_line: int = None, 
-        end_line: int = None, 
+        start_line: Optional[int] = None, 
+        end_line: Optional[int] = None, 
         sudo: bool = False
     ) -> ToolResult:
         """Read file content
@@ -219,7 +219,7 @@ class Sandbox(Protocol):
         self,
         file_data: BinaryIO,
         path: str,
-        filename: str = None
+        filename: Optional[str] = None
     ) -> ToolResult:
         """Upload file to sandbox
         
@@ -279,7 +279,7 @@ class Sandbox(Protocol):
         ...
     
     @classmethod
-    async def create(cls) -> 'Sandbox':
+    async def create(cls) -> "Sandbox":
         """Create a new sandbox instance"""
         ...
     

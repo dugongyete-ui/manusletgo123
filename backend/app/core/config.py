@@ -118,7 +118,7 @@ class Settings(BaseSettings):
         env_file_encoding = "utf-8"
         extra = "ignore"
         
-    def validate(self):
+    def check_required_settings(self):
         """Validate configuration settings"""
         if not self.api_key:
             raise ValueError("API key is required")
@@ -132,5 +132,5 @@ def get_settings() -> Settings:
             os.environ["OPENAI_API_KEY"] = api_key_val
     settings = Settings()
     settings.extra_headers = _parse_extra_headers()
-    settings.validate()
+    settings.check_required_settings()
     return settings 

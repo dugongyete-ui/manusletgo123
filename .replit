@@ -23,6 +23,14 @@ args = "Start application"
 task = "workflow.run"
 args = "Backend API"
 
+[[workflows.workflow.tasks]]
+task = "workflow.run"
+args = "backend-imports"
+
+[[workflows.workflow.tasks]]
+task = "workflow.run"
+args = "backend-syntax"
+
 [[workflows.workflow]]
 name = "Start application"
 author = "agent"
@@ -47,6 +55,28 @@ waitForPort = 8000
 [workflows.workflow.metadata]
 outputType = "console"
 
+[[workflows.workflow]]
+name = "backend-imports"
+author = "agent"
+
+[[workflows.workflow.tasks]]
+task = "shell.exec"
+args = "cd backend && python3 -c \"import sys; sys.path.insert(0, '.'); [__import__(m) for m in ['app.core.config','app.domain.external.sandbox','app.infrastructure.external.sandbox.e2b_sandbox','app.domain.services.tools.shell','app.domain.services.tools.file','app.domain.services.agents.execution','app.domain.services.agents.planner','app.application.services.agent_service']]; print('ALL OK')\""
+
+[workflows.workflow.metadata]
+isValidation = true
+
+[[workflows.workflow]]
+name = "backend-syntax"
+author = "agent"
+
+[[workflows.workflow.tasks]]
+task = "shell.exec"
+args = "cd backend && python3 -c \"import ast, os; [ast.parse(open(os.path.join(r,f)).read()) for r,d,fs in os.walk('app') if '__pycache__' not in r for f in fs if f.endswith('.py')]; print('NO SYNTAX ERRORS')\""
+
+[workflows.workflow.metadata]
+isValidation = true
+
 [[ports]]
 localPort = 5000
 externalPort = 80
@@ -54,6 +84,7 @@ externalPort = 80
 [[ports]]
 localPort = 8000
 externalPort = 8000
+exposeLocalhost = true
 
 [deployment]
 deploymentTarget = "static"
