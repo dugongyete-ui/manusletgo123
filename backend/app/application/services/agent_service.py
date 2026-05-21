@@ -1,4 +1,5 @@
 from typing import AsyncGenerator, Optional, List
+import asyncio
 import logging
 from datetime import datetime
 from app.domain.models.session import Session, SessionSummary
@@ -57,7 +58,37 @@ class AgentService:
         session = Session(agent_id=agent.id, user_id=user_id)
         logger.info(f"Created new Session with ID: {session.id} for user: {user_id}")
         await self._session_repository.save(session)
+        # Warm up E2B sandbox in background — Chrome install happens now so the
+        # first chat message is not blocked by the 2-4 minute setup wait.
+        asyncio.get_event_loop().create_task(
+            self._warmup_sandbox(session.id),
+            name=f"sandbox-warmup-{session.id}",
+        )
         return session
+
+    async def _warmup_sandbox(self, session_id: str) -> None:
+        """
+        Create an E2B sandbox eagerly in the background right after session
+        creation.  By the time the user sends their first message the sandbox
+        (and Chrome installation) will already be ready, removing the wait.
+        """
+        try:
+            logger.info("[Warmup] Starting background sandbox creation for session %s", session_id)
+            session = await self._session_repository.find_by_id(session_id)
+            if not session:
+                logger.warning("[Warmup] Session %s not found — skipping", session_id)
+                return
+            if session.sandbox_id:
+                logger.info("[Warmup] Session %s already has sandbox %s — skipping", session_id, session.sandbox_id)
+                return
+            sandbox = await self._sandbox_cls.create()
+            session.sandbox_id = sandbox.id
+            await self._session_repository.save(session)
+            logger.info("[Warmup] Sandbox %s created for session %s — running ensure_sandbox…", sandbox.id, session_id)
+            await sandbox.ensure_sandbox()
+            logger.info("[Warmup] Sandbox %s fully ready for session %s", sandbox.id, session_id)
+        except Exception as e:
+            logger.warning("[Warmup] Background sandbox warmup failed for session %s: %s", session_id, e)
 
     async def _create_agent(self) -> Agent:
         logger.info("Creating new agent")

@@ -51,6 +51,11 @@ class E2BSandbox(Sandbox):
       installs Google Chrome in the background so the supervisor can start it.
     """
 
+    # Class-level lock registry: prevent concurrent ensure_sandbox() calls on
+    # the SAME sandbox ID (e.g. warmup task + _create_task race condition).
+    # Key = sandbox_id, Value = asyncio.Lock
+    _ensure_locks: dict[str, asyncio.Lock] = {}
+
     def __init__(self, e2b_sandbox: E2BSandboxSDK):
         self.e2b_sandbox = e2b_sandbox
         self.client = httpx.AsyncClient(timeout=600)
@@ -59,6 +64,9 @@ class E2BSandbox(Sandbox):
         self.base_url = f"https://{e2b_sandbox.get_host(8080)}"
         self._vnc_url = f"wss://{e2b_sandbox.get_host(5901)}"
         self._cdp_url = f"https://{e2b_sandbox.get_host(9222)}"
+        # Actual home dir of the sandbox user — detected dynamically on first
+        # connection (old template runs as 'user', new template as 'ubuntu').
+        self._sandbox_home: str = "/home/ubuntu"
         logger.info(
             "E2B Sandbox initialised: id=%s base_url=%s vnc=%s cdp=%s",
             self._id, self.base_url, self._vnc_url, self._cdp_url,
@@ -67,6 +75,43 @@ class E2BSandbox(Sandbox):
     # ------------------------------------------------------------------
     # Internal helpers
     # ------------------------------------------------------------------
+
+    def _translate_path(self, path: str) -> str:
+        """
+        Translate /root/ and /home/ubuntu/ prefixes to the actual sandbox home.
+
+        Old E2B templates run as user 'user' (home=/home/user).
+        New templates run as 'ubuntu' (home=/home/ubuntu).
+        The AI system-prompt always uses /home/ubuntu/ — map those paths to
+        wherever the real home is so file writes actually land somewhere writable.
+        """
+        if path == "/root" or path.startswith("/root/"):
+            return self._sandbox_home + path[len("/root"):]
+        if path == "/home/ubuntu" or path.startswith("/home/ubuntu/"):
+            if self._sandbox_home != "/home/ubuntu":
+                return self._sandbox_home + path[len("/home/ubuntu"):]
+        return path
+
+    async def _detect_sandbox_home(self) -> None:
+        """
+        Detect the sandbox user's actual home directory and update _sandbox_home.
+        Called once after the sandbox HTTP API is up.
+        """
+        try:
+            out = await self._run_admin_cmd("echo HOME_IS=$HOME && whoami", timeout=10)
+            for line in (out or "").splitlines():
+                if line.startswith("HOME_IS="):
+                    home = line.split("HOME_IS=", 1)[1].strip()
+                    if home and home.startswith("/"):
+                        if home != self._sandbox_home:
+                            logger.info(
+                                "Sandbox home detected: %s (was default %s) — updating path translator",
+                                home, self._sandbox_home,
+                            )
+                        self._sandbox_home = home
+                        return
+        except Exception as e:
+            logger.warning("Failed to detect sandbox home dir: %s", e)
 
     async def _run_admin_cmd(self, cmd: str, timeout: int = 30) -> str:
         """
@@ -105,7 +150,7 @@ class E2BSandbox(Sandbox):
         # ── Fallback: legacy custom shell HTTP API ────────────────────────
         session = f"{_SYS_BASE_SESSION}_{os.urandom(4).hex()}"
         try:
-            await self._exec_raw(session, _UBUNTU_HOME, cmd)
+            await self._exec_raw(session, self._sandbox_home, cmd)
             await self._wait_raw(session, timeout)
             await asyncio.sleep(2.0)
             view = await self._view_raw(session)
@@ -162,6 +207,7 @@ class E2BSandbox(Sandbox):
         # ── Step 0: sanity-check the shell exec pipeline ─────────────────
         diag = await self._run_admin_cmd(
             "echo DIAG_START; "
+            "echo HOME_IS=$HOME; "
             "whoami; "
             # Check for any usable Chrome/Chromium binary
             "ls /usr/bin/google-chrome /usr/bin/playwright-chromium "
@@ -183,6 +229,16 @@ class E2BSandbox(Sandbox):
             )
             return
 
+        # Update sandbox home dir from diagnostic (handles old 'user' vs new 'ubuntu' template)
+        for line in diag.splitlines():
+            if line.startswith("HOME_IS="):
+                home = line.split("HOME_IS=", 1)[1].strip()
+                if home and home.startswith("/"):
+                    if home != self._sandbox_home:
+                        logger.info("Chrome fix: updating sandbox home %s → %s", self._sandbox_home, home)
+                    self._sandbox_home = home
+                break
+
         # A *real* usable Chrome binary exists if:
         # (a) google-chrome is present (apt install, new Dockerfile)
         # (b) playwright-chromium symlink exists (new Dockerfile layer 5)
@@ -193,76 +249,128 @@ class E2BSandbox(Sandbox):
             or ("PW_PREINSTALLED=" in diag and "PW_PREINSTALLED=\n" not in diag
                 and "PW_PREINSTALLED= " not in diag)
         )
+        pw_pkg_missing = "PW_PKG_MISSING" in diag
 
         if has_real_chrome:
             logger.info("Usable Chrome/Chromium binary found — skipping download, just restarting…")
         else:
-            # ── Step 1: Playwright (most reliable — no snap/apt issues) ───
-            # In the new Dockerfile, playwright is pre-installed as a system
-            # package.  If the pip package is missing we install it first,
-            # then download/link the Chromium binary.
-            logger.info("Attempting Playwright Chromium install…")
-            pw_out = await self._run_admin_cmd(
-                # Install playwright Python package if not already present.
-                # Try sudo --break-system-packages first (Ubuntu 22.04+), then
-                # --user as final fallback.
-                "python3 -c 'import playwright' 2>/dev/null || "
-                "  (sudo pip3 install --quiet --break-system-packages playwright 2>&1 "
-                "   || pip3 install --quiet --break-system-packages playwright 2>&1 "
-                "   || pip3 install --quiet --user playwright 2>&1) | tail -3; "
-                # Install Chromium browser binary to /opt/playwright-browsers
-                # (PLAYWRIGHT_BROWSERS_PATH set in environment so it lands in the
-                # right place for both root and ubuntu user).
-                "export PLAYWRIGHT_BROWSERS_PATH=/opt/playwright-browsers; "
-                "sudo mkdir -p /opt/playwright-browsers; "
-                "(sudo python3 -m playwright install chromium 2>&1 "
-                " || python3 -m playwright install chromium 2>&1) | tail -5; "
-                # Create symlink so supervisord chrome command can find the binary
-                "CHROME=$(find /opt/playwright-browsers /root/.cache /home "
-                "         -name 'chrome' -type f 2>/dev/null | head -1); "
-                "echo FOUND=$CHROME; "
-                "[ -n \"$CHROME\" ] "
-                "  && sudo chmod +x \"$CHROME\" "
-                "  && sudo ln -sf \"$CHROME\" /usr/bin/playwright-chromium "
-                "  && sudo ln -sf \"$CHROME\" /usr/bin/chromium-browser "
-                "  && sudo chmod -R a+rX /opt/playwright-browsers "
-                "  && echo PLAYWRIGHT_OK",
-                timeout=360,
-            )
-            logger.info("Playwright install: %s", pw_out[:500] if pw_out else "(empty)")
+            # ── Strategy: choose fastest path based on what's available ──
+            #
+            # If Playwright Python package is NOT installed, skip the slow
+            # pip-install path and go straight to Google Chrome (no Python
+            # deps needed).  Run Google Chrome .deb download and apt-repo
+            # setup in PARALLEL so whichever finishes first wins.
+            #
+            # If Playwright IS installed, try it first (already has the
+            # bundled Chromium) then fall back to Chrome.
 
-            if "PLAYWRIGHT_OK" not in (pw_out or ""):
-                # ── Step 2: Google Chrome apt-repo ──────────────────────
-                logger.warning("Playwright failed — trying Google Chrome apt-repo…")
-                apt_out = await self._run_admin_cmd(
+            if pw_pkg_missing:
+                # ── Fast path: install Google Chrome directly (no Python) ─
+                logger.info(
+                    "Playwright not pre-installed — running Google Chrome "
+                    "direct .deb download and apt-repo in parallel…"
+                )
+                # DPkg::Lock::Timeout=90 makes apt/dpkg wait up to 90s for the
+                # lock instead of failing immediately — needed when both parallel
+                # install paths try dpkg at the same time.
+                deb_cmd = (
+                    "curl -fSL --connect-timeout 30 "
+                    "https://dl.google.com/linux/direct/google-chrome-stable_current_amd64.deb "
+                    "-o /tmp/chrome.deb 2>&1 && "
+                    "sudo dpkg --force-confnew -i /tmp/chrome.deb 2>&1 | tail -5; "
+                    "sudo apt-get -o DPkg::Lock::Timeout=90 install -f -y 2>&1 | tail -3 || true; "
+                    "[ -f /usr/bin/google-chrome ] "
+                    "  && sudo ln -sf /usr/bin/google-chrome /usr/bin/chromium-browser "
+                    "  && echo CHROME_DEB_OK || echo CHROME_DEB_FAIL"
+                )
+                apt_cmd = (
                     "curl -fSL --connect-timeout 15 https://dl.google.com/linux/linux_signing_key.pub "
                     "| sudo gpg --batch --yes --dearmor "
                     "-o /usr/share/keyrings/google-chrome.gpg 2>&1 && "
                     "echo 'deb [arch=amd64 signed-by=/usr/share/keyrings/google-chrome.gpg] "
                     "http://dl.google.com/linux/chrome/deb/ stable main' "
                     "| sudo tee /etc/apt/sources.list.d/google-chrome.list > /dev/null && "
-                    "sudo apt-get update -qq 2>&1 | tail -3 && "
-                    "sudo apt-get install -y --no-install-recommends google-chrome-stable 2>&1 | tail -5 && "
+                    "sudo apt-get -o DPkg::Lock::Timeout=90 update -qq 2>&1 | tail -3 && "
+                    "sudo apt-get -o DPkg::Lock::Timeout=90 install -y --no-install-recommends "
+                    "google-chrome-stable 2>&1 | tail -5 && "
                     "sudo ln -sf /usr/bin/google-chrome /usr/bin/chromium-browser && "
-                    "echo CHROME_APT_OK",
-                    timeout=240,
+                    "echo CHROME_APT_OK"
                 )
-                logger.info("apt-repo install: %s", apt_out[:500] if apt_out else "(empty)")
+                deb_result, apt_result = await asyncio.gather(
+                    self._run_admin_cmd(deb_cmd, timeout=240),
+                    self._run_admin_cmd(apt_cmd, timeout=240),
+                    return_exceptions=True,
+                )
+                deb_out = deb_result if isinstance(deb_result, str) else ""
+                apt_out = apt_result if isinstance(apt_result, str) else ""
+                logger.info("deb install: %s", deb_out[:300] if deb_out else "(empty/error)")
+                logger.info("apt-repo install: %s", apt_out[:300] if apt_out else "(empty/error)")
 
-                if "CHROME_APT_OK" not in (apt_out or ""):
-                    # ── Step 3: Direct .deb download ────────────────────
-                    logger.warning("apt-repo failed — trying direct .deb download…")
-                    deb_out = await self._run_admin_cmd(
-                        "curl -fSL --connect-timeout 30 "
-                        "https://dl.google.com/linux/direct/google-chrome-stable_current_amd64.deb "
-                        "-o /tmp/chrome.deb && "
-                        "sudo dpkg -i /tmp/chrome.deb 2>&1 | tail -5; "
-                        "sudo apt-get install -f -y 2>&1 | tail -3 || true; "
-                        "sudo ln -sf /usr/bin/google-chrome /usr/bin/chromium-browser || true; "
-                        "echo CHROME_DEB_DONE",
+                chrome_ok = "CHROME_DEB_OK" in deb_out or "CHROME_APT_OK" in apt_out
+                if not chrome_ok:
+                    # ── Final fallback: Playwright ────────────────────────
+                    logger.warning("Chrome direct installs failed — falling back to Playwright…")
+                    pw_out = await self._run_admin_cmd(
+                        "python3 -c 'import playwright' 2>/dev/null || "
+                        "  (sudo pip3 install --quiet --break-system-packages playwright 2>&1 "
+                        "   || pip3 install --quiet --user playwright 2>&1) | tail -3; "
+                        "export PLAYWRIGHT_BROWSERS_PATH=/opt/playwright-browsers; "
+                        "sudo mkdir -p /opt/playwright-browsers; "
+                        "(sudo python3 -m playwright install chromium 2>&1 "
+                        " || python3 -m playwright install chromium 2>&1) | tail -5; "
+                        "CHROME=$(find /opt/playwright-browsers /home -name 'chrome' -type f 2>/dev/null | head -1); "
+                        "echo FOUND=$CHROME; "
+                        "[ -n \"$CHROME\" ] "
+                        "  && sudo chmod +x \"$CHROME\" "
+                        "  && sudo ln -sf \"$CHROME\" /usr/bin/playwright-chromium "
+                        "  && sudo ln -sf \"$CHROME\" /usr/bin/chromium-browser "
+                        "  && sudo chmod -R a+rX /opt/playwright-browsers "
+                        "  && echo PLAYWRIGHT_OK",
+                        timeout=360,
+                    )
+                    logger.info("Playwright fallback: %s", pw_out[:400] if pw_out else "(empty)")
+            else:
+                # ── Playwright is installed — use it (bundled Chromium) ──
+                logger.info("Attempting Playwright Chromium install…")
+                pw_out = await self._run_admin_cmd(
+                    "python3 -c 'import playwright' 2>/dev/null || "
+                    "  (sudo pip3 install --quiet --break-system-packages playwright 2>&1 "
+                    "   || pip3 install --quiet --break-system-packages playwright 2>&1 "
+                    "   || pip3 install --quiet --user playwright 2>&1) | tail -3; "
+                    "export PLAYWRIGHT_BROWSERS_PATH=/opt/playwright-browsers; "
+                    "sudo mkdir -p /opt/playwright-browsers; "
+                    "(sudo python3 -m playwright install chromium 2>&1 "
+                    " || python3 -m playwright install chromium 2>&1) | tail -5; "
+                    "CHROME=$(find /opt/playwright-browsers /root/.cache /home "
+                    "         -name 'chrome' -type f 2>/dev/null | head -1); "
+                    "echo FOUND=$CHROME; "
+                    "[ -n \"$CHROME\" ] "
+                    "  && sudo chmod +x \"$CHROME\" "
+                    "  && sudo ln -sf \"$CHROME\" /usr/bin/playwright-chromium "
+                    "  && sudo ln -sf \"$CHROME\" /usr/bin/chromium-browser "
+                    "  && sudo chmod -R a+rX /opt/playwright-browsers "
+                    "  && echo PLAYWRIGHT_OK",
+                    timeout=360,
+                )
+                logger.info("Playwright install: %s", pw_out[:500] if pw_out else "(empty)")
+
+                if "PLAYWRIGHT_OK" not in (pw_out or ""):
+                    # ── Step 2: Google Chrome apt-repo ──────────────────────
+                    logger.warning("Playwright failed — trying Google Chrome apt-repo…")
+                    apt_out = await self._run_admin_cmd(
+                        "curl -fSL --connect-timeout 15 https://dl.google.com/linux/linux_signing_key.pub "
+                        "| sudo gpg --batch --yes --dearmor "
+                        "-o /usr/share/keyrings/google-chrome.gpg 2>&1 && "
+                        "echo 'deb [arch=amd64 signed-by=/usr/share/keyrings/google-chrome.gpg] "
+                        "http://dl.google.com/linux/chrome/deb/ stable main' "
+                        "| sudo tee /etc/apt/sources.list.d/google-chrome.list > /dev/null && "
+                        "sudo apt-get update -qq 2>&1 | tail -3 && "
+                        "sudo apt-get install -y --no-install-recommends google-chrome-stable 2>&1 | tail -5 && "
+                        "sudo ln -sf /usr/bin/google-chrome /usr/bin/chromium-browser && "
+                        "echo CHROME_APT_OK",
                         timeout=240,
                     )
-                    logger.info("deb install: %s", deb_out[:500] if deb_out else "(empty)")
+                    logger.info("apt-repo install: %s", apt_out[:500] if apt_out else "(empty)")
 
         # ── Patch supervisord.conf in-place ──────────────────────────────
         # Ensure --user-data-dir, --remote-allow-origins=*, and singleton
@@ -489,15 +597,28 @@ class E2BSandbox(Sandbox):
 
         Also handles Chrome stuck in BACKOFF: if Chrome has been in BACKOFF
         for too many consecutive attempts, we trigger the same fix routine.
+
+        A class-level per-sandbox lock prevents concurrent calls (e.g. from
+        the background warmup task and _create_task) from racing to install
+        Chrome simultaneously (dpkg lock conflicts).
         """
+        lock = E2BSandbox._ensure_locks.setdefault(self._id, asyncio.Lock())
+        async with lock:
+            await self._ensure_sandbox_inner()
+
+    async def _ensure_sandbox_inner(self) -> None:
+        """Actual implementation of ensure_sandbox — called under per-sandbox lock."""
         # Phase 1 — wait for core services (app, xvfb, cdpproxy, x11vnc, websockify)
         # These are fast and typically ready within 30 s.
         max_retries = 40
         retry_interval = 2
         chrome_fix_attempted = False
         chrome_backoff_count = 0
-        # Trigger fix after Chrome has been stuck in BACKOFF for this many polls
-        chrome_backoff_threshold = 5
+        home_detected = False
+        # Trigger Chrome fix on the FIRST backoff — on old templates the
+        # chromium-browser snap stub always fails instantly, so waiting for
+        # multiple BACKOFFs only wastes time.
+        chrome_backoff_threshold = 1
 
         for attempt in range(max_retries):
             try:
@@ -507,6 +628,8 @@ class E2BSandbox(Sandbox):
                 response.raise_for_status()
                 tool_result = ToolResult(**response.json())
                 if not tool_result.success:
+                    if attempt % 5 == 0:
+                        logger.info("ensure_sandbox: waiting for API (attempt %d/%d)…", attempt + 1, max_retries)
                     await asyncio.sleep(retry_interval)
                     continue
 
@@ -514,6 +637,11 @@ class E2BSandbox(Sandbox):
                 if not services:
                     await asyncio.sleep(retry_interval)
                     continue
+
+                # Detect home dir once after the API is responsive
+                if not home_detected:
+                    home_detected = True
+                    await self._detect_sandbox_home()
 
                 chrome_state = "UNKNOWN"
                 non_running_non_chrome: list[str] = []
@@ -527,10 +655,11 @@ class E2BSandbox(Sandbox):
                         non_running_non_chrome.append(f"{name}({state})")
 
                 if non_running_non_chrome:
-                    logger.info(
-                        "Waiting for services (attempt %d/%d): %s",
-                        attempt + 1, max_retries, non_running_non_chrome,
-                    )
+                    if attempt % 5 == 0 or attempt < 3:
+                        logger.info(
+                            "Waiting for services (attempt %d/%d): %s",
+                            attempt + 1, max_retries, non_running_non_chrome,
+                        )
                     await asyncio.sleep(retry_interval)
                     continue
 
@@ -562,7 +691,8 @@ class E2BSandbox(Sandbox):
                 else:
                     chrome_backoff_count = 0
 
-                # Trigger fix when Chrome is FATAL or stuck in BACKOFF too long
+                # Trigger fix when Chrome is FATAL or on first BACKOFF (snap stub
+                # always fails on the very first attempt — no need to wait longer)
                 should_fix = (
                     chrome_state == "FATAL"
                     or (chrome_state == "BACKOFF" and chrome_backoff_count >= chrome_backoff_threshold)
@@ -580,19 +710,21 @@ class E2BSandbox(Sandbox):
                     await self._wait_for_chrome_running(max_wait=90)
                     return
 
-                # Chrome is in a transient state (STARTING, BACKOFF, etc.)
-                logger.info(
-                    "Core services RUNNING, waiting for Chrome (%s) attempt %d/%d "
-                    "(backoff_count=%d)",
-                    chrome_state, attempt + 1, max_retries, chrome_backoff_count,
-                )
+                # Chrome is in a transient state (STARTING, etc.)
+                if attempt % 5 == 0 or attempt < 3:
+                    logger.info(
+                        "Core services RUNNING, waiting for Chrome (%s) attempt %d/%d "
+                        "(backoff_count=%d)",
+                        chrome_state, attempt + 1, max_retries, chrome_backoff_count,
+                    )
                 await asyncio.sleep(retry_interval)
 
             except Exception as exc:
-                logger.warning(
-                    "ensure_sandbox attempt %d/%d failed: %s",
-                    attempt + 1, max_retries, exc,
-                )
+                if attempt % 5 == 0 or attempt < 3:
+                    logger.warning(
+                        "ensure_sandbox attempt %d/%d failed: %s",
+                        attempt + 1, max_retries, exc,
+                    )
                 await asyncio.sleep(retry_interval)
 
         logger.error(
@@ -636,7 +768,7 @@ class E2BSandbox(Sandbox):
         Execute a shell command.  exec_dir paths under /root are remapped to
         /home/ubuntu because the E2B template runs as user 'ubuntu'.
         """
-        translated = _translate_exec_dir(exec_dir)
+        translated = self._translate_path(exec_dir)
         if translated != exec_dir:
             logger.debug("exec_dir remapped: %s -> %s", exec_dir, translated)
         return await self._exec_raw(session_id, translated, command)
@@ -695,7 +827,7 @@ class E2BSandbox(Sandbox):
         trailing_newline: bool = False,
         sudo: bool = False,
     ) -> ToolResult:
-        file = _translate_exec_dir(file)
+        file = self._translate_path(file)
         response = await self.client.post(
             f"{self.base_url}/api/v1/file/write",
             json={
@@ -716,7 +848,7 @@ class E2BSandbox(Sandbox):
         end_line: Optional[int] = None,
         sudo: bool = False,
     ) -> ToolResult:
-        file = _translate_exec_dir(file)
+        file = self._translate_path(file)
         response = await self.client.post(
             f"{self.base_url}/api/v1/file/read",
             json={
@@ -730,7 +862,7 @@ class E2BSandbox(Sandbox):
 
     async def file_exists(self, path: str) -> ToolResult:
         """Check whether a path exists via shell."""
-        path = _translate_exec_dir(path)
+        path = self._translate_path(path)
         output = await self._run_admin_cmd(
             f"test -e '{path}' && echo __exists__ || echo __absent__"
         )
@@ -743,7 +875,7 @@ class E2BSandbox(Sandbox):
 
     async def file_delete(self, path: str) -> ToolResult:
         """Delete a file or directory via shell."""
-        path = _translate_exec_dir(path)
+        path = self._translate_path(path)
         await self._run_admin_cmd(f"rm -rf '{path}'")
         return ToolResult(
             success=True,
@@ -753,7 +885,7 @@ class E2BSandbox(Sandbox):
 
     async def file_list(self, path: str) -> ToolResult:
         """List directory contents via shell."""
-        path = _translate_exec_dir(path)
+        path = self._translate_path(path)
         output = await self._run_admin_cmd(f"ls -la '{path}'")
         return ToolResult(
             success=True,
@@ -768,7 +900,7 @@ class E2BSandbox(Sandbox):
         new_str: str,
         sudo: bool = False,
     ) -> ToolResult:
-        file = _translate_exec_dir(file)
+        file = self._translate_path(file)
         response = await self.client.post(
             f"{self.base_url}/api/v1/file/replace",
             json={"file": file, "old_str": old_str, "new_str": new_str, "sudo": sudo},
@@ -781,7 +913,7 @@ class E2BSandbox(Sandbox):
         regex: str,
         sudo: bool = False,
     ) -> ToolResult:
-        file = _translate_exec_dir(file)
+        file = self._translate_path(file)
         response = await self.client.post(
             f"{self.base_url}/api/v1/file/search",
             json={"file": file, "regex": regex, "sudo": sudo},
@@ -789,7 +921,7 @@ class E2BSandbox(Sandbox):
         return ToolResult(**response.json())
 
     async def file_find(self, path: str, glob_pattern: str) -> ToolResult:
-        path = _translate_exec_dir(path)
+        path = self._translate_path(path)
         response = await self.client.post(
             f"{self.base_url}/api/v1/file/find",
             json={"path": path, "glob": glob_pattern},
@@ -802,7 +934,7 @@ class E2BSandbox(Sandbox):
         path: str,
         filename: Optional[str] = None,
     ) -> ToolResult:
-        path = _translate_exec_dir(path)
+        path = self._translate_path(path)
         files = {"file": (filename or "upload", file_data, "application/octet-stream")}
         data = {"path": path}
         response = await self.client.post(
@@ -813,7 +945,7 @@ class E2BSandbox(Sandbox):
         return ToolResult(**response.json())
 
     async def file_download(self, path: str) -> BinaryIO:
-        path = _translate_exec_dir(path)
+        path = self._translate_path(path)
         response = await self.client.get(
             f"{self.base_url}/api/v1/file/download",
             params={"path": path},
