@@ -84,6 +84,12 @@ LOG_LEVEL = "INFO"
 MCP_CONFIG_PATH = "/home/runner/workspace/mcp.json"
 SUMMARY_MODEL_NAME = "command-r7b-12-2024"
 E2B_TEMPLATE_ID = "1gsznx7zzecjwwwghuzw"
+MONGODB_URI = "mongodb+srv://galerizaki_db_user:wTkfzrqewY5qCxYG@cluster0.vmiek8b.mongodb.net/manus?retryWrites=true&w=majority"
+REDIS_PASSWORD = "dA82OZIdJg62zWqsPJ9sDNvgtpCKbAAs"
+E2B_API_KEY = "e2b_f7aa18578ebf00b0816c4bc4446389f8bf52ad5f"
+JWT_SECRET_KEY = "ai-manus-jwt-secret-key-2025-super-secure"
+TAVILY_API_KEY = "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"
+VISION_API_KEY = "qy61Seb03AqrqZ6vIm7Ro7GMeTXjsGkn4V1FRhIc"
 
 [postMerge]
 path = "scripts/post-merge.sh"
