@@ -1,10 +1,11 @@
 from typing import Optional, AsyncGenerator, List
 import asyncio
+import base64
 import logging
 import os
 import debugpy
 from pydantic import TypeAdapter
-from app.domain.models.message import Message
+from app.domain.models.message import Message, VisionImage, is_vision_capable
 from app.domain.models.event import (
     BaseEvent,
     ErrorEvent,
@@ -215,10 +216,31 @@ class AgentTaskRunner(TaskRunner):
                 if isinstance(event, MessageEvent):
                     message = event.message or ""
                     await self._sync_message_attachments_to_sandbox(event)
-                    
+
                 logger.info(f"Agent {self._agent_id} received new message: {message[:50]}...")
 
-                message_obj = Message(message=message, attachments=[attachment.file_path for attachment in event.attachments])
+                attachments_list = event.attachments if isinstance(event, MessageEvent) and event.attachments else []
+
+                vision_images = []
+                for attachment in attachments_list:
+                    if attachment.file_id and is_vision_capable(attachment.content_type or ""):
+                        try:
+                            file_data, _ = await self._file_storage.download_file(attachment.file_id, self._user_id)
+                            raw = file_data.read()
+                            b64 = base64.b64encode(raw).decode()
+                            vision_images.append(VisionImage(
+                                content_type=attachment.content_type,
+                                data=b64,
+                            ))
+                            logger.debug(f"Collected vision image for {attachment.filename} ({len(raw)} bytes)")
+                        except Exception as ve:
+                            logger.warning(f"Could not collect vision data for {attachment.filename}: {ve}")
+
+                message_obj = Message(
+                    message=message,
+                    attachments=[a.file_path for a in attachments_list if a.file_path],
+                    vision_images=vision_images,
+                )
                 
                 async for event in self._run_flow(message_obj):
                     await self._put_and_add_event(task, event)

@@ -46,14 +46,25 @@ class ExecutionAgent(BaseAgent):
     
     async def execute_step(self, plan: Plan, step: Step, message: Message) -> AsyncGenerator[BaseEvent, None]:
         prompt = EXECUTION_PROMPT.format(
-            step=step.description, 
+            step=step.description,
             message=message.message,
             attachments="\n".join(message.attachments),
             language=plan.language
         )
+
+        if message.vision_images:
+            content = [{"type": "text", "text": prompt}]
+            for img in message.vision_images:
+                content.append({
+                    "type": "image_url",
+                    "image_url": {"url": f"data:{img.content_type};base64,{img.data}"}
+                })
+        else:
+            content = prompt
+
         step.status = ExecutionStatus.RUNNING
         yield StepEvent(status=StepStatus.STARTED, step=step)
-        async for event in self.execute(prompt):
+        async for event in self.execute(content):
             if isinstance(event, ErrorEvent):
                 step.status = ExecutionStatus.FAILED
                 step.error = event.error

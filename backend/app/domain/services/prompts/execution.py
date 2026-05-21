@@ -63,8 +63,12 @@ Output:
 User Message:
 {message}
 
-Attachments:
+Attachments (file paths in sandbox):
 {attachments}
+
+Note on attachments:
+- Image files (jpg, png, gif, webp) have been embedded directly in this message as vision content — you can already see them above. Do NOT use file_read on image files.
+- For non-image files (documents, code, data), use file_read or shell_exec to read their content from the sandbox path.
 
 Working Language:
 {language}

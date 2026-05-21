@@ -2,7 +2,7 @@ import logging
 import asyncio
 import uuid
 from abc import ABC
-from typing import List, Dict, Any, Optional, AsyncGenerator
+from typing import List, Dict, Any, Optional, AsyncGenerator, Union
 from app.domain.models.message import Message
 from app.domain.services.tools.base import BaseToolkit
 from app.domain.models.event import (
@@ -102,7 +102,7 @@ class BaseAgent(ABC):
 
         return ToolMessage(tool_call_id=tool_call["id"], name=tool.name, content=last_error)
     
-    async def execute(self, request: str, format: Optional[str] = None) -> AsyncGenerator[BaseEvent, None]:
+    async def execute(self, request: Union[str, list], format: Optional[str] = None) -> AsyncGenerator[BaseEvent, None]:
         format = format or self.format
         message = await self.ask(request, format)
         for _ in range(self.max_iterations):
@@ -204,7 +204,7 @@ class BaseAgent(ABC):
         await self._add_to_memory([message])
         return message
 
-    async def ask(self, request: str, format: Optional[str] = None) -> AIMessage:
+    async def ask(self, request: Union[str, list], format: Optional[str] = None) -> AIMessage:
         return await self.ask_with_messages([
             HumanMessage(content=request)
         ], format)

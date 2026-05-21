@@ -51,11 +51,22 @@ class PlannerAgent(BaseAgent):
 
 
     async def create_plan(self, message: Message) -> AsyncGenerator[BaseEvent, None]:
-        message = CREATE_PLAN_PROMPT.format(
+        prompt = CREATE_PLAN_PROMPT.format(
             message=message.message,
             attachments="\n".join(message.attachments)
         )
-        async for event in self.execute(message):
+
+        if message.vision_images:
+            content = [{"type": "text", "text": prompt}]
+            for img in message.vision_images:
+                content.append({
+                    "type": "image_url",
+                    "image_url": {"url": f"data:{img.content_type};base64,{img.data}"}
+                })
+        else:
+            content = prompt
+
+        async for event in self.execute(content):
             if isinstance(event, MessageEvent):
                 logger.info(event.message)
                 parsed_response = await self._parse_json(event.message)

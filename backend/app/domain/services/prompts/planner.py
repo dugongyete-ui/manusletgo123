@@ -68,8 +68,12 @@ Output:
 User message:
 {message}
 
-Attachments:
+Attachments (file paths in sandbox):
 {attachments}
+
+Note on attachments:
+- Image files have been embedded as vision content in this message — analyze them directly.
+- For non-image files, the executor will use file tools to read them.
 """
 
 UPDATE_PLAN_PROMPT = """
