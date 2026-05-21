@@ -113,12 +113,22 @@ class WaitEvent(BaseEvent):
     """Wait event"""
     type: Literal["wait"] = "wait"
 
+class MessageChunkEvent(BaseEvent):
+    """Streaming message chunk — emitted token-by-token for the acknowledgment.
+    The frontend accumulates these into a single message bubble.
+    When done=True the stream for this message is complete."""
+    type: Literal["message_chunk"] = "message_chunk"
+    role: Literal["user", "assistant"] = "assistant"
+    content: str = ""
+    done: bool = False
+
 AgentEvent = Union[
     ErrorEvent,
     PlanEvent, 
     ToolEvent,
     StepEvent,
     MessageEvent,
+    MessageChunkEvent,
     DoneEvent,
     TitleEvent,
     WaitEvent,

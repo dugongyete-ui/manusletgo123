@@ -21,6 +21,8 @@ from app.domain.models.event import (
     ToolStatus,
     AgentEvent,
     McpToolContent,
+    PlanEvent,
+    PlanStatus,
 )
 from app.domain.services.flows.plan_act import PlanActFlow
 from app.domain.external.sandbox import Sandbox
@@ -208,14 +210,24 @@ class AgentTaskRunner(TaskRunner):
         """Process agent's message queue and run the agent's flow"""
         try:
             logger.info(f"Agent {self._agent_id} message processing task started")
-            await self._sandbox.ensure_sandbox()
-            await self._mcp_tool.initialized(await self._mcp_repository.get_mcp_config())
+
+            # Kick off sandbox + MCP init concurrently in the background.
+            # The planner only needs the LLM, so we can stream the initial
+            # acknowledgment response to the user in < 1 s while the sandbox
+            # warms up, exactly like Manus does.
+            mcp_config = await self._mcp_repository.get_mcp_config()
+            sandbox_task = asyncio.create_task(self._sandbox.ensure_sandbox())
+            mcp_task = asyncio.create_task(self._mcp_tool.initialized(mcp_config))
+
             while not await task.input_stream.is_empty():
                 event = await self._pop_event(task)
                 message = ""
                 if isinstance(event, MessageEvent):
                     message = event.message or ""
-                    await self._sync_message_attachments_to_sandbox(event)
+                    # File attachments require an active sandbox; wait only when needed
+                    if event.attachments:
+                        await sandbox_task
+                        await self._sync_message_attachments_to_sandbox(event)
 
                 logger.info(f"Agent {self._agent_id} received new message: {message[:50]}...")
 
@@ -242,7 +254,7 @@ class AgentTaskRunner(TaskRunner):
                     vision_images=vision_images,
                 )
                 
-                async for event in self._run_flow(message_obj):
+                async for event in self._run_flow(message_obj, sandbox_task, mcp_task):
                     await self._put_and_add_event(task, event)
                     if isinstance(event, TitleEvent):
                         await self._session_repository.update_title(self._session_id, event.title)
@@ -274,12 +286,20 @@ class AgentTaskRunner(TaskRunner):
             await self._put_and_add_event(task, ErrorEvent(error=f"Task error: {str(e)}"))
             await self._session_repository.update_status(self._session_id, SessionStatus.COMPLETED)
     
-    async def _run_flow(self, message: Message) -> AsyncGenerator[BaseEvent, None]:
-        """Process a single message through the agent's flow and yield events"""
+    async def _run_flow(self, message: Message, sandbox_task=None, mcp_task=None) -> AsyncGenerator[BaseEvent, None]:
+        """Process a single message through the agent's flow and yield events.
+
+        sandbox_task / mcp_task are asyncio.Task objects that were started in
+        the background so the planner can stream its acknowledgment immediately.
+        We await them right after the plan is yielded — before the executor
+        ever touches the sandbox — guaranteeing the sandbox is ready for tools.
+        """
         if not message.message:
             logger.warning(f"Agent {self._agent_id} received empty message")
             yield ErrorEvent(error="No message")
             return
+
+        sandbox_ready = False
 
         async for event in self._flow.run(message):
             if isinstance(event, ToolEvent):
@@ -287,7 +307,20 @@ class AgentTaskRunner(TaskRunner):
                 await self._handle_tool_event(event)
             elif isinstance(event, MessageEvent):
                 await self._sync_message_attachments_to_storage(event)
+
             yield event
+
+            # After the plan has been streamed to the client, ensure the
+            # sandbox and MCP tools are fully ready before the executor starts.
+            # This is the exact point Manus uses: plan is visible, execution
+            # hasn't started yet.
+            if not sandbox_ready and isinstance(event, PlanEvent) and event.status == PlanStatus.CREATED:
+                sandbox_ready = True
+                tasks_to_await = [t for t in (sandbox_task, mcp_task) if t and not t.done()]
+                if tasks_to_await:
+                    logger.info(f"Agent {self._agent_id} awaiting background sandbox/MCP init before execution")
+                    await asyncio.gather(*tasks_to_await, return_exceptions=True)
+                    logger.info(f"Agent {self._agent_id} sandbox/MCP ready — starting execution")
 
         logger.info(f"Agent {self._agent_id} completed processing one message")
 

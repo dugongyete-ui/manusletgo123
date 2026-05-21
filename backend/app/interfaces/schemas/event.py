@@ -10,6 +10,7 @@ from app.domain.models.event import (
     ErrorEvent,
     PlanEvent,
     MessageEvent,
+    MessageChunkEvent,
     TitleEvent,
     ToolEvent,
     StepEvent,
@@ -74,6 +75,26 @@ class MessageSSEEvent(BaseSSEEvent):
                 role=event.role,
                 content=event.message,
                 attachments=[await FileInfoResponse.from_file_info(attachment) for attachment in event.attachments] if event.attachments else None
+            )
+        )
+
+class MessageChunkEventData(BaseEventData):
+    role: Literal["user", "assistant"]
+    content: str
+    done: bool
+
+class MessageChunkSSEEvent(BaseSSEEvent):
+    event: Literal["message_chunk"] = "message_chunk"
+    data: MessageChunkEventData
+
+    @classmethod
+    def from_event(cls, event: MessageChunkEvent) -> Self:
+        return cls(
+            data=MessageChunkEventData(
+                **BaseEventData.base_event_data(event),
+                role=event.role,
+                content=event.content,
+                done=event.done,
             )
         )
 
@@ -176,6 +197,7 @@ AgentSSEEvent = Union[
     CommonEventData,
     PlanSSEEvent,
     MessageSSEEvent,
+    MessageChunkSSEEvent,
     TitleSSEEvent,
     ToolSSEEvent,
     StepSSEEvent,

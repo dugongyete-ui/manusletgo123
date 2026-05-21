@@ -17,8 +17,10 @@ from app.domain.models.event import (
     PlanStatus,
     ErrorEvent,
     MessageEvent,
+    MessageChunkEvent,
     DoneEvent,
 )
+from langchain.messages import HumanMessage as LCHumanMessage
 from app.domain.external.sandbox import Sandbox
 from app.domain.services.tools.base import BaseToolkit
 from app.domain.services.tools.file import FileToolkit
@@ -49,6 +51,31 @@ class PlannerAgent(BaseAgent):
             tools=tools,
         )
 
+
+    async def acknowledge(self, message: Message) -> AsyncGenerator[BaseEvent, None]:
+        """Stream a short acknowledgment in < 1 s before full JSON planning begins.
+
+        Uses LangChain astream() so the very first token reaches the client as
+        soon as the model starts responding — typically well under one second.
+        """
+        prompt = (
+            "In 1-2 sentences, acknowledge the user's request and briefly say what you will do. "
+            "Be specific to their actual request. "
+            "Use the same language as the user's message. "
+            "Do NOT start with 'I' — open naturally, e.g. 'Sure,', 'Tentu,', 'Baik,', 'Of course,'. "
+            f"\n\nUser's request: {message.message}"
+        )
+        try:
+            full_text = ""
+            async for chunk in self._model.astream([LCHumanMessage(content=prompt)]):
+                text = chunk.content if isinstance(chunk.content, str) else ""
+                if text:
+                    full_text += text
+                    yield MessageChunkEvent(content=text, done=False)
+            if full_text:
+                yield MessageChunkEvent(content="", done=True)
+        except Exception as e:
+            logger.warning(f"Acknowledge streaming failed, skipping: {e}")
 
     async def create_plan(self, message: Message) -> AsyncGenerator[BaseEvent, None]:
         prompt = CREATE_PLAN_PROMPT.format(

@@ -113,6 +113,12 @@ class PlanActFlow(BaseFlow):
                 logger.info(f"Agent {self._agent_id} state changed from {AgentStatus.IDLE} to {AgentStatus.PLANNING}")
                 self.status = AgentStatus.PLANNING
             elif self.status == AgentStatus.PLANNING:
+                # Stream an immediate acknowledgment to the user (<1s) while the
+                # full JSON plan is being generated in the second LLM call below.
+                logger.info(f"Agent {self._agent_id} streaming acknowledgment")
+                async for ack_event in self.planner.acknowledge(message):
+                    yield ack_event
+
                 # Create plan
                 logger.info(f"Agent {self._agent_id} started creating plan")
                 async for event in self.planner.create_plan(message):
@@ -120,7 +126,10 @@ class PlanActFlow(BaseFlow):
                         self.plan = event.plan
                         logger.info(f"Agent {self._agent_id} created plan successfully with {len(event.plan.steps)} steps")
                         yield TitleEvent(title=event.plan.title)
-                        yield MessageEvent(role="assistant", message=event.plan.message)
+                        if len(event.plan.steps) == 0:
+                            # Direct chat: plan.message IS the full answer — show it
+                            yield MessageEvent(role="assistant", message=event.plan.message)
+                        # else: acknowledgment already served as the user-facing intro message
                     yield event
                 logger.info(f"Agent {self._agent_id} state changed from {AgentStatus.PLANNING} to {AgentStatus.EXECUTING}")
                 self.status = AgentStatus.EXECUTING
