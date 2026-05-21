@@ -88,8 +88,7 @@ class E2BSandbox(Sandbox):
         if path == "/root" or path.startswith("/root/"):
             return self._sandbox_home + path[len("/root"):]
         if path == "/home/ubuntu" or path.startswith("/home/ubuntu/"):
-            if self._sandbox_home != "/home/ubuntu":
-                return self._sandbox_home + path[len("/home/ubuntu"):]
+            return self._sandbox_home + path[len("/home/ubuntu"):]
         return path
 
     async def _detect_sandbox_home(self) -> None:
@@ -1014,4 +1013,6 @@ class E2BSandbox(Sandbox):
             sandbox_id=id,
             api_key=api_key,
         )
-        return cls(e2b_sandbox)
+        instance = cls(e2b_sandbox)
+        await instance._detect_sandbox_home()
+        return instance
