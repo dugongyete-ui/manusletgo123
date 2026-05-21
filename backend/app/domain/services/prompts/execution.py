@@ -68,7 +68,14 @@ Attachments (file paths in sandbox):
 
 Note on attachments:
 - Image files (jpg, png, gif, webp) have been embedded directly in this message as vision content — you can already see them above. Do NOT use file_read on image files.
-- For non-image files (documents, code, data), use file_read or shell_exec to read their content from the sandbox path.
+- For plain text, code, markdown, CSV files: use file_read tool directly on the sandbox path.
+- For binary/Office files — NEVER ask the user to re-send; extract their content with shell commands:
+  - .pptx/.ppt  → `python3 -c "from pptx import Presentation; prs=Presentation('/path/to/file.pptx'); [print(sh.text) for sl in prs.slides for sh in sl.shapes if hasattr(sh,'text')]"`
+  - .docx/.doc  → `python3 -c "from docx import Document; doc=Document('/path/to/file.docx'); print('\n'.join(p.text for p in doc.paragraphs))"`
+  - .pdf        → `pdftotext /path/to/file.pdf - 2>/dev/null` (or `python3 -c "import pdfplumber; ..."`)
+  - .xlsx/.xls  → `python3 -c "import pandas as pd; print(pd.read_excel('/path/to/file.xlsx').to_string())"`
+  - Install missing packages first: `pip3 install python-pptx python-docx pdfplumber pandas openpyxl`
+- Uploaded files from user are in the sandbox at the paths listed under "Attachments" above.
 
 Working Language:
 {language}
