@@ -116,8 +116,7 @@ class E2BSandbox(Sandbox):
             "sudo dpkg -i /tmp/chrome.deb 2>/dev/null; "
             "sudo apt-get install -f -y 2>/dev/null || true; "
             "sudo ln -sf /usr/bin/google-chrome /usr/bin/chromium-browser 2>/dev/null || true; "
-            "sudo supervisorctl -c /tmp/supervisord.conf start chrome 2>/dev/null || "
-            "sudo supervisorctl -c /etc/supervisor/conf.d/supervisord.conf start chrome 2>/dev/null || true"
+            "sudo supervisorctl -c /app/supervisord.conf start chrome 2>/dev/null || true"
         )
         output = await self._run_admin_cmd(install_script, timeout=120)
         logger.info("Chrome install output: %s", output[:300] if output else "(empty)")
@@ -444,9 +443,10 @@ class E2BSandbox(Sandbox):
         After creation, starts Chrome installation in the background so it
         is available by the time the agent first needs the browser tool.
         """
-        api_key = os.getenv("E2B_API_KEY")
-        template_id = os.getenv("E2B_TEMPLATE_ID", "1gsznx7zzecjwwwghuzw")
-        ttl_minutes = int(os.getenv("SANDBOX_TTL_MINUTES", "30"))
+        settings = get_settings()
+        api_key = settings.e2b_api_key
+        template_id = settings.e2b_template_id
+        ttl_minutes = settings.sandbox_ttl_minutes or 30
         timeout_seconds = ttl_minutes * 60
 
         logger.info(
@@ -464,7 +464,8 @@ class E2BSandbox(Sandbox):
     @classmethod
     async def get(cls, id: str) -> "E2BSandbox":
         """Reconnect to an existing E2B sandbox by ID."""
-        api_key = os.getenv("E2B_API_KEY")
+        settings = get_settings()
+        api_key = settings.e2b_api_key
         logger.info("Connecting to existing E2B sandbox: %s", id)
         e2b_sandbox = await asyncio.to_thread(
             E2BSandboxSDK.connect,

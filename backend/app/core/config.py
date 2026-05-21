@@ -48,6 +48,8 @@ class Settings(BaseSettings):
     # Sandbox configuration (E2B)
     sandbox_address: str | None = None
     sandbox_ttl_minutes: int | None = 30
+    e2b_api_key: str | None = None
+    e2b_template_id: str = "1gsznx7zzecjwwwghuzw"
 
     # Browser engine configuration
     browser_engine: str = "browser_use"  # "playwright" or "browser_use"
