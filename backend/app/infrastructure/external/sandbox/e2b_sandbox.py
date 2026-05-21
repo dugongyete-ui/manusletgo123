@@ -504,6 +504,21 @@ class E2BSandbox(Sandbox):
 
                 # All non-chrome services are RUNNING
                 if chrome_state == "RUNNING":
+                    # Check whether the CDP proxy is running (new template) or
+                    # socat is still in place (old template).  If the proxy is
+                    # absent or socat is present we deploy/switch it now so
+                    # that browser_use can connect via the external HTTPS tunnel.
+                    svc_names = {s.get("name", "") for s in services}
+                    needs_proxy = (
+                        "cdpproxy" not in svc_names
+                        or "socat" in svc_names
+                    )
+                    if needs_proxy:
+                        logger.info(
+                            "Chrome RUNNING but CDP proxy not yet deployed "
+                            "(services=%s) — deploying now…", svc_names
+                        )
+                        await self._deploy_cdp_proxy()
                     logger.info(
                         "All %d services RUNNING — sandbox fully ready", len(services)
                     )
