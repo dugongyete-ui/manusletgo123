@@ -155,9 +155,16 @@ class E2BSandbox(Sandbox):
             )
             return
 
-        # Check if a working Chrome binary already exists
-        if "google-chrome" in diag or "chromium" in diag.lower():
-            logger.info("Chrome binary already present — skipping download, just restarting…")
+        # Check if a *real* Google Chrome binary exists (not the Ubuntu snap stub).
+        # The snap stub at /usr/bin/chromium-browser is just a shell script that calls
+        # snap, which doesn't work in containers.  We only skip install if the genuine
+        # google-chrome binary is present.
+        has_real_chrome = (
+            "google-chrome" in diag
+            and "No such file" not in diag
+        )
+        if has_real_chrome:
+            logger.info("Google Chrome already installed — skipping download, just restarting…")
         else:
             # ── Step 1: Playwright (most reliable — no snap/apt issues) ───
             logger.info("Attempting Playwright Chromium install…")
@@ -205,10 +212,11 @@ class E2BSandbox(Sandbox):
                     logger.info("deb install: %s", deb_out[:500] if deb_out else "(empty)")
 
         # ── Restart supervisord chrome service ────────────────────────────
+        # Chrome is in [group:services] so supervisorctl needs "services:chrome"
         restart_out = await self._run_admin_cmd(
-            "sudo supervisorctl -c /app/supervisord.conf start chrome 2>&1; "
+            "sudo supervisorctl -c /app/supervisord.conf start services:chrome 2>&1; "
             "sleep 2; "
-            "sudo supervisorctl -c /app/supervisord.conf status chrome 2>&1",
+            "sudo supervisorctl -c /app/supervisord.conf status services:chrome 2>&1",
             timeout=30,
         )
         logger.info("Chrome supervisor restart: %s", restart_out[:300] if restart_out else "(empty)")
@@ -252,12 +260,18 @@ class E2BSandbox(Sandbox):
         If Chrome is FATAL (snap stub issue on Ubuntu 22.04) we install
         Google Chrome, then wait for it to start.  We do not return until
         Chrome is RUNNING so that the browser tool works immediately.
+
+        Also handles Chrome stuck in BACKOFF: if Chrome has been in BACKOFF
+        for too many consecutive attempts, we trigger the same fix routine.
         """
         # Phase 1 — wait for core services (app, xvfb, socat, x11vnc, websockify)
         # These are fast and typically ready within 30 s.
-        max_retries = 30
+        max_retries = 40
         retry_interval = 2
         chrome_fix_attempted = False
+        chrome_backoff_count = 0
+        # Trigger fix after Chrome has been stuck in BACKOFF for this many polls
+        chrome_backoff_threshold = 5
 
         for attempt in range(max_retries):
             try:
@@ -301,12 +315,25 @@ class E2BSandbox(Sandbox):
                     )
                     return
 
-                if chrome_state == "FATAL" and not chrome_fix_attempted:
+                # Track consecutive BACKOFF polls
+                if chrome_state == "BACKOFF":
+                    chrome_backoff_count += 1
+                else:
+                    chrome_backoff_count = 0
+
+                # Trigger fix when Chrome is FATAL or stuck in BACKOFF too long
+                should_fix = (
+                    chrome_state == "FATAL"
+                    or (chrome_state == "BACKOFF" and chrome_backoff_count >= chrome_backoff_threshold)
+                )
+
+                if should_fix and not chrome_fix_attempted:
                     chrome_fix_attempted = True
                     logger.info(
-                        "Core services RUNNING but Chrome is FATAL — installing Google Chrome (blocking)…"
+                        "Core services RUNNING but Chrome is %s (backoff_count=%d) — "
+                        "installing/fixing Google Chrome (blocking)…",
+                        chrome_state, chrome_backoff_count,
                     )
-                    # Await the fix so Chrome is ready before we return
                     await self._fix_chrome()
                     # Now wait for Chrome to actually reach RUNNING state
                     await self._wait_for_chrome_running(max_wait=90)
@@ -314,8 +341,9 @@ class E2BSandbox(Sandbox):
 
                 # Chrome is in a transient state (STARTING, BACKOFF, etc.)
                 logger.info(
-                    "Core services RUNNING, waiting for Chrome (%s) attempt %d/%d",
-                    chrome_state, attempt + 1, max_retries,
+                    "Core services RUNNING, waiting for Chrome (%s) attempt %d/%d "
+                    "(backoff_count=%d)",
+                    chrome_state, attempt + 1, max_retries, chrome_backoff_count,
                 )
                 await asyncio.sleep(retry_interval)
 

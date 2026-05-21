@@ -4,6 +4,7 @@ from typing import AsyncGenerator, List, Optional
 from sse_starlette.event import ServerSentEvent
 from datetime import datetime
 import asyncio
+import ssl
 import websockets
 import logging
 from app.interfaces.dependencies import get_file_service
@@ -227,7 +228,13 @@ async def vnc_websocket(
         logger.info(f"Connecting to VNC WebSocket at {sandbox_ws_url}")
     
         # Connect to sandbox WebSocket (binary subprotocol required by noVNC/websockify)
-        async with websockets.connect(sandbox_ws_url, subprotocols=["binary"]) as sandbox_ws:
+        # Use ssl=True for wss:// E2B tunnel connections; create permissive context as fallback
+        ssl_context = None
+        if sandbox_ws_url.startswith("wss://"):
+            ssl_context = ssl.create_default_context()
+            ssl_context.check_hostname = False
+            ssl_context.verify_mode = ssl.CERT_NONE
+        async with websockets.connect(sandbox_ws_url, subprotocols=["binary"], ssl=ssl_context) as sandbox_ws:
             logger.info(f"Connected to VNC WebSocket at {sandbox_ws_url}")
             # Create two tasks to forward data bidirectionally
             async def forward_to_sandbox():
