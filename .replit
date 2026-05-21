@@ -91,3 +91,7 @@ LOG_LEVEL = "INFO"
 MCP_CONFIG_PATH = "/home/runner/workspace/mcp.json"
 SUMMARY_MODEL_NAME = "command-r7b-12-2024"
 E2B_TEMPLATE_ID = "1gsznx7zzecjwwwghuzw"
+
+[postMerge]
+path = "scripts/post-merge.sh"
+timeoutMs = 120000
