@@ -118,7 +118,9 @@ class Settings(BaseSettings):
 def get_settings() -> Settings:
     """Get application settings"""
     if not os.environ.get("OPENAI_API_KEY"):
-        os.environ["OPENAI_API_KEY"] = os.getenv("API_KEY")
+        api_key_val = os.getenv("API_KEY")
+        if api_key_val:
+            os.environ["OPENAI_API_KEY"] = api_key_val
     settings = Settings()
     settings.extra_headers = _parse_extra_headers()
     settings.validate()

@@ -54,6 +54,7 @@ externalPort = 80
 [[ports]]
 localPort = 8000
 externalPort = 8000
+exposeLocalhost = true
 
 [deployment]
 deploymentTarget = "static"
@@ -90,6 +91,11 @@ E2B_API_KEY = "e2b_f7aa18578ebf00b0816c4bc4446389f8bf52ad5f"
 JWT_SECRET_KEY = "ai-manus-jwt-secret-key-2025-super-secure"
 TAVILY_API_KEY = "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"
 VISION_API_KEY = "qy61Seb03AqrqZ6vIm7Ro7GMeTXjsGkn4V1FRhIc"
+API_KEY = "KByecvWziraB5PBeG0nRYXcyMM7t2LDnzt65VapA"
+SANDBOX_TTL_MINUTES = "30"
+BROWSER_ENGINE = "browser_use"
+PASSWORD_SALT = "manus-salt-2025"
+SHOW_GITHUB_BUTTON = "false"
 
 [postMerge]
 path = "scripts/post-merge.sh"

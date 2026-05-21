@@ -226,8 +226,8 @@ async def vnc_websocket(
 
         logger.info(f"Connecting to VNC WebSocket at {sandbox_ws_url}")
     
-        # Connect to sandbox WebSocket
-        async with websockets.connect(sandbox_ws_url) as sandbox_ws:
+        # Connect to sandbox WebSocket (binary subprotocol required by noVNC/websockify)
+        async with websockets.connect(sandbox_ws_url, subprotocols=["binary"]) as sandbox_ws:
             logger.info(f"Connected to VNC WebSocket at {sandbox_ws_url}")
             # Create two tasks to forward data bidirectionally
             async def forward_to_sandbox():
