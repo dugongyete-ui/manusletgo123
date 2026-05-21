@@ -83,7 +83,42 @@ class PlanActFlow(BaseFlow):
         )
         logger.debug(f"Created execution agent for Agent {self._agent_id}")
 
+    async def _preprocess_images(self, message: Message) -> Message:
+        """Analyze vision images once using the dedicated vision model (if configured).
+
+        Injects a rich text description into the message and clears raw image data so
+        that downstream agents (planner + executor) only ever receive plain text — even
+        when the main model does not support multimodal input.
+        """
+        if not message.vision_images:
+            return message
+        if not self.planner._vision_model:
+            return message  # agents will fall back individually
+
+        logger.info("Pre-processing vision images with dedicated vision model")
+        try:
+            description = await self.planner._analyze_images(
+                message.vision_images, message.message
+            )
+        except Exception as e:
+            logger.warning(f"Vision pre-processing failed, passing raw images to agents: {e}")
+            return message
+
+        if not description:
+            return message
+
+        from copy import deepcopy
+        enriched = deepcopy(message)
+        enriched.message = message.message + f"\n\n[Image Analysis]\n{description}"
+        enriched.vision_images = []
+        logger.info("Vision pre-processing complete — image descriptions injected into message")
+        return enriched
+
     async def run(self, message: Message) -> AsyncGenerator[BaseEvent, None]:
+
+        # Analyze vision images once up-front so every downstream agent
+        # receives a consistent, text-enriched message without raw image data.
+        message = await self._preprocess_images(message)
 
         # TODO: move to task runner
         session = await self._session_repository.find_by_id(self._session_id)

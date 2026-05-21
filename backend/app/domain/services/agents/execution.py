@@ -1,7 +1,7 @@
 from typing import AsyncGenerator, Optional, List
 from app.domain.models.plan import Plan, Step, ExecutionStatus
 from app.domain.models.file import FileInfo
-from app.domain.models.message import Message
+from app.domain.models.message import Message, VisionImage
 from app.domain.services.agents.base import BaseAgent
 from app.domain.repositories.agent_repository import AgentRepository
 from app.domain.services.prompts.system import SYSTEM_PROMPT
@@ -43,27 +43,17 @@ class ExecutionAgent(BaseAgent):
             agent_repository=agent_repository,
             tools=tools
         )
-    
-    async def execute_step(self, plan: Plan, step: Step, message: Message) -> AsyncGenerator[BaseEvent, None]:
-        prompt = EXECUTION_PROMPT.format(
-            step=step.description,
-            message=message.message,
-            attachments="\n".join(message.attachments),
-            language=plan.language
-        )
 
-        if message.vision_images:
-            content = [{"type": "text", "text": prompt}]
-            for img in message.vision_images:
-                content.append({
-                    "type": "image_url",
-                    "image_url": {"url": f"data:{img.content_type};base64,{img.data}"}
-                })
-        else:
-            content = prompt
+    def _build_vision_content(self, text: str, images: List[VisionImage]) -> list:
+        content = [{"type": "text", "text": text}]
+        for img in images:
+            content.append({
+                "type": "image_url",
+                "image_url": {"url": f"data:{img.content_type};base64,{img.data}"}
+            })
+        return content
 
-        step.status = ExecutionStatus.RUNNING
-        yield StepEvent(status=StepStatus.STARTED, step=step)
+    async def _handle_execution_events(self, step: Step, content) -> AsyncGenerator[BaseEvent, None]:
         async for event in self.execute(content):
             if isinstance(event, ErrorEvent):
                 step.status = ExecutionStatus.FAILED
@@ -79,7 +69,7 @@ class ExecutionAgent(BaseAgent):
                 yield StepEvent(status=StepStatus.COMPLETED, step=step)
                 if step.result:
                     yield MessageEvent(message=step.result)
-                continue
+                return
             elif isinstance(event, ToolEvent):
                 if event.function_name == "message_ask_user":
                     if event.status == ToolStatus.CALLING:
@@ -89,6 +79,46 @@ class ExecutionAgent(BaseAgent):
                         return
                     continue
             yield event
+
+    async def execute_step(self, plan: Plan, step: Step, message: Message) -> AsyncGenerator[BaseEvent, None]:
+        prompt = EXECUTION_PROMPT.format(
+            step=step.description,
+            message=message.message,
+            attachments="\n".join(message.attachments),
+            language=plan.language
+        )
+
+        vision_content = None
+        if message.vision_images:
+            vision_content = self._build_vision_content(prompt, message.vision_images)
+
+        step.status = ExecutionStatus.RUNNING
+        yield StepEvent(status=StepStatus.STARTED, step=step)
+
+        content = vision_content if vision_content else prompt
+        retry_text_only = False
+
+        try:
+            async for event in self._handle_execution_events(step, content):
+                yield event
+        except Exception as e:
+            error_str = str(e).lower()
+            if vision_content and (
+                "image" in error_str or "vision" in error_str
+                or "multimodal" in error_str or "unsupported" in error_str
+                or "invalid request" in error_str or "not supported" in error_str
+                or "400" in error_str
+            ):
+                logger.warning(f"Model rejected image content in execute_step, retrying text-only: {e}")
+                retry_text_only = True
+            else:
+                raise
+
+        if retry_text_only:
+            logger.info("Retrying execute_step without vision images")
+            async for event in self._handle_execution_events(step, prompt):
+                yield event
+
         step.status = ExecutionStatus.COMPLETED
 
     async def summarize(self) -> AsyncGenerator[BaseEvent, None]:
