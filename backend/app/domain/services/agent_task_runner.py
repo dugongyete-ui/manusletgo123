@@ -6,6 +6,7 @@ import os
 import debugpy
 from pydantic import TypeAdapter
 from app.domain.models.message import Message, VisionImage, is_vision_capable
+from app.domain.services import file_extractor
 from app.domain.models.event import (
     BaseEvent,
     ErrorEvent,
@@ -240,19 +241,57 @@ class AgentTaskRunner(TaskRunner):
                 attachments_list = event.attachments if isinstance(event, MessageEvent) and event.attachments else []
 
                 vision_images = []
+                extracted_file_blocks: list[str] = []
+
                 for attachment in attachments_list:
-                    if attachment.file_id and is_vision_capable(attachment.content_type or ""):
+                    if not attachment.file_id:
+                        continue
+                    ct = attachment.content_type or ""
+                    fname = attachment.filename or ""
+
+                    if is_vision_capable(ct):
+                        # Image → encode as vision data for the multimodal model
                         try:
                             file_data, _ = await self._file_storage.download_file(attachment.file_id, self._user_id)
                             raw = file_data.read()
                             b64 = base64.b64encode(raw).decode()
                             vision_images.append(VisionImage(
-                                content_type=attachment.content_type,
+                                content_type=ct,
                                 data=b64,
                             ))
-                            logger.debug(f"Collected vision image for {attachment.filename} ({len(raw)} bytes)")
+                            logger.debug(f"Collected vision image for {fname} ({len(raw)} bytes)")
                         except Exception as ve:
-                            logger.warning(f"Could not collect vision data for {attachment.filename}: {ve}")
+                            logger.warning(f"Could not collect vision data for {fname}: {ve}")
+
+                    elif file_extractor.is_extractable(fname, ct):
+                        # Document / spreadsheet / text → extract server-side and inject as text
+                        try:
+                            file_data, _ = await self._file_storage.download_file(attachment.file_id, self._user_id)
+                            raw = file_data.read()
+                            extracted = file_extractor.extract_text(raw, fname, ct)
+                            if extracted.strip():
+                                extracted_file_blocks.append(
+                                    f"<file name=\"{fname}\">\n{extracted}\n</file>"
+                                )
+                                logger.info(
+                                    f"Server-extracted {fname} ({len(raw)} bytes → {len(extracted)} chars)"
+                                )
+                        except Exception as fe:
+                            logger.warning(f"Server extraction failed for {fname}: {fe}")
+
+                # Prepend extracted file content to the message so the AI sees it immediately
+                if extracted_file_blocks:
+                    files_block = "\n\n".join(extracted_file_blocks)
+                    message = (
+                        f"The following file(s) have been pre-extracted for you. "
+                        f"You can analyze them directly without running any shell commands.\n\n"
+                        f"{files_block}\n\n"
+                        f"---\n"
+                        f"User request: {message}"
+                    )
+                    logger.info(
+                        f"Injected {len(extracted_file_blocks)} extracted file(s) into message"
+                    )
 
                 message_obj = Message(
                     message=message,

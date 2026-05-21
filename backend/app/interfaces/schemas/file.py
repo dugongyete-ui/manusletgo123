@@ -4,6 +4,15 @@ from datetime import datetime
 from app.domain.models.file import FileInfo
 
 
+class FileExtractResponse(BaseModel):
+    """Response containing extracted text from a file"""
+    file_id: str
+    filename: str
+    content_type: Optional[str]
+    extracted_text: str
+    char_count: int
+
+
 class FileViewRequest(BaseModel):
     """File view request schema"""
     file: str

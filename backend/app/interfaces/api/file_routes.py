@@ -7,8 +7,9 @@ from app.application.errors.exceptions import NotFoundError
 from app.interfaces.dependencies import get_file_service, get_current_user, get_optional_current_user, verify_signature
 from app.domain.models.user import User
 from app.interfaces.schemas.base import APIResponse
-from app.interfaces.schemas.file import FileInfoResponse
+from app.interfaces.schemas.file import FileInfoResponse, FileExtractResponse
 from app.interfaces.schemas.resource import AccessTokenRequest, SignedUrlResponse
+from app.domain.services import file_extractor
 
 logger = logging.getLogger(__name__)
 
@@ -92,6 +93,51 @@ async def download_file(
         media_type=file_info.content_type or 'application/octet-stream',
         headers=headers
     )
+
+@router.post("/{file_id}/extract", response_model=APIResponse[FileExtractResponse])
+async def extract_file_text(
+    file_id: str,
+    file_service: FileService = Depends(get_file_service),
+    current_user: User = Depends(get_current_user),
+) -> APIResponse[FileExtractResponse]:
+    """Extract text content from an uploaded file (PDF, PPTX, DOCX, XLSX, CSV, TXT…).
+
+    The extraction runs entirely on the backend server — no sandbox or AI shell
+    commands are needed.  The resulting text can be fed directly into an AI prompt.
+    """
+    file_info = await file_service.get_file_info(file_id, current_user.id)
+    if not file_info:
+        raise NotFoundError("File not found")
+
+    if not file_extractor.is_extractable(file_info.filename, file_info.content_type):
+        raise NotFoundError(
+            f"File type not supported for text extraction: {file_info.content_type}"
+        )
+
+    try:
+        file_data, _ = await file_service.download_file(file_id, current_user.id)
+        raw = file_data.read()
+    except Exception as e:
+        logger.error(f"Could not download file {file_id} for extraction: {e}")
+        raise NotFoundError("File not found")
+
+    try:
+        extracted = file_extractor.extract_text(raw, file_info.filename, file_info.content_type)
+    except Exception as e:
+        logger.error(f"Text extraction failed for {file_id}: {e}")
+        from fastapi import HTTPException
+        raise HTTPException(status_code=422, detail=f"Extraction failed: {str(e)}")
+
+    return APIResponse.success(
+        FileExtractResponse(
+            file_id=file_id,
+            filename=file_info.filename,
+            content_type=file_info.content_type,
+            extracted_text=extracted,
+            char_count=len(extracted),
+        )
+    )
+
 
 @router.delete("/{file_id}", response_model=APIResponse[None])
 async def delete_file(
