@@ -133,7 +133,8 @@ class AgentDomainService:
                     task = await self._create_task(session)
                     if not task:
                         raise RuntimeError("Failed to create task")
-                
+
+                assert task is not None, "task must not be None after creation guard"
                 await self._session_repository.update_latest_message(session_id, message, timestamp or datetime.now())
 
                 message_event = MessageEvent(

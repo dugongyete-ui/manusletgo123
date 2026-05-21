@@ -245,6 +245,9 @@ async def vnc_websocket(
                 try:
                     while True:
                         data = await sandbox_ws.recv()
+                        # websockify may send str or bytes; noVNC needs bytes
+                        if isinstance(data, str):
+                            data = data.encode("latin-1")
                         await websocket.send_bytes(data)
                 except websockets.exceptions.ConnectionClosed:
                     logger.info("VNC -> Web connection closed")

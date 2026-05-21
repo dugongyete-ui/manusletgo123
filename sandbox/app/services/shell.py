@@ -151,7 +151,11 @@ class ShellService:
                 logger.debug(f"Waiting for process completion in session: {session_id}")
                 wait_result = await self.wait_for_process(session_id, seconds=5)
                 if wait_result.returncode is not None:
-                    # Process has completed, get the output
+                    # Process has completed, get the output.
+                    # IMPORTANT: yield to the event loop so the I/O selector can
+                    # feed any remaining pipe data into the StreamReader buffer,
+                    # and the output-reader task can drain it into shell["output"].
+                    await asyncio.sleep(0.1)
                     logger.debug(f"Process completed with code: {wait_result.returncode}")
                     view_result = await self.view_shell(session_id)
                     

@@ -4,12 +4,26 @@ ENV DEBIAN_FRONTEND=noninteractive
 ENV HOSTNAME=sandbox
 ENV PATH="/usr/local/bin:$PATH"
 
+# Base system packages (omit chromium-browser snap stub)
 RUN apt-get update && apt-get install -y \
-    sudo bc curl wget gnupg software-properties-common \
+    sudo bc curl wget gnupg ca-certificates software-properties-common \
     xvfb x11vnc xterm socat supervisor \
     python3.10 python3.10-venv python3.10-dev python3-pip \
-    nodejs chromium-browser \
+    nodejs \
     fonts-noto-cjk fonts-noto-color-emoji \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install Google Chrome Stable via the official Google apt repository.
+# Ubuntu 22.04 ships chromium-browser as a snap stub that fails in
+# Docker/e2b containers; installing from Google's repo gives a real binary.
+RUN curl -fsSL https://dl.google.com/linux/linux_signing_key.pub \
+    | gpg --batch --yes --dearmor -o /usr/share/keyrings/google-chrome.gpg \
+    && echo "deb [arch=amd64 signed-by=/usr/share/keyrings/google-chrome.gpg] \
+       http://dl.google.com/linux/chrome/deb/ stable main" \
+       > /etc/apt/sources.list.d/google-chrome.list \
+    && apt-get update \
+    && apt-get install -y --no-install-recommends google-chrome-stable \
+    && ln -sf /usr/bin/google-chrome /usr/bin/chromium-browser \
     && rm -rf /var/lib/apt/lists/*
 
 RUN update-alternatives --install /usr/bin/python3 python3 /usr/bin/python3.10 1

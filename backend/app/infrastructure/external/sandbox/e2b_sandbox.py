@@ -67,13 +67,40 @@ class E2BSandbox(Sandbox):
     # ------------------------------------------------------------------
 
     async def _run_admin_cmd(self, cmd: str, timeout: int = 30) -> str:
-        """Run a one-shot admin command and return stdout output."""
+        """
+        Run a one-shot admin command in the sandbox shell and return stdout.
+
+        The sandbox shell service starts an async output-reader coroutine via
+        ``asyncio.create_task``.  Because the sandbox's event loop never yields
+        between ``process.wait()`` completing and our follow-up ``view`` call,
+        the output-reader has no chance to flush stdout before we read it back.
+
+        Sleeping briefly between the ``wait`` and ``view`` calls gives the
+        *sandbox's* event loop an idle window to run that output-reader task.
+        """
         session = f"{_SYS_BASE_SESSION}_{os.urandom(4).hex()}"
         try:
             await self._exec_raw(session, _UBUNTU_HOME, cmd)
             await self._wait_raw(session, timeout)
+            # Yield time to the sandbox event loop so its async output-reader
+            # coroutine can flush the subprocess stdout pipe before we read it.
+            await asyncio.sleep(2.0)
             view = await self._view_raw(session)
-            return str(view.data or "")
+            data = view.data
+            if data is None:
+                return ""
+            if isinstance(data, dict):
+                # ShellViewResult.model_dump() → {"output":"…","session_id":"…","console":…}
+                output = str(data.get("output", "") or "")
+                # If still empty, the output-reader may have needed more time.
+                if not output:
+                    await asyncio.sleep(2.0)
+                    view2 = await self._view_raw(session)
+                    data2 = view2.data or {}
+                    if isinstance(data2, dict):
+                        output = str(data2.get("output", "") or "")
+                return output
+            return str(data or "")
         except Exception as exc:
             logger.warning("Admin cmd failed (%s): %s", cmd[:60], exc)
             return ""
@@ -102,38 +129,132 @@ class E2BSandbox(Sandbox):
 
     async def _fix_chrome(self) -> None:
         """
-        Install Google Chrome and fix the chromium-browser snap stub.
+        Install a working Chromium/Chrome binary and restart the supervisord
+        chrome service.
 
-        Ubuntu 22.04 ships chromium-browser as a snap stub that fails in
-        containers. This method downloads google-chrome-stable and creates
-        a symlink so supervisord's chrome program finds a working binary,
-        then restarts the chrome service.
+        Strategy (in order):
+          0. Diagnostic echo — verify shell exec pipeline is functional.
+          1. Playwright install — downloads bundled Chromium, most reliable.
+          2. Google Chrome apt-repo — add Google's repo and install.
+          3. Direct .deb download — fallback for restricted networks.
         """
-        logger.info("Chrome is not running — installing Google Chrome...")
-        install_script = (
-            "curl -fsSL https://dl.google.com/linux/direct/google-chrome-stable_current_amd64.deb "
-            "-o /tmp/chrome.deb && "
-            "sudo dpkg -i /tmp/chrome.deb 2>/dev/null; "
-            "sudo apt-get install -f -y 2>/dev/null || true; "
-            "sudo ln -sf /usr/bin/google-chrome /usr/bin/chromium-browser 2>/dev/null || true; "
-            "sudo supervisorctl -c /app/supervisord.conf start chrome 2>/dev/null || true"
+        # ── Step 0: sanity-check the shell exec pipeline ─────────────────
+        diag = await self._run_admin_cmd(
+            "echo DIAG_START; "
+            "whoami; "
+            "ls /usr/bin/chrom* /usr/bin/google-chrome* 2>&1; "
+            "curl -sSf --connect-timeout 5 https://dl.google.com/robots.txt 2>&1 | head -1",
+            timeout=20,
         )
-        output = await self._run_admin_cmd(install_script, timeout=120)
-        logger.info("Chrome install output: %s", output[:300] if output else "(empty)")
+        logger.info("Chrome fix diagnostic: %s", diag[:400] if diag else "(empty — shell exec broken!)")
+
+        if not diag:
+            logger.error(
+                "Shell exec is not returning output — Chrome cannot be installed at runtime. "
+                "Rebuild the e2b template (sandbox/e2b.Dockerfile) with Google Chrome pre-installed."
+            )
+            return
+
+        # Check if a working Chrome binary already exists
+        if "google-chrome" in diag or "chromium" in diag.lower():
+            logger.info("Chrome binary already present — skipping download, just restarting…")
+        else:
+            # ── Step 1: Playwright (most reliable — no snap/apt issues) ───
+            logger.info("Attempting Playwright Chromium install…")
+            pw_out = await self._run_admin_cmd(
+                "pip3 install --quiet playwright 2>&1 | tail -3 && "
+                "python3 -m playwright install chromium 2>&1 | tail -5 && "
+                "CHROME=$(find /root/.cache /home/ubuntu/.cache -name 'chrome' -type f 2>/dev/null | head -1); "
+                "echo FOUND=$CHROME; "
+                "[ -n \"$CHROME\" ] && sudo ln -sf \"$CHROME\" /usr/bin/chromium-browser && echo PLAYWRIGHT_OK",
+                timeout=300,
+            )
+            logger.info("Playwright install: %s", pw_out[:500] if pw_out else "(empty)")
+
+            if "PLAYWRIGHT_OK" not in (pw_out or ""):
+                # ── Step 2: Google Chrome apt-repo ──────────────────────
+                logger.warning("Playwright failed — trying Google Chrome apt-repo…")
+                apt_out = await self._run_admin_cmd(
+                    "curl -fSL --connect-timeout 15 https://dl.google.com/linux/linux_signing_key.pub "
+                    "| sudo gpg --batch --yes --dearmor "
+                    "-o /usr/share/keyrings/google-chrome.gpg 2>&1 && "
+                    "echo 'deb [arch=amd64 signed-by=/usr/share/keyrings/google-chrome.gpg] "
+                    "http://dl.google.com/linux/chrome/deb/ stable main' "
+                    "| sudo tee /etc/apt/sources.list.d/google-chrome.list > /dev/null && "
+                    "sudo apt-get update -qq 2>&1 | tail -3 && "
+                    "sudo apt-get install -y --no-install-recommends google-chrome-stable 2>&1 | tail -5 && "
+                    "sudo ln -sf /usr/bin/google-chrome /usr/bin/chromium-browser && "
+                    "echo CHROME_APT_OK",
+                    timeout=240,
+                )
+                logger.info("apt-repo install: %s", apt_out[:500] if apt_out else "(empty)")
+
+                if "CHROME_APT_OK" not in (apt_out or ""):
+                    # ── Step 3: Direct .deb download ────────────────────
+                    logger.warning("apt-repo failed — trying direct .deb download…")
+                    deb_out = await self._run_admin_cmd(
+                        "curl -fSL --connect-timeout 30 "
+                        "https://dl.google.com/linux/direct/google-chrome-stable_current_amd64.deb "
+                        "-o /tmp/chrome.deb && "
+                        "sudo dpkg -i /tmp/chrome.deb 2>&1 | tail -5; "
+                        "sudo apt-get install -f -y 2>&1 | tail -3 || true; "
+                        "sudo ln -sf /usr/bin/google-chrome /usr/bin/chromium-browser || true; "
+                        "echo CHROME_DEB_DONE",
+                        timeout=240,
+                    )
+                    logger.info("deb install: %s", deb_out[:500] if deb_out else "(empty)")
+
+        # ── Restart supervisord chrome service ────────────────────────────
+        restart_out = await self._run_admin_cmd(
+            "sudo supervisorctl -c /app/supervisord.conf start chrome 2>&1; "
+            "sleep 2; "
+            "sudo supervisorctl -c /app/supervisord.conf status chrome 2>&1",
+            timeout=30,
+        )
+        logger.info("Chrome supervisor restart: %s", restart_out[:300] if restart_out else "(empty)")
 
     # ------------------------------------------------------------------
     # Lifecycle
     # ------------------------------------------------------------------
 
+    async def _wait_for_chrome_running(self, max_wait: int = 90) -> bool:
+        """
+        Poll supervisord until Chrome shows as RUNNING.
+
+        Returns True if Chrome reached RUNNING within max_wait seconds,
+        False otherwise.  Called after _fix_chrome() completes.
+        """
+        interval = 3
+        attempts = max(1, max_wait // interval)
+        for i in range(attempts):
+            try:
+                response = await self.client.get(
+                    f"{self.base_url}/api/v1/supervisor/status"
+                )
+                tool_result = ToolResult(**response.json())
+                for svc in (tool_result.data or []):
+                    if svc.get("name") == "chrome" and svc.get("statename") == "RUNNING":
+                        logger.info("Chrome is now RUNNING after fix")
+                        return True
+                logger.info(
+                    "Waiting for Chrome to start after fix (%d/%d)…", i + 1, attempts
+                )
+            except Exception as exc:
+                logger.debug("Chrome-ready poll error: %s", exc)
+            await asyncio.sleep(interval)
+        logger.warning("Chrome did not reach RUNNING within %ds", max_wait)
+        return False
+
     async def ensure_sandbox(self) -> None:
         """
-        Wait for the sandbox services to become RUNNING.
+        Wait for ALL sandbox services (including Chrome) to become RUNNING.
 
-        Non-Chrome services (app, xvfb, socat, x11vnc, websockify) must all
-        be RUNNING. If Chrome is FATAL we attempt to install and start it,
-        but we do not block the caller on Chrome availability — the shell and
-        file tools work without Chrome.
+        If Chrome is FATAL (snap stub issue on Ubuntu 22.04) we install
+        Google Chrome, then wait for it to start.  We do not return until
+        Chrome is RUNNING so that the browser tool works immediately.
         """
+        # Phase 1 — wait for core services (app, xvfb, socat, x11vnc, websockify)
+        # These are fast and typically ready within 30 s.
         max_retries = 30
         retry_interval = 2
         chrome_fix_attempted = False
@@ -154,37 +275,47 @@ class E2BSandbox(Sandbox):
                     await asyncio.sleep(retry_interval)
                     continue
 
-                chrome_fatal = False
+                chrome_state = "UNKNOWN"
                 non_running_non_chrome: list[str] = []
 
                 for svc in services:
                     name = svc.get("name", "?")
                     state = svc.get("statename", "")
-                    if state == "RUNNING":
-                        continue
                     if name == "chrome":
-                        if state == "FATAL":
-                            chrome_fatal = True
-                    else:
+                        chrome_state = state
+                    elif state != "RUNNING":
                         non_running_non_chrome.append(f"{name}({state})")
 
-                if not non_running_non_chrome:
-                    # All non-chrome services are running
-                    if chrome_fatal and not chrome_fix_attempted:
-                        chrome_fix_attempted = True
-                        logger.info("Core services RUNNING; fixing Chrome in background...")
-                        asyncio.create_task(self._fix_chrome())
-                    elif not chrome_fatal:
-                        logger.info("All %d services RUNNING — sandbox fully ready", len(services))
-                    else:
-                        logger.info(
-                            "Core services RUNNING (Chrome fix in progress) — sandbox ready for shell/file"
-                        )
+                if non_running_non_chrome:
+                    logger.info(
+                        "Waiting for services (attempt %d/%d): %s",
+                        attempt + 1, max_retries, non_running_non_chrome,
+                    )
+                    await asyncio.sleep(retry_interval)
+                    continue
+
+                # All non-chrome services are RUNNING
+                if chrome_state == "RUNNING":
+                    logger.info(
+                        "All %d services RUNNING — sandbox fully ready", len(services)
+                    )
                     return
 
+                if chrome_state == "FATAL" and not chrome_fix_attempted:
+                    chrome_fix_attempted = True
+                    logger.info(
+                        "Core services RUNNING but Chrome is FATAL — installing Google Chrome (blocking)…"
+                    )
+                    # Await the fix so Chrome is ready before we return
+                    await self._fix_chrome()
+                    # Now wait for Chrome to actually reach RUNNING state
+                    await self._wait_for_chrome_running(max_wait=90)
+                    return
+
+                # Chrome is in a transient state (STARTING, BACKOFF, etc.)
                 logger.info(
-                    "Waiting for services (attempt %d/%d): %s",
-                    attempt + 1, max_retries, non_running_non_chrome,
+                    "Core services RUNNING, waiting for Chrome (%s) attempt %d/%d",
+                    chrome_state, attempt + 1, max_retries,
                 )
                 await asyncio.sleep(retry_interval)
 

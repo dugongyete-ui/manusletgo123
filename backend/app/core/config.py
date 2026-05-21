@@ -51,6 +51,15 @@ class Settings(BaseSettings):
     e2b_api_key: str | None = None
     e2b_template_id: str = "1gsznx7zzecjwwwghuzw"
 
+    # Vision model configuration (optional, for browser screenshot analysis)
+    vision_model_name: str | None = None
+    vision_model_provider: str | None = None
+    vision_api_base: str | None = None
+    vision_api_key: str | None = None
+
+    # Summary model configuration (optional, for session title generation)
+    summary_model_name: str | None = None
+
     # Browser engine configuration
     browser_engine: str = "browser_use"  # "playwright" or "browser_use"
     

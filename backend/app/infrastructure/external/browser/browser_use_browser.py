@@ -26,12 +26,18 @@ class BrowserUseBrowser:
     # ------------------------------------------------------------------
 
     async def _ensure_session(self) -> BrowserSession:
-        """Return a started BrowserSession, initialising it if necessary."""
+        """Return a started BrowserSession, initialising it if necessary.
+
+        Uses generous retries because the first browser tool call may arrive
+        while Chrome is still warming up inside the e2b sandbox (e.g. after a
+        snap-stub fix that installs Google Chrome on first use).
+        """
         if self._session is not None:
             return self._session
 
-        max_retries = 5
-        retry_delay = 1.0
+        # Generous retry budget: up to ~3 minutes total (15 attempts × up to 30 s each)
+        max_retries = 15
+        retry_delay = 2.0
         last_error: Exception = RuntimeError("Unknown error")
 
         for attempt in range(max_retries):
@@ -44,6 +50,7 @@ class BrowserUseBrowser:
                 )
                 await session.start()
                 self._session = session
+                logger.info("BrowserSession connected to CDP: %s", self.cdp_url)
                 return session
             except Exception as exc:
                 last_error = exc
@@ -55,14 +62,21 @@ class BrowserUseBrowser:
                         exc,
                     )
                     raise
-                retry_delay = min(retry_delay * 2, 10.0)
-                logger.warning(
-                    "BrowserSession init failed (attempt %d/%d), retrying in %.1fs: %s",
-                    attempt + 1,
-                    max_retries,
-                    retry_delay,
-                    exc,
-                )
+                # webSocketDebuggerUrl missing → Chrome not yet ready; back off longer
+                exc_str = str(exc)
+                if "webSocketDebuggerUrl" in exc_str:
+                    retry_delay = min(retry_delay * 2, 30.0)
+                    logger.warning(
+                        "Chrome CDP not ready (attempt %d/%d) — webSocketDebuggerUrl missing, "
+                        "Chrome may still be starting. Retrying in %.0fs…",
+                        attempt + 1, max_retries, retry_delay,
+                    )
+                else:
+                    retry_delay = min(retry_delay * 1.5, 15.0)
+                    logger.warning(
+                        "BrowserSession init failed (attempt %d/%d), retrying in %.1fs: %s",
+                        attempt + 1, max_retries, retry_delay, exc,
+                    )
                 await asyncio.sleep(retry_delay)
 
         raise last_error
