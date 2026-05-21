@@ -59,16 +59,32 @@ class PlannerAgent(BaseAgent):
         self._vision_model = None
         if settings.vision_model_name:
             try:
+                provider = settings.vision_model_provider or settings.model_provider
                 kwargs = dict(
                     model=settings.vision_model_name,
-                    model_provider=settings.vision_model_provider or settings.model_provider,
+                    model_provider=provider,
                     temperature=settings.temperature,
                     base_url=settings.vision_api_base or settings.api_base,
                 )
+                # Pass the vision-specific API key explicitly so it is not
+                # confused with the main model's key.
+                if settings.vision_api_key:
+                    # LangChain's init_chat_model forwards kwargs to the
+                    # underlying ChatModel constructor.  For the "openai"
+                    # provider (incl. OpenAI-compat endpoints like Cohere)
+                    # the accepted parameter is openai_api_key.
+                    if provider in ("openai",):
+                        kwargs["openai_api_key"] = settings.vision_api_key
+                    else:
+                        # Generic fallback — works for some providers
+                        kwargs["api_key"] = settings.vision_api_key
                 if settings.extra_headers:
                     kwargs["default_headers"] = settings.extra_headers
                 self._vision_model = init_chat_model(**kwargs)
-                logger.info(f"Vision model initialised: {settings.vision_model_name}")
+                logger.info(
+                    f"Vision model initialised: {settings.vision_model_name} "
+                    f"(provider={provider}, base_url={kwargs.get('base_url')})"
+                )
             except Exception as e:
                 logger.warning(f"Failed to initialise vision model, falling back to main model: {e}")
 
