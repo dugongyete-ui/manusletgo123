@@ -59,3 +59,37 @@ body,html {
 *, *::before, *::after {
   transition: background-color 0.2s ease, border-color 0.2s ease, color 0.2s ease;
 }
+
+/* Prose link visibility in dark mode */
+.dark .prose a,
+.dark .prose-invert a {
+  color: #5b9cf6;
+  text-decoration: underline;
+}
+.dark .prose a:hover,
+.dark .prose-invert a:hover {
+  color: #93c5fd;
+}
+
+/* Markdown content link styling */
+.dark .markdown-content a {
+  color: #5b9cf6;
+  text-decoration: underline;
+  word-break: break-all;
+}
+
+/* Prose code blocks in dark mode */
+.dark .prose pre,
+.dark .prose code {
+  background-color: var(--background-card);
+  color: var(--text-primary);
+}
+
+/* List spacing in prose */
+.prose ul, .prose ol {
+  padding-left: 1.25rem;
+}
+.prose li {
+  margin-top: 0.2rem;
+  margin-bottom: 0.2rem;
+}
