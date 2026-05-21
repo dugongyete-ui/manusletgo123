@@ -161,6 +161,13 @@ watch(computedLanguage, (newLanguage) => {
   updateLanguage(newLanguage);
 });
 
+// Watch for theme changes
+watch(() => props.theme, (newTheme) => {
+  if (editor) {
+    monaco.editor.setTheme(newTheme);
+  }
+});
+
 onMounted(() => {
   initEditor();
 });

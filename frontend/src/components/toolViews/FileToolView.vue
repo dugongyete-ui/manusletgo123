@@ -37,7 +37,7 @@
             :value="fileContent"
             :filename="fileName"
             :read-only="true"
-            theme="vs"
+            :theme="monacoTheme"
             :line-numbers="'off'"
             :word-wrap="'on'"
             :minimap="false"
@@ -55,6 +55,7 @@ import { onMounted, ref, computed, watch, onUnmounted } from "vue";
 import { ToolContent } from "@/types/message";
 import { viewFile } from "@/api/agent";
 import MonacoEditor from "@/components/ui/MonacoEditor.vue";
+import { useTheme } from "@/composables/useTheme";
 //import { showErrorToast } from "../utils/toast";
 //import { useI18n } from "vue-i18n";
 
@@ -71,6 +72,9 @@ defineExpose({
     loadFileContent();
   },
 });
+
+const { theme } = useTheme();
+const monacoTheme = computed(() => theme.value === 'dark' ? 'vs-dark' : 'vs');
 
 const fileContent = ref("");
 const refreshTimer = ref<number | null>(null);

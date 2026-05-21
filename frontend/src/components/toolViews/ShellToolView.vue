@@ -11,7 +11,7 @@
     <div dir="ltr" data-orientation="horizontal" class="flex flex-col flex-1 min-h-0">
       <div data-state="active" data-orientation="horizontal" role="tabpanel"
         id="radix-:r5m:-content-setup" tabindex="0"
-        class="py-2 focus-visible:outline-none data-[state=inactive]:hidden flex-1 font-mono text-sm leading-relaxed px-3 outline-none overflow-auto whitespace-pre-wrap break-all"
+        class="py-2 focus-visible:outline-none data-[state=inactive]:hidden flex-1 font-mono text-sm leading-relaxed px-3 outline-none overflow-auto whitespace-pre-wrap break-all text-[var(--text-primary)] bg-[var(--background-gray-main)]"
         style="animation-duration: 0s;">
         <code v-html="shell"></code>
       </div>

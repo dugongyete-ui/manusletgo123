@@ -1,5 +1,5 @@
 <template>
-  <div class="bg-[var(--background-gray-main)] sm:bg-[var(--background-menu-white)] sm:rounded-[22px] shadow-[0px_0px_24px_0px_rgba(0,0,0,0.08)] border border-black/8 dark:border-[var(--border-light)] flex flex-col h-full w-full overflow-hidden">
+  <div class="bg-[var(--background-gray-main)] sm:bg-[var(--background-menu-white)] sm:rounded-[22px] shadow-[0px_0px_24px_0px_rgba(0,0,0,0.16)] border border-black/8 dark:border-[var(--border-dark)] flex flex-col h-full w-full overflow-hidden">
 
     <!-- Header -->
     <div class="flex-shrink-0 flex items-center gap-2 px-4 pt-4 pb-2">
@@ -33,7 +33,7 @@
     </div>
 
     <!-- Tool view — fills all remaining vertical space -->
-    <div class="flex-1 min-h-0 mx-4 flex flex-col rounded-[12px] overflow-hidden bg-[var(--background-gray-main)] border border-[var(--border-dark)] dark:border-black/30 shadow-[0px_4px_32px_0px_rgba(0,0,0,0.04)]">
+    <div class="flex-1 min-h-0 mx-4 flex flex-col rounded-[12px] overflow-hidden bg-[var(--background-gray-main)] border border-[var(--border-dark)] shadow-[0px_4px_32px_0px_rgba(0,0,0,0.12)]">
       <component
         v-if="toolInfo"
         :is="toolInfo.view"
@@ -55,7 +55,7 @@
         :class="[
           'w-9 h-9 rounded-full inline-flex items-center justify-center border transition-colors',
           hasPrev
-            ? 'border-[var(--border-main)] bg-[var(--background-white-main)] hover:bg-[var(--background-gray-main)] shadow-sm cursor-pointer'
+            ? 'border-[var(--border-dark)] bg-[var(--background-card)] hover:brightness-110 shadow-sm cursor-pointer'
             : 'border-[var(--border-light)] bg-transparent opacity-30 cursor-not-allowed'
         ]"
       >
@@ -73,7 +73,7 @@
         <button
           v-if="!realTime"
           @click="jumpToRealTime"
-          class="h-8 px-3 border border-[var(--border-main)] flex items-center gap-1.5 bg-[var(--background-white-main)] hover:bg-[var(--background-gray-main)] shadow-[0px_5px_16px_0px_var(--shadow-S),0px_0px_1.25px_0px_var(--shadow-S)] rounded-full cursor-pointer transition-colors"
+          class="h-8 px-3 border border-[var(--border-dark)] flex items-center gap-1.5 bg-[var(--background-card)] hover:brightness-110 shadow-[0px_5px_16px_0px_var(--shadow-S),0px_0px_1.25px_0px_var(--shadow-S)] rounded-full cursor-pointer transition-colors"
         >
           <PlayIcon :size="14" class="text-[var(--text-primary)]" />
           <span class="text-[var(--text-primary)] text-sm font-medium">{{ $t('Jump to live') }}</span>
@@ -87,7 +87,7 @@
         :class="[
           'w-9 h-9 rounded-full inline-flex items-center justify-center border transition-colors',
           hasNext
-            ? 'border-[var(--border-main)] bg-[var(--background-white-main)] hover:bg-[var(--background-gray-main)] shadow-sm cursor-pointer'
+            ? 'border-[var(--border-dark)] bg-[var(--background-card)] hover:brightness-110 shadow-sm cursor-pointer'
             : 'border-[var(--border-light)] bg-transparent opacity-30 cursor-not-allowed'
         ]"
       >

@@ -5,8 +5,8 @@
   <div v-else-if="toolInfo" class="flex items-center group gap-2">
     <div class="flex-1 min-w-0">
       <div @click="handleClick"
-        class="rounded-[15px] items-center gap-2 px-[10px] py-[3px] border border-[var(--border-light)] bg-[var(--fill-tsp-gray-main)] inline-flex max-w-full clickable hover:bg-[var(--fill-tsp-gray-dark)] dark:hover:bg-white/[0.02]">
-        <div class="w-[16px] inline-flex items-center text-[var(--text-primary)]">
+        class="rounded-[10px] items-center gap-2 px-[10px] py-[5px] border border-[var(--border-light)] bg-[var(--fill-tsp-gray-main)] dark:bg-[var(--background-card)] dark:border-[var(--border-main)] inline-flex max-w-full clickable hover:bg-[var(--fill-tsp-gray-dark)] dark:hover:brightness-110">
+        <div class="w-[16px] inline-flex items-center text-[var(--icon-tertiary)]">
           <component :is="toolInfo.icon" :size="21" />
         </div>
         <div class="flex-1 h-full min-w-0 flex">
