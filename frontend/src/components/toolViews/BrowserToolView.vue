@@ -11,16 +11,19 @@
     <div class="px-0 py-0 flex flex-col relative h-full">
       <div class="w-full h-full object-cover flex items-center justify-center bg-[var(--fill-white)] relative">
         <div class="w-full h-full">
-          <VNCViewer 
-            v-if="props.live" 
-            :session-id="props.sessionId"
-            :enabled="props.live"
-            :view-only="true"
-            @connected="onVNCConnected"
-            @disconnected="onVNCDisconnected"
-            @credentials-required="onVNCCredentialsRequired"
+          <img
+            v-if="imageUrl"
+            alt="Browser Screenshot"
+            class="cursor-pointer w-full"
+            referrerpolicy="no-referrer"
+            :src="imageUrl"
           />
-          <img v-else-if="imageUrl" alt="Image Preview" class="cursor-pointer w-full" referrerpolicy="no-referrer" :src="imageUrl">
+          <div
+            v-else
+            class="w-full h-full flex items-center justify-center text-[var(--text-tertiary)] text-sm"
+          >
+            <span>{{ $t('Loading browser…') }}</span>
+          </div>
         </div>
         <button
           v-if="!isShare"
@@ -39,7 +42,6 @@ import { ToolContent } from '@/types/message';
 import { ref, watch } from 'vue';
 import { useI18n } from 'vue-i18n';
 import { getFileDownloadUrl } from '@/api/file';
-import VNCViewer from '@/components/VNCViewer.vue';
 import TakeOverIcon from '@/components/icons/TakeOverIcon.vue';
 
 const props = defineProps<{
@@ -52,27 +54,21 @@ const props = defineProps<{
 const { t } = useI18n();
 const imageUrl = ref('');
 
-// VNC event handlers
-const onVNCConnected = () => {
-  console.log('VNC connection successful');
-};
-
-const onVNCDisconnected = (reason?: any) => {
-  console.log('VNC connection disconnected', reason);
-};
-
-const onVNCCredentialsRequired = () => {
-  console.log('VNC credentials required');
-};
-
-
-
-watch(() => props.toolContent?.content?.screenshot, async () => {
-  if (!props.toolContent?.content?.screenshot) {
-    return;
-  }
-  imageUrl.value = props.toolContent?.content?.screenshot;
-}, { immediate: true });
+watch(
+  () => props.toolContent?.content?.screenshot,
+  async (screenshotId) => {
+    if (!screenshotId) {
+      return;
+    }
+    try {
+      const url = await getFileDownloadUrl({ file_id: screenshotId });
+      imageUrl.value = url;
+    } catch {
+      imageUrl.value = screenshotId;
+    }
+  },
+  { immediate: true },
+);
 
 const takeOver = () => {
   window.dispatchEvent(new CustomEvent('takeover', {

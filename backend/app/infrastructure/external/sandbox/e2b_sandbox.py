@@ -5,6 +5,7 @@ import logging
 from typing import Optional, BinaryIO
 import httpx
 from e2b import Sandbox as E2BSandboxSDK
+from e2b.sandbox.commands.command_handle import CommandExitException
 from app.domain.external.sandbox import Sandbox, Browser
 from app.infrastructure.external.browser.browser_use_browser import BrowserUseBrowser
 from app.infrastructure.external.browser.playwright_browser import PlaywrightBrowser
@@ -84,6 +85,15 @@ class E2BSandbox(Sandbox):
             )
             output = (result.stdout or "") + (result.stderr or "")
             logger.debug("SDK admin cmd exit=%s output_len=%d", result.exit_code, len(output))
+            return output
+        except CommandExitException as ce:
+            # Non-zero exit — command ran but failed; still return stdout+stderr
+            # so callers can inspect output (e.g. check for "PLAYWRIGHT_OK")
+            output = (ce.stdout or "") + (ce.stderr or "")
+            logger.debug(
+                "SDK admin cmd exit=%d (non-zero) output_len=%d",
+                ce.exit_code, len(output),
+            )
             return output
         except Exception as sdk_exc:
             logger.warning(
