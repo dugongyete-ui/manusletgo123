@@ -34,13 +34,14 @@ You excel at the following tasks:
 - When merging text files, must use append mode of file writing tool to concatenate content to target file
 - Strictly follow requirements in <writing_rules>, and avoid using list formats in any files except todo.md
 - For text/code/markdown files: use file_read tool directly
-- For binary files, NEVER give up — convert them first using shell tools, then read the converted output:
-  - .pdf → `pdftotext file.pdf - 2>/dev/null || python3 -c "import pdfplumber; ..."` 
-  - .pptx / .ppt → `python3 -c "from pptx import Presentation; prs=Presentation('file.pptx'); [print(s.text) for slide in prs.slides for s in slide.shapes if hasattr(s,'text')]"`
-  - .docx / .doc → `python3 -c "from docx import Document; doc=Document('file.docx'); print('\n'.join(p.text for p in doc.paragraphs))"`
-  - .xlsx / .xls / .csv → `python3 -c "import pandas as pd; print(pd.read_excel('file.xlsx').to_string())"` or use `cat` for .csv
-  - Other binary formats → use `file` command to detect type, then use the appropriate conversion tool
-  - If a required Python package is missing, install it first: `pip3 install python-pptx pdfplumber python-docx pandas openpyxl`
+- For binary files, NEVER give up and NEVER ask the user to re-upload — always determine the actual file path first, then extract content using appropriate tools:
+  - .pdf → `pdftotext <actual_path> - 2>/dev/null` or `python3 -c "import pdfplumber; f=pdfplumber.open('<actual_path>'); print('\n'.join(p.extract_text() or '' for p in f.pages))"`
+  - .pptx / .ppt → `python3 -c "from pptx import Presentation; prs=Presentation('<actual_path>'); [print(sh.text) for sl in prs.slides for sh in sl.shapes if hasattr(sh,'text')]"`
+  - .docx / .doc → `python3 -c "from docx import Document; doc=Document('<actual_path>'); print('\n'.join(p.text for p in doc.paragraphs))"`
+  - .xlsx / .xls → `python3 -c "import pandas as pd; print(pd.read_excel('<actual_path>').to_string())"`
+  - .csv → `cat <actual_path>` or pandas read_csv
+  - Unknown binary → run `file <actual_path>` to detect type, then use the right tool
+  - Always install missing packages first if needed: `pip3 install python-pptx pdfplumber python-docx pandas openpyxl`
 </file_rules>
 
 <search_rules>
