@@ -242,10 +242,10 @@ class AgentTaskRunner(TaskRunner):
 
                 vision_images = []
                 extracted_file_blocks: list[str] = []
-                # Track which file_ids were successfully server-extracted so we
-                # can exclude them from the sandbox attachments list — the AI
-                # must NOT see the same file twice (once as text, once as a path).
-                server_extracted_ids: set[str] = set()
+                # All file_ids that have been fully handled server-side
+                # (vision-encoded OR text-extracted) — these must NOT appear as
+                # sandbox attachment paths so the AI never sees a file twice.
+                handled_file_ids: set[str] = set()
 
                 for attachment in attachments_list:
                     if not attachment.file_id:
@@ -263,6 +263,9 @@ class AgentTaskRunner(TaskRunner):
                                 content_type=ct,
                                 data=b64,
                             ))
+                            # Mark handled — exclude sandbox path so the AI
+                            # doesn't see the prefixed file name as a separate file
+                            handled_file_ids.add(attachment.file_id)
                             logger.debug(f"Collected vision image for {fname} ({len(raw)} bytes)")
                         except Exception as ve:
                             logger.warning(f"Could not collect vision data for {fname}: {ve}")
@@ -277,37 +280,37 @@ class AgentTaskRunner(TaskRunner):
                                 extracted_file_blocks.append(
                                     f"<file name=\"{fname}\">\n{extracted}\n</file>"
                                 )
-                                # Mark as successfully extracted — exclude from sandbox paths
-                                server_extracted_ids.add(attachment.file_id)
+                                # Mark handled — exclude sandbox path
+                                handled_file_ids.add(attachment.file_id)
                                 logger.info(
                                     f"Server-extracted {fname} ({len(raw)} bytes → {len(extracted)} chars)"
                                 )
                         except Exception as fe:
-                            # Extraction failed — keep it in attachments so the
-                            # agent can still attempt sandbox-based extraction
+                            # Extraction failed — keep it in attachments as fallback
                             logger.warning(f"Server extraction failed for {fname}, keeping as attachment: {fe}")
 
-                # Prepend extracted file content to the message so the AI sees it immediately
+                # Prepend extracted file content to the message so the AI sees it immediately.
+                # Format: user request first, then the file blocks as supporting context —
+                # this prevents the AI from treating the file as "the request" and getting confused.
                 if extracted_file_blocks:
                     files_block = "\n\n".join(extracted_file_blocks)
                     message = (
-                        f"The following file(s) have been pre-extracted for you. "
-                        f"Analyze the content directly — do NOT run any extraction commands.\n\n"
-                        f"{files_block}\n\n"
-                        f"---\n"
-                        f"User request: {message}"
+                        f"{message}\n\n"
+                        f"[The following file(s) have been pre-extracted and are ready to analyze. "
+                        f"Use this content directly — do NOT run any extraction commands.]\n\n"
+                        f"{files_block}"
                     )
                     logger.info(
                         f"Injected {len(extracted_file_blocks)} extracted file(s) into message"
                     )
 
-                # Only pass sandbox paths for files that were NOT server-extracted.
-                # Passing already-extracted files would make the AI think there
-                # are duplicate files (original name + prefixed sandbox name).
+                # Only pass sandbox paths for files that were NOT handled server-side.
+                # Handled files (vision-encoded or text-extracted) must be excluded so the
+                # AI never sees a prefixed sandbox name alongside the original filename.
                 sandbox_attachments = [
                     a.file_path
                     for a in attachments_list
-                    if a.file_path and a.file_id not in server_extracted_ids
+                    if a.file_path and a.file_id not in handled_file_ids
                 ]
 
                 message_obj = Message(

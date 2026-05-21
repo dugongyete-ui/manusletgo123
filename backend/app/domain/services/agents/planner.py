@@ -119,8 +119,14 @@ class PlannerAgent(BaseAgent):
         Uses LangChain astream() so the very first token reaches the client as
         soon as the model starts responding — typically well under one second.
         """
-        # Build attachment context so the AI can acknowledge uploaded files by name/type
+        import re
+
+        # Build attachment context so the AI can acknowledge uploaded files by name/type.
+        # Files may have been server-extracted (so message.attachments is empty but
+        # <file name="..."> tags exist in the message text) — detect both cases.
         attachment_context = ""
+
+        # 1. Raw sandbox files (not yet extracted)
         if message.attachments:
             file_names = [a.split("/")[-1] for a in message.attachments if a]
             if file_names:
@@ -128,7 +134,19 @@ class PlannerAgent(BaseAgent):
                     f"\n\nThe user also uploaded the following file(s): {', '.join(file_names)}. "
                     "Acknowledge these files naturally — mention that you can see them and will work with them."
                 )
-        if message.vision_images and not message.attachments:
+
+        # 2. Server-pre-extracted files (present as <file name="..."> tags in the message)
+        if not attachment_context:
+            pre_extracted = re.findall(r'<file name="([^"]+)">', message.message)
+            if pre_extracted:
+                attachment_context = (
+                    f"\n\nThe user uploaded the following file(s) which have already been read: "
+                    f"{', '.join(pre_extracted)}. "
+                    "Acknowledge that you can see the file content and will analyze it."
+                )
+
+        # 3. Vision images only (no document files)
+        if not attachment_context and message.vision_images:
             attachment_context = (
                 "\n\nThe user also uploaded image(s). "
                 "Acknowledge that you can see the image(s) and will analyze them."

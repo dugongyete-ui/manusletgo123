@@ -87,9 +87,10 @@ Attachments (file paths in sandbox):
 
 Note on attachments:
 - Image files have been embedded as vision content in this message — analyze them directly, no step needed.
-- If the user message contains <file name="...">...</file> tags, that file content is ALREADY extracted. Skip any extraction step — go straight to analysis/answering.
-- Only create extraction steps for files listed in "Attachments" below that do NOT have a matching <file> tag in the message (i.e., raw binary files in the sandbox that the server could not pre-extract).
+- If the user message contains <file name="...">...</file> tags, that file content is ALREADY extracted and is embedded in the message itself. Skip any extraction step — go straight to analysis/answering using the text inside those tags.
+- Only create extraction steps for files listed in "Attachments" below that do NOT have a matching <file> tag in the message (raw binary files in the sandbox that the server could not pre-extract).
 - Do NOT mention sandbox paths or prefixed filenames to the user — only refer to the original filename from the <file name="..."> tag.
+- Do NOT apologize or say you don't understand when the user's request is clear, even if the message also contains large <file> tag blocks.
 """
 
 UPDATE_PLAN_PROMPT = """
