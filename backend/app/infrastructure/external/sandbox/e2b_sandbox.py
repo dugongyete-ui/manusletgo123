@@ -695,6 +695,7 @@ class E2BSandbox(Sandbox):
         trailing_newline: bool = False,
         sudo: bool = False,
     ) -> ToolResult:
+        file = _translate_exec_dir(file)
         response = await self.client.post(
             f"{self.base_url}/api/v1/file/write",
             json={
@@ -715,6 +716,7 @@ class E2BSandbox(Sandbox):
         end_line: Optional[int] = None,
         sudo: bool = False,
     ) -> ToolResult:
+        file = _translate_exec_dir(file)
         response = await self.client.post(
             f"{self.base_url}/api/v1/file/read",
             json={
@@ -728,6 +730,7 @@ class E2BSandbox(Sandbox):
 
     async def file_exists(self, path: str) -> ToolResult:
         """Check whether a path exists via shell."""
+        path = _translate_exec_dir(path)
         output = await self._run_admin_cmd(
             f"test -e '{path}' && echo __exists__ || echo __absent__"
         )
@@ -740,6 +743,7 @@ class E2BSandbox(Sandbox):
 
     async def file_delete(self, path: str) -> ToolResult:
         """Delete a file or directory via shell."""
+        path = _translate_exec_dir(path)
         await self._run_admin_cmd(f"rm -rf '{path}'")
         return ToolResult(
             success=True,
@@ -749,6 +753,7 @@ class E2BSandbox(Sandbox):
 
     async def file_list(self, path: str) -> ToolResult:
         """List directory contents via shell."""
+        path = _translate_exec_dir(path)
         output = await self._run_admin_cmd(f"ls -la '{path}'")
         return ToolResult(
             success=True,
@@ -763,6 +768,7 @@ class E2BSandbox(Sandbox):
         new_str: str,
         sudo: bool = False,
     ) -> ToolResult:
+        file = _translate_exec_dir(file)
         response = await self.client.post(
             f"{self.base_url}/api/v1/file/replace",
             json={"file": file, "old_str": old_str, "new_str": new_str, "sudo": sudo},
@@ -775,6 +781,7 @@ class E2BSandbox(Sandbox):
         regex: str,
         sudo: bool = False,
     ) -> ToolResult:
+        file = _translate_exec_dir(file)
         response = await self.client.post(
             f"{self.base_url}/api/v1/file/search",
             json={"file": file, "regex": regex, "sudo": sudo},
@@ -782,6 +789,7 @@ class E2BSandbox(Sandbox):
         return ToolResult(**response.json())
 
     async def file_find(self, path: str, glob_pattern: str) -> ToolResult:
+        path = _translate_exec_dir(path)
         response = await self.client.post(
             f"{self.base_url}/api/v1/file/find",
             json={"path": path, "glob": glob_pattern},
@@ -794,6 +802,7 @@ class E2BSandbox(Sandbox):
         path: str,
         filename: Optional[str] = None,
     ) -> ToolResult:
+        path = _translate_exec_dir(path)
         files = {"file": (filename or "upload", file_data, "application/octet-stream")}
         data = {"path": path}
         response = await self.client.post(
@@ -804,6 +813,7 @@ class E2BSandbox(Sandbox):
         return ToolResult(**response.json())
 
     async def file_download(self, path: str) -> BinaryIO:
+        path = _translate_exec_dir(path)
         response = await self.client.get(
             f"{self.base_url}/api/v1/file/download",
             params={"path": path},

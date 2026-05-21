@@ -134,8 +134,10 @@ class FileService:
                 # Clean up temporary file
                 os.unlink(temp_file)
             else:
-                # Ensure directory exists
-                os.makedirs(os.path.dirname(file), exist_ok=True)
+                # Ensure directory exists (guard against empty dirname for relative paths)
+                dir_name = os.path.dirname(file)
+                if dir_name:
+                    os.makedirs(dir_name, exist_ok=True)
                 
                 # Asynchronously write file
                 def write_file_async():

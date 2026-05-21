@@ -163,16 +163,18 @@ class AgentTaskRunner(TaskRunner):
                 elif event.tool_name == "shell":
                     if "id" in event.function_args:
                         shell_result = await self._sandbox.view_shell(event.function_args["id"], console=True)
-                        event.tool_content = ShellToolContent(console=shell_result.data.get("console", []))
+                        console_data = (shell_result.data or {}).get("console", []) if (shell_result and shell_result.success) else []
+                        event.tool_content = ShellToolContent(console=console_data)
                     else:
                         event.tool_content = ShellToolContent(console="(No Console)")
                 elif event.tool_name == "file":
                     if "file" in event.function_args:
                         file_path = event.function_args["file"]
                         file_read_result = await self._sandbox.file_read(file_path)
-                        file_content: str = file_read_result.data.get("content", "")
+                        file_content: str = (file_read_result.data or {}).get("content", "") if (file_read_result and file_read_result.success) else ""
                         event.tool_content = FileToolContent(content=file_content)
-                        await self._sync_file_to_storage(file_path)
+                        if file_content:
+                            await self._sync_file_to_storage(file_path)
                     else:
                         event.tool_content = FileToolContent(content="(No Content)")
                 elif event.tool_name == "mcp":
