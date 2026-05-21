@@ -49,7 +49,7 @@ class Settings(BaseSettings):
     sandbox_address: str | None = None
     sandbox_ttl_minutes: int | None = 30
     e2b_api_key: str | None = None
-    e2b_template_id: str = "1gsznx7zzecjwwwghuzw"
+    e2b_template_id: str = "i8f9hfxofj2d4nfajala"
 
     # Vision model configuration (optional, for browser screenshot analysis)
     vision_model_name: str | None = None
