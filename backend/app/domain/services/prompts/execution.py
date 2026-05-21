@@ -69,14 +69,37 @@ Attachments (file paths in sandbox):
 Note on attachments:
 - Image files (jpg, png, gif, webp) have been embedded directly in this message as vision content — you can already see them above. Do NOT use file_read on image files.
 - For plain text, code, markdown, CSV files: use file_read tool directly on the sandbox path.
-- For binary/Office files — NEVER ask the user to re-send; extract content and SAVE IT TO A FILE (never just print to stdout):
-  - .pptx/.ppt  → `python3 -c "from pptx import Presentation; prs=Presentation('/path/to/file.pptx'); open('/tmp/extracted_content.txt','w').write('\n'.join(sh.text for sl in prs.slides for sh in sl.shapes if hasattr(sh,'text')))"`
-  - .docx/.doc  → `python3 -c "from docx import Document; doc=Document('/path/to/file.docx'); open('/tmp/extracted_content.txt','w').write('\n'.join(p.text for p in doc.paragraphs))"`
-  - .pdf        → `pdftotext /path/to/file.pdf /tmp/extracted_content.txt 2>/dev/null || python3 -c "import pdfplumber; f=pdfplumber.open('/path/to/file.pdf'); open('/tmp/extracted_content.txt','w').write('\n'.join(p.extract_text() or '' for p in f.pages))"`
-  - .xlsx/.xls  → `python3 -c "import pandas as pd; open('/tmp/extracted_content.txt','w').write(pd.read_excel('/path/to/file.xlsx').to_string())"`
-  - Install missing packages first: `pip3 install python-pptx python-docx pdfplumber pandas openpyxl`
-  - After extracting: ALWAYS verify with `ls -la /tmp/extracted_content.txt && head -5 /tmp/extracted_content.txt`
-  - Then use file_read tool on `/tmp/extracted_content.txt` — NEVER try to read binary files directly or from stdout
+- For binary/Office files — NEVER ask the user to re-send. NEVER use python3 -c "..." inline — always use the file_write tool to write a script, then execute it:
+
+  STEP 1 — Use file_write tool to write /tmp/extract.py with the appropriate script:
+
+    .pptx/.ppt script:
+      from pptx import Presentation
+      prs = Presentation("ACTUAL_FILE_PATH")
+      lines = [sh.text for sl in prs.slides for sh in sl.shapes if hasattr(sh, "text") and sh.text.strip()]
+      open("/tmp/extracted_content.txt", "w").write("\n".join(lines))
+      print("Done:", len(lines), "blocks")
+
+    .docx/.doc script:
+      from docx import Document
+      doc = Document("ACTUAL_FILE_PATH")
+      text = "\n".join(p.text for p in doc.paragraphs if p.text.strip())
+      open("/tmp/extracted_content.txt", "w").write(text)
+      print("Done")
+
+    .xlsx/.xls script:
+      import pandas as pd
+      df = pd.read_excel("ACTUAL_FILE_PATH")
+      open("/tmp/extracted_content.txt", "w").write(df.to_string())
+      print("Done:", df.shape)
+
+    .pdf: use shell directly — `pdftotext ACTUAL_FILE_PATH /tmp/extracted_content.txt`
+
+  STEP 2 — Run the script: `python3 /tmp/extract.py`
+  STEP 3 — Verify: `ls -la /tmp/extracted_content.txt && head -20 /tmp/extracted_content.txt`
+  STEP 4 — Use file_read tool on /tmp/extracted_content.txt to read the content
+
+  Install if needed: `pip3 install python-pptx python-docx pdfplumber pandas openpyxl`
 - Uploaded files from user are in the sandbox at the paths listed under "Attachments" above.
 
 Working Language:
