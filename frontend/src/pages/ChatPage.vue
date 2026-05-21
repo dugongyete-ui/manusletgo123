@@ -326,9 +326,7 @@ const handleToolEvent = (toolData: ToolEventData) => {
   }
   if (toolContent.name !== 'message') {
     lastNoMessageTool.value = toolContent;
-    if (realTime.value) {
-      toolPanel.value?.showToolPanel(toolContent, true);
-    }
+    // Do NOT auto-open the tool panel — user opens it manually by clicking a tool
   }
 }
 
