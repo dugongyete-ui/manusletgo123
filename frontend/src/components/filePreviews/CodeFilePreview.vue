@@ -7,7 +7,7 @@
             :value="content"
             :filename="file.filename"
             :read-only="true"
-            theme="vs"
+            :theme="monacoTheme"
             :line-numbers="'off'"
             :word-wrap="'on'"
             :minimap="false"
@@ -19,10 +19,14 @@
 </template>
 
 <script setup lang="ts">
-import { ref, watch } from 'vue';
+import { ref, watch, computed } from 'vue';
 import MonacoEditor from '@/components/ui/MonacoEditor.vue';
 import type { FileInfo } from '../../api/file';
 import { getFileDownloadUrl } from '../../api/file';
+import { useTheme } from '@/composables/useTheme';
+
+const { theme } = useTheme();
+const monacoTheme = computed(() => theme.value === 'dark' ? 'vs-dark' : 'vs');
 
 const content = ref('');
 
