@@ -1,72 +1,111 @@
 <template>
-  <div
-    ref="toolPanelRef"
-    v-if="visible"
-    :class="{
-      'h-full w-full top-0 ltr:right-0 rtl:left-0 z-50 fixed sm:sticky sm:top-0 sm:right-0 sm:h-[100vh] sm:ml-3 sm:py-3 sm:mr-4': isShow,
-      'h-full overflow-hidden': !isShow 
-    }"
-    :style="{ 'width': isShow ? `${parentSize/2}px` : '0px', 'opacity': isShow ? '1' : '0', 'transition': '0.2s ease-in-out' }">
-    <div class="h-full" :style="{ 'width': isShow ? '100%' : '0px' }">
-      <ToolPanelContent v-if="isShow && toolContent" :sessionId="sessionId" :realTime="realTime" :toolContent="toolContent" :live="live" :isShare="isShare" @hide="hideToolPanel" @jumpToRealTime="jumpToRealTime" />
-    </div>
-  </div>
+  <Teleport to="body">
+    <!-- Backdrop (mobile only) -->
+    <Transition name="backdrop-fade">
+      <div
+        v-if="isShow"
+        class="fixed inset-0 bg-black/50 z-[49] sm:hidden"
+        @click="hideToolPanel"
+      />
+    </Transition>
+
+    <!-- Panel -->
+    <Transition name="panel-slide">
+      <div
+        v-if="isShow"
+        class="fixed top-0 right-0 h-full w-full sm:w-[520px] lg:w-[600px] z-50 flex flex-col sm:py-3 sm:pr-4 sm:pl-1"
+      >
+        <ToolPanelContent
+          v-if="toolContent"
+          :sessionId="sessionId"
+          :realTime="realTime"
+          :toolContent="toolContent"
+          :live="live"
+          :isShare="isShare"
+          :currentIndex="currentIndex"
+          :totalTools="visibleTools.length"
+          :hasPrev="currentIndex > 0"
+          :hasNext="currentIndex < visibleTools.length - 1"
+          @hide="hideToolPanel"
+          @jumpToRealTime="onJumpToRealTime"
+          @prevTool="navigatePrev"
+          @nextTool="navigateNext"
+        />
+      </div>
+    </Transition>
+  </Teleport>
 </template>
 
 <script setup lang="ts">
-import { ref, onMounted, onUnmounted } from 'vue'
+import { ref, computed, onMounted, onUnmounted } from 'vue'
 import type { ToolContent } from '../types/message'
 import ToolPanelContent from './ToolPanelContent.vue'
-import { useResizeObserver } from '../composables/useResizeObserver'
 import { eventBus } from '../utils/eventBus'
 import { EVENT_SHOW_FILE_PANEL, EVENT_SHOW_TOOL_PANEL } from '../constants/event'
 
-const toolPanelRef = ref<HTMLElement>()
-const { size: parentSize } = useResizeObserver(toolPanelRef, {
-  target: 'parent',
-  property: 'width'
-})
-
-// Tool panel state
-const isShow = ref(false)
-const live = ref(false)
-const toolContent = ref<ToolContent>()
-const visible = ref(true)
+const props = defineProps<{
+  sessionId?: string
+  realTime: boolean
+  isShare: boolean
+  allTools?: ToolContent[]
+}>()
 
 const emit = defineEmits<{
   (e: 'jumpToRealTime'): void
 }>()
 
-defineProps<{
-  sessionId?: string
-  realTime: boolean
-  isShare: boolean
-}>()
+const isShow = ref(false)
+const live = ref(false)
+const toolContent = ref<ToolContent>()
+const currentIndex = ref(-1)
+
+const visibleTools = computed(() => props.allTools ?? [])
 
 const showToolPanel = (content: ToolContent, isLive: boolean = false) => {
   eventBus.emit(EVENT_SHOW_TOOL_PANEL)
-  visible.value = true
   toolContent.value = content
   isShow.value = true
   live.value = isLive
+  const idx = visibleTools.value.findIndex(t => t.tool_call_id === content.tool_call_id)
+  currentIndex.value = idx >= 0 ? idx : visibleTools.value.length - 1
 }
 
 const hideToolPanel = () => {
   isShow.value = false
 }
 
-const jumpToRealTime = () => {
+const onJumpToRealTime = () => {
   emit('jumpToRealTime')
 }
 
+const navigatePrev = () => {
+  if (currentIndex.value > 0) {
+    currentIndex.value--
+    const tool = visibleTools.value[currentIndex.value]
+    if (tool) {
+      toolContent.value = tool
+      live.value = false
+    }
+  }
+}
+
+const navigateNext = () => {
+  if (currentIndex.value < visibleTools.value.length - 1) {
+    currentIndex.value++
+    const tool = visibleTools.value[currentIndex.value]
+    if (tool) {
+      toolContent.value = tool
+      live.value = false
+    }
+  }
+}
+
 onMounted(() => {
-  eventBus.on(EVENT_SHOW_FILE_PANEL, () => {
-    visible.value = false
-  })
+  eventBus.on(EVENT_SHOW_FILE_PANEL, hideToolPanel)
 })
 
 onUnmounted(() => {
-  eventBus.off(EVENT_SHOW_FILE_PANEL)
+  eventBus.off(EVENT_SHOW_FILE_PANEL, hideToolPanel)
 })
 
 defineExpose({
@@ -75,3 +114,23 @@ defineExpose({
   isShow
 })
 </script>
+
+<style scoped>
+.backdrop-fade-enter-active,
+.backdrop-fade-leave-active {
+  transition: opacity 0.2s ease;
+}
+.backdrop-fade-enter-from,
+.backdrop-fade-leave-to {
+  opacity: 0;
+}
+
+.panel-slide-enter-active,
+.panel-slide-leave-active {
+  transition: transform 0.28s cubic-bezier(0.4, 0, 0.2, 1);
+}
+.panel-slide-enter-from,
+.panel-slide-leave-to {
+  transform: translateX(100%);
+}
+</style>

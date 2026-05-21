@@ -84,7 +84,7 @@
         </div>
       </div>
     </div>
-    <ToolPanel ref="toolPanel" :size="toolPanelSize" :sessionId="sessionId" :realTime="realTime"
+    <ToolPanel ref="toolPanel" :allTools="allTools" :sessionId="sessionId" :realTime="realTime"
       :isShare="true"
       @jumpToRealTime="jumpToRealTime" />
   </SimpleBar>
@@ -92,7 +92,7 @@
 
 <script setup lang="ts">
 import SimpleBar from '../components/SimpleBar.vue';
-import { ref, onMounted, onUnmounted, watch, nextTick, reactive, toRefs } from 'vue';
+import { ref, onMounted, onUnmounted, watch, nextTick, reactive, toRefs, computed } from 'vue';
 import { useRouter } from 'vue-router';
 import { useI18n } from 'vue-i18n';
 import ChatMessage from '../components/ChatMessage.vue';
@@ -166,6 +166,23 @@ const {
   jumpToEnd,
   replayCompleted,
 } = toRefs(state);
+
+// Flat ordered list of all non-message tools — used for panel navigation
+const allTools = computed<ToolContent[]>(() => {
+  const tools: ToolContent[] = []
+  for (const msg of messages.value) {
+    if (msg.type === 'tool') {
+      const tool = msg.content as ToolContent
+      if (tool.name !== 'message') tools.push(tool)
+    } else if (msg.type === 'step') {
+      const step = msg.content as StepContent
+      for (const tool of step.tools) {
+        if (tool.name !== 'message') tools.push(tool)
+      }
+    }
+  }
+  return tools
+})
 
 // Non-state refs that don't need reset
 const toolPanel = ref<InstanceType<typeof ToolPanel>>()
