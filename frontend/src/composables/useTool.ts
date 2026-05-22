@@ -34,9 +34,10 @@ export function useToolInfo(tool?: Ref<ToolContent | undefined>) {
       };
     }
     
-    let functionArg = tool.value.args[TOOL_FUNCTION_ARG_MAP[tool.value.function]] || '';
+    let functionArg = tool.value.args?.[TOOL_FUNCTION_ARG_MAP[tool.value.function]] ?? '';
+    if (typeof functionArg !== 'string') functionArg = JSON.stringify(functionArg) || '';
     if (TOOL_FUNCTION_ARG_MAP[tool.value.function] === 'file') {
-      functionArg = functionArg.replace(/^\/home\/ubuntu\//, '');
+      functionArg = (functionArg as string).replace(/^\/home\/ubuntu\//, '');
     }
     
     return {
