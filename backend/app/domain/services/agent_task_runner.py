@@ -137,6 +137,10 @@ class AgentTaskRunner(TaskRunner):
         try:
             if event.attachments:
                 for attachment in event.attachments:
+                    # Skip re-syncing files that are already uploaded to storage
+                    if attachment.file_id:
+                        attachments.append(attachment)
+                        continue
                     file_info = await self._sync_file_to_storage(attachment.file_path)
                     if file_info:
                         attachments.append(file_info)

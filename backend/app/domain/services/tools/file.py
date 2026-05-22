@@ -1,8 +1,12 @@
+import re
 from typing import Optional, Dict, Any
 from app.domain.external.sandbox import Sandbox
 from app.domain.services.tools.base import BaseToolkit
 from app.domain.models.tool_result import ToolResult
 from langchain.tools import tool
+
+# Matches LLM citation tags like <co>, <co:...>, </co:...> — strip but keep inner text
+_CITATION_TAG_RE = re.compile(r'</?co(?:[:\s][^>]*)?>') 
 
 class FileToolkit(BaseToolkit):
     """File tool class, providing file operation functions"""
@@ -62,6 +66,9 @@ class FileToolkit(BaseToolkit):
             trailing_newline: (Optional) Whether to add a trailing newline
             sudo: (Optional) Whether to use sudo privileges
         """
+        # Strip LLM citation tags (e.g. <co>, </co: 1:[0],2:[7]>) before writing
+        content = _CITATION_TAG_RE.sub('', content)
+
         # Prepare content
         final_content = content
         if leading_newline:
