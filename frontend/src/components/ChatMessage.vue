@@ -28,7 +28,12 @@
         </div>
       </div>
     </div>
+    <!-- During streaming: plain text (no markdown re-parse per token). After done: full rendered markdown. -->
     <div
+      class="max-w-none p-0 m-0 prose prose-sm sm:prose-base dark:prose-invert [&_pre:not(.shiki)]:!bg-[var(--fill-tsp-white-light)] [&_pre:not(.shiki)]:text-[var(--text-primary)] text-base text-[var(--text-primary)] whitespace-pre-line"
+      v-if="messageContent.isStreaming">{{ messageContent.content }}</div>
+    <div
+      v-else
       class="max-w-none p-0 m-0 prose prose-sm sm:prose-base dark:prose-invert [&_pre:not(.shiki)]:!bg-[var(--fill-tsp-white-light)] [&_pre:not(.shiki)]:text-[var(--text-primary)] text-base text-[var(--text-primary)]"
       v-html="renderMarkdown(messageContent.content)"></div>
   </div>

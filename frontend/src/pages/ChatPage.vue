@@ -248,19 +248,41 @@ const resetState = () => {
   Object.assign(state, createInitialState());
 };
 
-// Watch message changes and automatically scroll to bottom
-watch(messages, async () => {
+// RAF-debounced scroll — called after chunk flushes, not on every token
+let scrollRafId: number | null = null;
+const scheduleScroll = () => {
+  if (scrollRafId !== null) return;
+  scrollRafId = requestAnimationFrame(() => {
+    scrollRafId = null;
+    if (follow.value) simpleBarRef.value?.scrollToBottom();
+  });
+};
+
+// Watch only for structural message array changes (new messages added),
+// not deep mutations. Streaming content changes are handled by scheduleScroll.
+watch(() => messages.value.length, async () => {
   await nextTick();
-  if (follow.value) {
-    simpleBarRef.value?.scrollToBottom();
-  }
-}, { deep: true });
+  if (follow.value) simpleBarRef.value?.scrollToBottom();
+});
 
 
 
 const getLastStep = (): StepContent | undefined => {
   return messages.value.filter(message => message.type === 'step').pop()?.content as StepContent;
 }
+
+// Chunk buffer — accumulates tokens between RAF flushes
+let _chunkBuffer = '';
+let _chunkRafId: number | null = null;
+
+const _flushChunkBuffer = () => {
+  _chunkRafId = null;
+  if (_chunkBuffer && streamingMessageContent.value) {
+    streamingMessageContent.value.content += _chunkBuffer;
+    _chunkBuffer = '';
+    scheduleScroll();
+  }
+};
 
 // Handle streaming message chunk event
 const handleMessageChunkEvent = (chunkData: MessageChunkEventData) => {
@@ -269,20 +291,40 @@ const handleMessageChunkEvent = (chunkData: MessageChunkEventData) => {
     const content: MessageContent = {
       content: chunkData.content,
       timestamp: chunkData.timestamp,
+      isStreaming: true,
     };
     messages.value.push({
       type: 'assistant',
       content,
     });
     streamingMessageContent.value = content;
-  } else {
-    // Subsequent chunks — append to the existing streaming message
-    streamingMessageContent.value.content += chunkData.content;
+    scheduleScroll();
+    return;
   }
 
   if (chunkData.done) {
-    // Stream finished — detach the reference so the next message starts fresh
+    // Flush any remaining buffered text immediately
+    if (_chunkRafId !== null) {
+      cancelAnimationFrame(_chunkRafId);
+      _chunkRafId = null;
+    }
+    if (_chunkBuffer && streamingMessageContent.value) {
+      streamingMessageContent.value.content += _chunkBuffer;
+      _chunkBuffer = '';
+    }
+    // Mark streaming done so ChatMessage switches to full markdown render
+    if (streamingMessageContent.value) {
+      (streamingMessageContent.value as any).isStreaming = false;
+    }
     streamingMessageContent.value = null;
+    scheduleScroll();
+    return;
+  }
+
+  // Buffer the incoming token and flush on next animation frame
+  _chunkBuffer += chunkData.content;
+  if (_chunkRafId === null) {
+    _chunkRafId = requestAnimationFrame(_flushChunkBuffer);
   }
 }
 

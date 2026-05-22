@@ -13,6 +13,7 @@ export interface BaseContent {
 
 export interface MessageContent extends BaseContent {
   content: string;
+  isStreaming?: boolean;
 }
 
 export interface ToolContent extends BaseContent {
