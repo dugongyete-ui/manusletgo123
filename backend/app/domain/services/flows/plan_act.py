@@ -181,17 +181,10 @@ class PlanActFlow(BaseFlow):
                                 f"{len(message.attachments)} raw attachment(s) — injected default step"
                             )
 
-                        # Safety net B: 0 steps + pre-extracted <file> tags + analysis intent
-                        # The planner should have created steps but didn't — inject analysis step.
-                        analysis_keywords = [
-                            "jelaskan", "explain", "analisis", "analisa", "analyze", "analyse",
-                            "summarize", "summarise", "ringkas", "rangkum", "describe", "deskripsikan",
-                            "ceritakan", "tell me", "what", "apa", "bagaimana", "how", "why", "kenapa",
-                            "translate", "terjemahkan", "review", "evaluate", "evaluasi",
-                        ]
-                        msg_lower = message.message.lower()
-                        has_analysis_intent = any(kw in msg_lower for kw in analysis_keywords)
-                        if len(self.plan.steps) == 0 and has_pre_extracted and has_analysis_intent:
+                        # Safety net B: 0 steps + pre-extracted <file> tags
+                        # If the user sent a file with any request, always go through
+                        # the executor so the response is thorough — not a brief JSON field.
+                        if len(self.plan.steps) == 0 and has_pre_extracted:
                             from app.domain.models.plan import Step as PlanStep
                             import re as _re
                             fname_match = _re.search(r'<file name="([^"]+)"', message.message)
@@ -199,15 +192,13 @@ class PlanActFlow(BaseFlow):
                             self.plan.steps = [PlanStep(
                                 id="1",
                                 description=(
-                                    f"Read the pre-extracted content from the <file name=\"{fname}\"> tag "
-                                    f"in the user message and provide a thorough, comprehensive response "
-                                    f"to the user's request. Use message_notify_user to show progress. "
-                                    f"Do NOT run any extraction scripts — the full text is already in the message."
+                                    f"The file \"{fname}\" content is already in the user message "
+                                    f"inside <file> tags. Read it and respond to the user's request fully."
                                 )
                             )]
-                            logger.warning(
-                                f"Agent {self._agent_id}: planner returned 0 steps despite pre-extracted "
-                                f"file and analysis intent — injected analysis step"
+                            logger.info(
+                                f"Agent {self._agent_id}: routed pre-extracted file request "
+                                f"through executor for a complete response"
                             )
 
                         logger.info(f"Agent {self._agent_id} created plan successfully with {len(self.plan.steps)} steps")
