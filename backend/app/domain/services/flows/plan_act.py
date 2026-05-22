@@ -148,22 +148,17 @@ class PlanActFlow(BaseFlow):
                 logger.info(f"Agent {self._agent_id} state changed from {AgentStatus.IDLE} to {AgentStatus.PLANNING}")
                 self.status = AgentStatus.PLANNING
             elif self.status == AgentStatus.PLANNING:
-                # Stream an immediate acknowledgment to the user (<1s) while the
-                # full JSON plan is being generated in the second LLM call below.
-                logger.info(f"Agent {self._agent_id} streaming acknowledgment")
-                async for ack_event in self.planner.acknowledge(message):
-                    yield ack_event
-
-                # Create plan
+                # ── Step 1: collect the plan first so we know whether steps exist ─────
                 logger.info(f"Agent {self._agent_id} started creating plan")
+                plan_events_buffer = []
                 async for event in self.planner.create_plan(message):
+                    plan_events_buffer.append(event)
                     if isinstance(event, PlanEvent) and event.status == PlanStatus.CREATED:
                         self.plan = event.plan
 
                         has_pre_extracted = "<file name=" in message.message
 
                         # Safety net A: 0 steps + raw sandbox attachments (no <file> tags)
-                        # → inject extraction + analysis step
                         if len(self.plan.steps) == 0 and message.attachments and not has_pre_extracted:
                             from app.domain.models.plan import Step as PlanStep
                             file_list = "\n".join(message.attachments)
@@ -182,8 +177,6 @@ class PlanActFlow(BaseFlow):
                             )
 
                         # Safety net B: 0 steps + pre-extracted <file> tags
-                        # If the user sent a file with any request, always go through
-                        # the executor so the response is thorough — not a brief JSON field.
                         if len(self.plan.steps) == 0 and has_pre_extracted:
                             from app.domain.models.plan import Step as PlanStep
                             import re as _re
@@ -201,17 +194,32 @@ class PlanActFlow(BaseFlow):
                                 f"through executor for a complete response"
                             )
 
-                        logger.info(f"Agent {self._agent_id} created plan successfully with {len(self.plan.steps)} steps")
-                        yield TitleEvent(title=event.plan.title)
-                        if len(self.plan.steps) == 0:
-                            # Direct chat: plan.message IS the full answer — show it
-                            yield MessageEvent(role="assistant", message=event.plan.message)
-                        # else: acknowledgment already served as the user-facing intro message
-                    yield event
+                logger.info(f"Agent {self._agent_id} created plan with {len(self.plan.steps)} steps")
+
+                # ── Step 2: now stream acknowledge OR direct answer based on step count ─
+                if len(self.plan.steps) == 0:
+                    # Simple / conversational query — plan.message IS the full answer.
+                    # Skip acknowledge entirely to avoid a double-response bubble.
+                    yield TitleEvent(title=self.plan.title)
+                    if self.plan.message:
+                        yield MessageEvent(role="assistant", message=self.plan.message)
+                else:
+                    # Complex query: send acknowledgment streaming NOW (gives quick feedback
+                    # while the user watches the plan appear below it).
+                    logger.info(f"Agent {self._agent_id} streaming acknowledgment")
+                    async for ack_event in self.planner.acknowledge(message):
+                        yield ack_event
+
+                    # Emit buffered plan events so the UI can render the steps list
+                    yield TitleEvent(title=self.plan.title)
+                    for event in plan_events_buffer:
+                        if isinstance(event, PlanEvent):
+                            yield event
+
                 logger.info(f"Agent {self._agent_id} state changed from {AgentStatus.PLANNING} to {AgentStatus.EXECUTING}")
                 self.status = AgentStatus.EXECUTING
                 if len(self.plan.steps) == 0:
-                    logger.info(f"Agent {self._agent_id} created plan successfully with no steps")
+                    logger.info(f"Agent {self._agent_id} no steps — moving directly to COMPLETED")
                     self.status = AgentStatus.COMPLETED
                     
             elif self.status == AgentStatus.EXECUTING:
