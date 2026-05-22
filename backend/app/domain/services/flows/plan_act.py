@@ -160,14 +160,10 @@ class PlanActFlow(BaseFlow):
                     if isinstance(event, PlanEvent) and event.status == PlanStatus.CREATED:
                         self.plan = event.plan
 
-                        # Safety net: if planner returned 0 steps but there are
-                        # raw sandbox attachments (files the server could NOT
-                        # pre-extract), inject a default step so the executor
-                        # still reads those files.
-                        # Do NOT inject when <file> tags are already in the
-                        # message — that means content is already available and
-                        # the planner correctly chose to answer directly.
                         has_pre_extracted = "<file name=" in message.message
+
+                        # Safety net A: 0 steps + raw sandbox attachments (no <file> tags)
+                        # → inject extraction + analysis step
                         if len(self.plan.steps) == 0 and message.attachments and not has_pre_extracted:
                             from app.domain.models.plan import Step as PlanStep
                             file_list = "\n".join(message.attachments)
@@ -183,6 +179,35 @@ class PlanActFlow(BaseFlow):
                             logger.warning(
                                 f"Agent {self._agent_id}: planner returned 0 steps with "
                                 f"{len(message.attachments)} raw attachment(s) — injected default step"
+                            )
+
+                        # Safety net B: 0 steps + pre-extracted <file> tags + analysis intent
+                        # The planner should have created steps but didn't — inject analysis step.
+                        analysis_keywords = [
+                            "jelaskan", "explain", "analisis", "analisa", "analyze", "analyse",
+                            "summarize", "summarise", "ringkas", "rangkum", "describe", "deskripsikan",
+                            "ceritakan", "tell me", "what", "apa", "bagaimana", "how", "why", "kenapa",
+                            "translate", "terjemahkan", "review", "evaluate", "evaluasi",
+                        ]
+                        msg_lower = message.message.lower()
+                        has_analysis_intent = any(kw in msg_lower for kw in analysis_keywords)
+                        if len(self.plan.steps) == 0 and has_pre_extracted and has_analysis_intent:
+                            from app.domain.models.plan import Step as PlanStep
+                            import re as _re
+                            fname_match = _re.search(r'<file name="([^"]+)"', message.message)
+                            fname = fname_match.group(1) if fname_match else "the uploaded file"
+                            self.plan.steps = [PlanStep(
+                                id="1",
+                                description=(
+                                    f"Read the pre-extracted content from the <file name=\"{fname}\"> tag "
+                                    f"in the user message and provide a thorough, comprehensive response "
+                                    f"to the user's request. Use message_notify_user to show progress. "
+                                    f"Do NOT run any extraction scripts — the full text is already in the message."
+                                )
+                            )]
+                            logger.warning(
+                                f"Agent {self._agent_id}: planner returned 0 steps despite pre-extracted "
+                                f"file and analysis intent — injected analysis step"
                             )
 
                         logger.info(f"Agent {self._agent_id} created plan successfully with {len(self.plan.steps)} steps")

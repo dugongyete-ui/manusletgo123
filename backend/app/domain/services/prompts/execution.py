@@ -67,7 +67,8 @@ Attachments (file paths in sandbox):
 {attachments}
 
 Note on attachments:
-- FIRST — check the User Message above for <file name="...">...</file> tags. If they exist, that file's text content is ALREADY fully extracted and available right there in the message. Read it directly — do NOT write any extraction script, do NOT run any shell command for that file, do NOT reference the sandbox path for that file. Just analyze the text inside the <file> tags.
+- FIRST — check the User Message above for <file name="...">...</file> tags. If they exist, that file's text content is ALREADY fully extracted and available right there in the message. Read and analyze the text inside the <file> tags directly. Do NOT write any extraction script, do NOT run any shell command for that file, do NOT reference the sandbox path.
+- When analyzing pre-extracted file content: use message_notify_user first to tell the user what you are doing (e.g. "Membaca dan menganalisis isi file PPTX..."), then produce a thorough, comprehensive response in the result field. The response must be detailed and cover all relevant sections of the document.
 - Image files (jpg, png, gif, webp) have been embedded directly in this message as vision content — analyze them directly. Do NOT use file_read on image files.
 - For plain text, code, markdown, CSV files listed in Attachments: use file_read tool directly on the sandbox path.
 - For binary/Office files in Attachments that do NOT have a matching <file> tag in the message — NEVER use python3 -c "..." inline. Always use file_write to write a script, then execute it:
