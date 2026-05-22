@@ -136,7 +136,7 @@ class AgentDomainService:
             task = await self._get_task(session)
 
             if message:
-                if session.status != SessionStatus.RUNNING:
+                if session.status != SessionStatus.RUNNING or task is None:
                     task = await self._create_task(session)
                     if not task:
                         raise RuntimeError("Failed to create task")
