@@ -12,12 +12,14 @@ from app.domain.models.event import (
     StepStatus,
     ErrorEvent,
     MessageEvent,
+    MessageChunkEvent,
     DoneEvent,
     ToolEvent,
     ToolStatus,
     WaitEvent,
 )
 from app.domain.services.tools.base import BaseToolkit
+from langchain.messages import HumanMessage as LCHumanMessage
 import logging
 
 logger = logging.getLogger(__name__)
@@ -67,8 +69,6 @@ class ExecutionAgent(BaseAgent):
                 step.result = new_step.result
                 step.attachments = new_step.attachments
                 yield StepEvent(status=StepStatus.COMPLETED, step=step)
-                if step.result:
-                    yield MessageEvent(message=step.result)
                 return
             elif isinstance(event, ToolEvent):
                 if event.function_name == "message_ask_user":
@@ -122,13 +122,41 @@ class ExecutionAgent(BaseAgent):
         step.status = ExecutionStatus.COMPLETED
 
     async def summarize(self) -> AsyncGenerator[BaseEvent, None]:
+        await self._ensure_memory()
+        context = list(self.memory.get_messages())
+
+        # Prompt that asks for a direct plain-text response (no JSON wrapper)
+        # so we can stream tokens cleanly to the user.
+        STREAM_PROMPT = (
+            "Deliver the final result to the user. "
+            "Write a comprehensive, detailed response in the same language as the user used. "
+            "Use Markdown formatting where helpful. "
+            "Do NOT wrap your response in JSON."
+        )
+        stream_context = context + [LCHumanMessage(content=STREAM_PROMPT)]
+
+        full_text = ""
+        try:
+            async for chunk in self._model.astream(stream_context):
+                token = chunk.content if isinstance(chunk.content, str) else ""
+                if token:
+                    full_text += token
+                    yield MessageChunkEvent(content=token, done=False)
+            yield MessageChunkEvent(content="", done=True)
+            if full_text:
+                yield MessageEvent(message=full_text)
+            return
+        except Exception as e:
+            logger.warning(f"Streaming summarize failed, falling back to JSON mode: {e}")
+
+        # Fallback: original JSON-based summarize
         message = SUMMARIZE_PROMPT
         async for event in self.execute(message):
             if isinstance(event, MessageEvent):
                 logger.debug(f"Execution agent summary: {event.message}")
                 parsed_response = await self._parse_json(event.message)
-                message = Message.model_validate(parsed_response)
-                attachments = [FileInfo(file_path=file_path) for file_path in message.attachments]
-                yield MessageEvent(message=message.message, attachments=attachments)
+                msg_obj = Message.model_validate(parsed_response)
+                attachments = [FileInfo(file_path=file_path) for file_path in msg_obj.attachments]
+                yield MessageEvent(message=msg_obj.message, attachments=attachments)
                 continue
             yield event
