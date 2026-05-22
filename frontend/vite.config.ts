@@ -17,6 +17,9 @@ export default defineConfig({
   optimizeDeps: {
     exclude: ['lucide-vue-next', '@novnc/novnc'],
   },
+  build: {
+    target: 'esnext',
+  },
   server: {
     host: '0.0.0.0',
     port: 5000,
