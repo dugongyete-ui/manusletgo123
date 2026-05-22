@@ -159,9 +159,13 @@ class AgentTaskRunner(TaskRunner):
             logger.exception(f"Agent {self._agent_id} failed to sync attachments to event: {e}")
     
 
+    # File-writing function names — these produce output files we should deliver to the user
+    _FILE_WRITE_FUNCTIONS = {"file_write", "file_str_replace"}
+
     # TODO: refactor this function
-    async def _handle_tool_event(self, event: ToolEvent):
-        """Generate tool content"""
+    async def _handle_tool_event(self, event: ToolEvent) -> Optional[FileInfo]:
+        """Generate tool content. Returns FileInfo when a file is written to storage."""
+        synced_file: Optional[FileInfo] = None
         try:
             if event.status == ToolStatus.CALLED:
                 if event.tool_name == "browser":
@@ -184,7 +188,10 @@ class AgentTaskRunner(TaskRunner):
                         file_content: str = (file_read_result.data or {}).get("content", "") if (file_read_result and file_read_result.success) else ""
                         event.tool_content = FileToolContent(content=file_content)
                         if file_content:
-                            await self._sync_file_to_storage(file_path)
+                            file_info = await self._sync_file_to_storage(file_path)
+                            # Track written files so they can be auto-attached to the response
+                            if file_info and event.function_name in self._FILE_WRITE_FUNCTIONS:
+                                synced_file = file_info
                     else:
                         event.tool_content = FileToolContent(content="(No Content)")
                 elif event.tool_name == "mcp":
@@ -212,6 +219,7 @@ class AgentTaskRunner(TaskRunner):
                     logger.warning(f"Agent {self._agent_id} received unknown tool event: {event.tool_name}")
         except Exception as e:
             logger.exception(f"Agent {self._agent_id} failed to generate tool content: {e}")
+        return synced_file
 
     async def run(self, task: Task) -> None:
         """Process agent's message queue and run the agent's flow"""
@@ -365,12 +373,27 @@ class AgentTaskRunner(TaskRunner):
             return
 
         sandbox_ready = False
+        # Collect files written during this run so we can auto-attach them to
+        # the final MessageEvent when the agent forgets to include them.
+        files_written: List[FileInfo] = []
 
         async for event in self._flow.run(message):
             if isinstance(event, ToolEvent):
                 # TODO: move to tool function
-                await self._handle_tool_event(event)
+                file_info = await self._handle_tool_event(event)
+                if file_info:
+                    # Deduplicate by file_path — keep the latest version
+                    files_written = [f for f in files_written if f.file_path != file_info.file_path]
+                    files_written.append(file_info)
             elif isinstance(event, MessageEvent):
+                # Auto-attach files written this run if the agent's message
+                # didn't reference them as attachments.
+                if files_written and not event.attachments:
+                    event.attachments = list(files_written)
+                    logger.info(
+                        f"Agent {self._agent_id} auto-attached {len(files_written)} file(s) "
+                        f"to MessageEvent: {[f.filename for f in files_written]}"
+                    )
                 await self._sync_message_attachments_to_storage(event)
 
             yield event
