@@ -72,7 +72,7 @@ class TokenService:
             raise
     
     def verify_token(self, token: str) -> Optional[Dict[str, Any]]:
-        """Verify JWT token and return payload"""
+        """Verify JWT token and return payload (any token type)."""
         try:
             payload = jwt.decode(
                 token,
@@ -98,6 +98,23 @@ class TokenService:
         except Exception as e:
             logger.error(f"Token verification failed: {e}")
             return None
+
+    def verify_access_token(self, token: str) -> Optional[Dict[str, Any]]:
+        """Verify JWT token and enforce type == 'access'.
+        
+        Use this for all protected API endpoints so that refresh tokens
+        cannot be used as access tokens (token-type confusion attack).
+        """
+        payload = self.verify_token(token)
+        if payload is None:
+            return None
+        if payload.get("type") != "access":
+            logger.warning(
+                "Token type mismatch: expected 'access', got '%s'",
+                payload.get("type"),
+            )
+            return None
+        return payload
     
     def get_user_from_token(self, token: str) -> Optional[Dict[str, Any]]:
         """Extract user information from JWT token"""

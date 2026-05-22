@@ -47,11 +47,10 @@ class AuthService:
             return False
         
         try:
-            # Generate hash with extracted salt
+            # Generate hash with extracted salt and compare securely
             generated_hash = self._hash_password(password)
-
-            logger.info(f"Generated hash: {generated_hash} vs expected hash: {password_hash}")
-            return generated_hash == password_hash
+            import hmac as _hmac
+            return _hmac.compare_digest(generated_hash, password_hash)
         except Exception as e:
             logger.error(f"Password verification error: {e}")
             return False
@@ -206,10 +205,23 @@ class AuthService:
         )
     
     async def verify_token(self, token: str) -> Optional[User]:
-        """Verify JWT token and return user"""
-        user_info = self.token_service.get_user_from_token(token)
+        """Verify JWT access token and return user.
         
-        if not user_info:
+        Enforces token type == 'access' to prevent refresh tokens from
+        being used as access tokens (token-type confusion attack).
+        """
+        payload = self.token_service.verify_access_token(token)
+        if not payload:
+            return None
+        user_info = {
+            "id": payload.get("sub"),
+            "fullname": payload.get("fullname"),
+            "email": payload.get("email"),
+            "role": payload.get("role"),
+            "is_active": payload.get("is_active", True),
+        }
+
+        if not user_info["id"]:
             return None
         
         # For database users, verify user still exists and is active

@@ -88,11 +88,11 @@ class AgentTaskRunner(TaskRunner):
         if not isinstance(event, MessageChunkEvent):
             await self._session_repository.add_event(self._session_id, event)
     
-    async def _pop_event(self, task: Task) -> AgentEvent:
+    async def _pop_event(self, task: Task) -> Optional[AgentEvent]:
         event_id, event_str = await task.input_stream.pop()
         if event_str is None:
-            logger.warning(f"Agent {self._agent_id} received empty message")
-            return
+            logger.warning(f"Agent {self._agent_id} received empty message from input stream")
+            return None
         event = TypeAdapter(AgentEvent).validate_json(event_str)
         event.id = event_id
         return event

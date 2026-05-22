@@ -65,10 +65,12 @@ async def lifespan(app: FastAPI):
 app = FastAPI(title="Manus AI Agent", lifespan=lifespan)
 
 # Configure CORS
+# allow_credentials=True is incompatible with allow_origins=["*"] per the CORS spec.
+# This app uses Bearer tokens (not cookies), so credentials flag is not needed.
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
-    allow_credentials=True,
+    allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
 )
