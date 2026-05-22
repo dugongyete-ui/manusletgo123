@@ -109,13 +109,34 @@ Task:
 """
 
 SUMMARIZE_PROMPT = """
-Deliver the final result to the user.
+You are finished the task, and you need to deliver the final result to user.
 
-Write your response as flowing, natural prose — like a knowledgeable colleague explaining something, not a template. Cover every meaningful section of the content. Do not use a rigid structure or filler phrases.
+Note:
+- You should explain the final result to user in detail.
+- Write a markdown content to deliver the final result to user if necessary.
+- Use file tools to deliver the files generated above to user if necessary.
+- Deliver the files generated above to user if necessary.
 
-Return JSON:
-{
-  "message": "<your full response here>",
-  "attachments": ["<sandbox file path if any>"]
+Return format requirements:
+- Must return JSON format that complies with the following TypeScript interface
+- Must include all required fields as specified
+
+TypeScript Interface Definition:
+```typescript
+interface Response {
+  /** Response to user's message and thinking about the task, as detailed as possible */
+  message: string;
+  /** Array of file paths in sandbox for generated files to be delivered to user */
+  attachments: string[];
 }
+```
+
+EXAMPLE JSON OUTPUT:
+{{
+    "message": "Summary message",
+    "attachments": [
+        "/home/ubuntu/file1.md",
+        "/home/ubuntu/file2.md"
+    ]
+}}
 """
