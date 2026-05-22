@@ -21,6 +21,7 @@ from app.core.config import get_settings
 from langchain.messages import AIMessage, HumanMessage, ToolCall, ToolMessage, SystemMessage
 from app.domain.services.tools.base import Tool
 from app.domain.utils.robust_json_parser import RobustJsonParser, ToolCallParseError
+import openai
 
 
 logger = logging.getLogger(__name__)
@@ -181,6 +182,14 @@ class BaseAgent(ABC):
             | RobustJsonParser.from_llm(self._model)
         )
 
+        # Transient API errors that are safe to retry (5xx, network blips, rate limits).
+        _TRANSIENT_API_ERRORS = (
+            openai.InternalServerError,   # 500/502/503 from the provider
+            openai.APIConnectionError,    # network-level failure
+            openai.APITimeoutError,       # request timed out
+            openai.RateLimitError,        # 429 – back off and retry
+        )
+
         context = list(self.memory.get_messages())
         for attempt in range(self.max_retries):
             try:
@@ -199,6 +208,19 @@ class BaseAgent(ABC):
                 else:
                     # Stage 5 (RetryWithErrorOutputParser style): add error feedback.
                     context = e.make_retry_context(context)
+            except _TRANSIENT_API_ERRORS as e:
+                if attempt == self.max_retries - 1:
+                    logger.error(
+                        "LLM API error after %d attempts, giving up: %s",
+                        self.max_retries, e,
+                    )
+                    raise
+                wait = self.retry_interval * (2 ** attempt)  # exponential back-off
+                logger.warning(
+                    "Transient LLM API error (attempt %d/%d), retrying in %.1fs: %s",
+                    attempt + 1, self.max_retries, wait, type(e).__name__,
+                )
+                await asyncio.sleep(wait)
         logger.debug(f"Response from model: {message}")
 
         await self._add_to_memory([message])
