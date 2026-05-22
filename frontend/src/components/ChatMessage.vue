@@ -30,7 +30,8 @@
     </div>
     <div
       class="max-w-none p-0 m-0 prose prose-sm sm:prose-base dark:prose-invert [&_pre:not(.shiki)]:!bg-[var(--fill-tsp-white-light)] [&_pre:not(.shiki)]:text-[var(--text-primary)] text-base text-[var(--text-primary)]"
-      v-html="renderMarkdown(messageContent.content)"></div>
+      v-html="renderMarkdown(messageContent.content)"
+      @click="handleMarkdownClick"></div>
   </div>
   <ToolUse v-else-if="message.type === 'tool'" :tool="toolContent" @click="handleToolClick(toolContent)" />
   <div v-else-if="message.type === 'step'" class="flex flex-col">
@@ -103,6 +104,7 @@ import { ToolContent, StepContent } from '../types/message';
 import { useRelativeTime } from '../composables/useTime';
 import { Bot } from 'lucide-vue-next';
 import AttachmentsMessage from './AttachmentsMessage.vue';
+import { viewFile } from '../api/agent';
 
 
 const props = defineProps<{
@@ -135,16 +137,46 @@ const isExpanded = ref(true);
 
 const { relativeTime } = useRelativeTime();
 
+const isSandboxPath = (href: string) =>
+  href.startsWith('/home/') || href.startsWith('/root/') || href.startsWith('/tmp/');
+
 const renderer = new marked.Renderer();
 renderer.link = ({ href, title, text }: { href: string; title?: string | null; text: string }) => {
   const titleAttr = title ? ` title="${title}"` : '';
+  if (href && isSandboxPath(href)) {
+    return `<a href="#" data-sandbox-file="${href}"${titleAttr} class="sandbox-file-link">${text}</a>`;
+  }
   return `<a href="${href}" target="_blank" rel="noopener noreferrer"${titleAttr}>${text}</a>`;
 };
 
 const renderMarkdown = (text: string) => {
   if (typeof text !== 'string') return '';
   const html = marked(text, { renderer }) as string;
-  return DOMPurify.sanitize(html, { ADD_ATTR: ['target'] });
+  return DOMPurify.sanitize(html, { ADD_ATTR: ['target', 'data-sandbox-file'] });
+};
+
+const handleMarkdownClick = async (event: MouseEvent) => {
+  const target = event.target as HTMLElement;
+  const anchor = target.closest('a[data-sandbox-file]') as HTMLAnchorElement | null;
+  if (!anchor) return;
+  event.preventDefault();
+  const filePath = anchor.getAttribute('data-sandbox-file');
+  if (!filePath || !props.sessionId) return;
+  try {
+    const result = await viewFile(props.sessionId, filePath);
+    const filename = filePath.split('/').pop() || 'file';
+    const blob = new Blob([result.content], { type: 'text/plain;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  } catch (e) {
+    console.error('Failed to download sandbox file:', e);
+  }
 };
 </script>
 
@@ -155,5 +187,20 @@ const renderMarkdown = (text: string) => {
 
 .duration-300 {
   transition-duration: .3s;
+}
+
+.sandbox-file-link {
+  color: var(--text-brand);
+  text-decoration: underline;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.sandbox-file-link::before {
+  content: "⬇";
+  font-size: 0.75em;
+  opacity: 0.7;
 }
 </style>

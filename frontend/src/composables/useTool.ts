@@ -10,7 +10,7 @@ export function useToolInfo(tool?: Ref<ToolContent | undefined>) {
     if (!tool || !tool.value) return null;
     
     // MCP tool
-    if (tool.value.function.startsWith('mcp_')) {
+    if (tool.value.function?.startsWith('mcp_')) {
       const mcpToolName = tool.value.function.replace(/^mcp_/, '');
       let functionArg = '';
       
