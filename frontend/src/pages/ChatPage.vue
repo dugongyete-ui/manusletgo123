@@ -417,9 +417,24 @@ const handlePlanEvent = (planData: PlanEventData) => {
 // Main event handler function
 const handleEvent = (event: AgentSSEEvent) => {
   if (event.event === 'message') {
-    // A full assistant message arrived — clear any in-progress streaming bubble
-    // to avoid a duplicate (the acknowledge stream already showed it token-by-token)
-    streamingMessageContent.value = null;
+    // The MessageEvent is the authoritative, persisted form of this response.
+    // Remove any streaming bubble that preceded it — whether still in progress
+    // or just completed (done=true already received) — to prevent double-bubble.
+    if (streamingMessageContent.value) {
+      // Stream still active — drop the partial bubble before replacing.
+      const lastIdx = messages.value.length - 1;
+      if (lastIdx >= 0 && messages.value[lastIdx].type === 'assistant') {
+        messages.value.splice(lastIdx, 1);
+      }
+      streamingMessageContent.value = null;
+    } else if (messages.value.length > 0) {
+      // Stream already completed (done=true received). The bubble is still in
+      // messages with isStreaming=false; remove it so MessageEvent takes its place.
+      const last = messages.value[messages.value.length - 1];
+      if (last.type === 'assistant' && 'isStreaming' in (last.content as any)) {
+        messages.value.splice(messages.value.length - 1, 1);
+      }
+    }
     handleMessageEvent(event.data as MessageEventData);
   } else if (event.event === 'message_chunk') {
     handleMessageChunkEvent(event.data as MessageChunkEventData);
