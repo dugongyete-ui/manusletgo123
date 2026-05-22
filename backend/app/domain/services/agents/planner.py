@@ -148,54 +148,32 @@ class PlannerAgent(BaseAgent):
         """
         import re
 
-        # Build attachment context so the AI can acknowledge uploaded files by name/type.
-        # Files may have been server-extracted (so message.attachments is empty but
-        # <file name="..."> tags exist in the message text) — detect both cases.
-        attachment_context = ""
+        # Collect context clues (files, images) so the AI is aware of what's present.
+        # We do NOT prescribe the exact wording — let the model respond naturally.
+        context_note = ""
 
-        # 1. Raw sandbox files (not yet extracted)
-        if message.attachments:
+        # Pre-extracted files (<file name="..."> tags in the message text)
+        pre_extracted = re.findall(r'<file name="([^"]+)">', message.message)
+        if pre_extracted:
+            context_note = f"\n[Files available: {', '.join(pre_extracted)}]"
+        # Raw sandbox attachments
+        elif message.attachments:
             file_names = [a.split("/")[-1] for a in message.attachments if a]
             if file_names:
-                attachment_context = (
-                    f"\n\nThe user also uploaded the following file(s): {', '.join(file_names)}. "
-                    "Acknowledge these files naturally — mention that you can see them and will work with them."
-                )
-
-        # 2. Server-pre-extracted files (present as <file name="..."> tags in the message)
-        if not attachment_context:
-            pre_extracted = re.findall(r'<file name="([^"]+)">', message.message)
-            if pre_extracted:
-                attachment_context = (
-                    f"\n\nThe user uploaded the following file(s) which have already been read: "
-                    f"{', '.join(pre_extracted)}. "
-                    "Acknowledge that you can see the file content and will analyze it."
-                )
-
-        # 3. Vision images only (no document files)
-        if not attachment_context and message.vision_images:
-            attachment_context = (
-                "\n\nThe user also uploaded image(s). "
-                "Acknowledge that you can see the image(s) and will analyze them."
-            )
-
-        # 4. No current file — check conversation history for files from prior turns.
-        #    This ensures follow-up questions ("tell me more about that file") are
-        #    acknowledged correctly instead of asking for clarification.
-        if not attachment_context:
+                context_note = f"\n[Files available: {', '.join(file_names)}]"
+        # Vision images only
+        elif message.vision_images:
+            context_note = "\n[Image(s) attached]"
+        # No current file — check prior conversation turns
+        else:
             prev_files = await self._get_previous_file_names()
             if prev_files:
-                attachment_context = (
-                    f"\n\nNote: Earlier in this conversation the user shared these file(s): "
-                    f"{', '.join(prev_files)}. "
-                    "If the user's request relates to those files, acknowledge that you remember "
-                    "the content and will use it to answer. Do NOT say there is no file attached."
-                )
+                context_note = f"\n[Previously shared files: {', '.join(prev_files)}]"
 
         prompt = (
-            f"The user sent you this request: {message.message}{attachment_context}\n\n"
-            "Respond naturally to acknowledge their request before you start working on it. "
-            "Use the same language the user used."
+            f"{message.message}{context_note}\n\n"
+            "Give a short, natural opening reply in the same language as the user. "
+            "Just react to what they asked — no rigid format, no lists, no bullet points."
         )
         try:
             full_text = ""
