@@ -88,7 +88,7 @@ export const chatWithSession = async (
   sessionId: string, 
   message: string = '',
   eventId?: string,
-  attachments?: string[],
+  attachments?: Array<{file_id: string; filename: string; content_type?: string; size?: number}>,
   callbacks?: SSECallbacks<AgentSSEEvent['data']>
 ): Promise<() => void> => {
   return createSSEConnection<AgentSSEEvent['data']>(

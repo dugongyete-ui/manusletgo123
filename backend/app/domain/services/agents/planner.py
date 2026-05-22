@@ -199,7 +199,12 @@ class PlannerAgent(BaseAgent):
         )
         try:
             full_text = ""
-            async for chunk in self._model.astream([LCHumanMessage(content=prompt)]):
+            # Use full conversation history so the model can actually read previously
+            # uploaded file content — not just a hint that the content "exists".
+            await self._ensure_memory()
+            context = list(self.memory.get_messages())
+            context.append(LCHumanMessage(content=prompt))
+            async for chunk in self._model.astream(context):
                 text = chunk.content if isinstance(chunk.content, str) else ""
                 if text:
                     full_text += text
