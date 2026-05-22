@@ -111,11 +111,20 @@ Task:
 SUMMARIZE_PROMPT = """
 You are finished the task, and you need to deliver the final result to user.
 
-Note:
-- You should explain the final result to user in detail.
-- Write a markdown content to deliver the final result to user if necessary.
-- Use file tools to deliver the files generated above to user if necessary.
-- Deliver the files generated above to user if necessary.
+Rules:
+- Explain the final result to the user in detail, using the same language as the user.
+- If this task involved gathering or researching information from the internet
+  (web browsing, search results, Wikipedia, news, any online data):
+    1. Use file_write tool to save a well-formatted Markdown summary to
+       /home/ubuntu/summary_<topic>.md  (pick a short descriptive topic name,
+       e.g. summary_persib_bandung.md).  The file must contain:
+       - Title and date
+       - All key facts / data found
+       - Source URLs at the end
+    2. List the saved file path in the "attachments" array below.
+- If the task was NOT internet research (coding, file processing, math, conversation),
+  skip file creation and return an empty attachments array.
+- Deliver the files generated during execution to the user as well.
 
 Return format requirements:
 - Must return JSON format that complies with the following TypeScript interface
@@ -131,12 +140,17 @@ interface Response {
 }
 ```
 
-EXAMPLE JSON OUTPUT:
+EXAMPLE JSON OUTPUT (research task):
 {{
-    "message": "Summary message",
+    "message": "Berikut ringkasan informasi yang ditemukan...",
     "attachments": [
-        "/home/ubuntu/file1.md",
-        "/home/ubuntu/file2.md"
+        "/home/ubuntu/summary_persib_bandung.md"
     ]
+}}
+
+EXAMPLE JSON OUTPUT (non-research task):
+{{
+    "message": "Berikut hasil yang diminta...",
+    "attachments": []
 }}
 """

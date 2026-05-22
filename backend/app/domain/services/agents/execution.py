@@ -20,6 +20,7 @@ from app.domain.models.event import (
 )
 from app.domain.services.tools.base import BaseToolkit
 from langchain.messages import HumanMessage as LCHumanMessage
+import json
 import logging
 
 logger = logging.getLogger(__name__)
@@ -121,6 +122,70 @@ class ExecutionAgent(BaseAgent):
 
         step.status = ExecutionStatus.COMPLETED
 
+    async def _decide_and_create_summary_file(
+        self,
+        summary_text: str,
+        context: list,
+    ) -> List[FileInfo]:
+        """
+        Ask the LLM (without modifying memory) whether this task involved
+        internet research.  If yes, write the summary as a .md file directly
+        via the sandbox and return its FileInfo.  The LLM decides — nothing
+        is hardcoded.
+        """
+        from app.domain.services.tools.file import FileToolkit
+
+        file_toolkit = next(
+            (tk for tk in self.toolkits if isinstance(tk, FileToolkit)), None
+        )
+        if not file_toolkit:
+            return []
+
+        DECIDE_PROMPT = (
+            "Answer ONLY in compact JSON, no extra text.\n"
+            "Was the task you just completed an internet research or information-gathering task "
+            "(web browsing, search results, Wikipedia, news articles, any data fetched from online URLs)?\n"
+            'If YES: {"research":true,"filename":"summary_<topic>.md"} '
+            "— use a short descriptive topic name, ASCII-safe, no spaces, same language root as the task.\n"
+            'If NO:  {"research":false,"filename":""}'
+        )
+        decide_context = context + [LCHumanMessage(content=DECIDE_PROMPT)]
+
+        try:
+            response = await self._model.ainvoke(decide_context)
+            raw = response.content if isinstance(response.content, str) else ""
+            raw = raw.strip()
+            if raw.startswith("```"):
+                raw = "\n".join(raw.split("\n")[1:]).rstrip("`").strip()
+
+            data = json.loads(raw)
+            if not data.get("research") or not data.get("filename"):
+                logger.debug("Summary file skipped: not a research task")
+                return []
+
+            filename = str(data["filename"]).strip().lstrip("/")
+            filename = filename.replace("..", "").replace("/", "_")
+            if not filename.endswith(".md"):
+                filename += ".md"
+
+            sandbox_home = getattr(file_toolkit.sandbox, "_sandbox_home", "/home/ubuntu")
+            sandbox_path = f"{sandbox_home}/{filename}"
+
+            await file_toolkit.sandbox.file_write(
+                file=sandbox_path,
+                content=summary_text,
+                append=False,
+                leading_newline=False,
+                trailing_newline=True,
+                sudo=False,
+            )
+            logger.info("Research summary .md saved: %s", sandbox_path)
+            return [FileInfo(file_path=sandbox_path)]
+
+        except Exception as exc:
+            logger.warning("Could not create summary .md file: %s", exc)
+            return []
+
     async def summarize(self) -> AsyncGenerator[BaseEvent, None]:
         await self._ensure_memory()
         context = list(self.memory.get_messages())
@@ -144,7 +209,15 @@ class ExecutionAgent(BaseAgent):
                     yield MessageChunkEvent(content=token, done=False)
             yield MessageChunkEvent(content="", done=True)
             if full_text:
-                yield MessageEvent(message=full_text)
+                # Let the LLM decide (without modifying memory) whether a .md
+                # summary file is appropriate for this task.
+                attachments = await self._decide_and_create_summary_file(
+                    full_text, context
+                )
+                yield MessageEvent(
+                    message=full_text,
+                    attachments=attachments if attachments else None,
+                )
             return
         except Exception as e:
             logger.warning(f"Streaming summarize failed, falling back to JSON mode: {e}")
