@@ -140,13 +140,20 @@ const { relativeTime } = useRelativeTime();
 const isSandboxPath = (href: string) =>
   href.startsWith('/home/') || href.startsWith('/root/') || href.startsWith('/tmp/');
 
+const cleanLinkText = (href: string, text: string): string => {
+  const isRawUrl = text === href || text.startsWith('http://') || text.startsWith('https://');
+  if (isRawUrl) {
+    try { return new URL(href).hostname; } catch { /* fall through */ }
+  }
+  return text;
+};
+
 const renderer = new marked.Renderer();
 renderer.link = ({ href, title, text }: { href: string; title?: string | null; text: string }) => {
-  const titleAttr = title ? ` title="${title}"` : '';
   if (href && isSandboxPath(href)) {
-    return `<a href="#" data-sandbox-file="${href}"${titleAttr} class="sandbox-file-link">${text}</a>`;
+    return `<a href="#" data-sandbox-file="${href}" title="${href}" class="sandbox-file-link">${text}</a>`;
   }
-  return `<a href="${href}" target="_blank" rel="noopener noreferrer"${titleAttr}>${text}</a>`;
+  return `<a href="${href}" target="_blank" rel="noopener noreferrer" title="${href}">${cleanLinkText(href, text)}</a>`;
 };
 
 const renderMarkdown = (text: string) => {

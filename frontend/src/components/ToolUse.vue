@@ -52,10 +52,19 @@ const emit = defineEmits<{
 const { relativeTime } = useRelativeTime();
 const { toolInfo } = useToolInfo(ref(props.tool));
 
+const cleanLinkText = (href: string, text: string): string => {
+  // When the text is the raw URL itself (auto-linked by marked), show just the hostname
+  const isRawUrl = text === href || text.startsWith('http://') || text.startsWith('https://');
+  if (isRawUrl) {
+    try { return new URL(href).hostname; } catch { /* fall through */ }
+  }
+  return text;
+};
+
 const renderer = new marked.Renderer();
 renderer.link = ({ href, title, text }: { href: string; title?: string | null; text: string }) => {
-  const titleAttr = title ? ` title="${title}"` : '';
-  return `<a href="${href}" target="_blank" rel="noopener noreferrer"${titleAttr}>${text}</a>`;
+  const titleAttr = title ? ` title="${href}"` : ` title="${href}"`;
+  return `<a href="${href}" target="_blank" rel="noopener noreferrer"${titleAttr}>${cleanLinkText(href, text)}</a>`;
 };
 
 const renderMarkdown = (text: string) => {
