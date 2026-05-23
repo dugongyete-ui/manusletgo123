@@ -83,7 +83,7 @@ class RedisStreamQueue(MessageQueue):
             str: Message ID
         """
         logger.debug(f"Putting message into stream ({self._stream_name}): {message}")
-        message_id = await self._redis.client.xadd(self._stream_name, {"data": message})
+        message_id = await self._redis.client.xadd(self._stream_name, {"data": message}, maxlen=1000, approximate=True)
         return message_id
     
     async def get(self, start_id: str = "0", block_ms: Optional[int] = None) -> Tuple[str, Any]:

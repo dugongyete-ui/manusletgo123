@@ -108,6 +108,12 @@
 
           <!-- Loading indicator — hidden while streaming acknowledgment chunks -->
           <LoadingIndicator v-if="isLoading && !streamingMessageContent" :text="$t('Thinking')" />
+          <!-- Wait indicator — agent is expecting user input -->
+          <div v-if="isWaitingForInput && !isLoading"
+            class="flex items-center gap-2 px-4 py-2 mx-auto rounded-xl text-sm text-[var(--text-secondary)] bg-[var(--fill-tsp-white-main)] border border-[var(--border-main)] w-fit">
+            <span class="inline-block w-2 h-2 rounded-full bg-amber-400 animate-pulse"></span>
+            {{ $t('Agent is waiting for your response') }}
+          </div>
         </div>
 
         <div class="flex flex-col bg-[var(--background-gray-main)] sticky bottom-0">
@@ -170,6 +176,7 @@ const { hideFilePanel } = useFilePanel()
 const createInitialState = () => ({
   inputMessage: '',
   isLoading: false,
+  isWaitingForInput: false,
   sessionId: undefined as string | undefined,
   messages: [] as Message[],
   toolPanelSize: 0,
@@ -196,9 +203,9 @@ const state = reactive(createInitialState());
 const {
   inputMessage,
   isLoading,
+  isWaitingForInput,
   sessionId,
   messages,
-  toolPanelSize,
   realTime,
   follow,
   title,
@@ -445,7 +452,8 @@ const handleEvent = (event: AgentSSEEvent) => {
   } else if (event.event === 'done') {
     //isLoading.value = false;
   } else if (event.event === 'wait') {
-    // TODO: handle wait event
+    isLoading.value = false;
+    isWaitingForInput.value = true;
   } else if (event.event === 'error') {
     handleErrorEvent(event.data as ErrorEventData);
   } else if (event.event === 'title') {
@@ -497,6 +505,7 @@ const chat = async (message: string = '', files: FileInfo[] = []) => {
   inputMessage.value = '';
   attachments.value = [];
   isLoading.value = true;
+  isWaitingForInput.value = false;
 
   try {
     // Use the split event handler function and store the cancel function

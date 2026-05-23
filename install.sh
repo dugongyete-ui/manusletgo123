@@ -117,6 +117,15 @@ python3 -m pip install $PIP_FLAGS -q \
 
 echo "      Utility dependencies installed"
 
+# ── 4c. Dev / test dependencies ───────────────────────────────────────────────
+echo "      Installing dev/test dependencies..."
+python3 -m pip install $PIP_FLAGS -q \
+  "pytest>=7.0.0" \
+  "pytest-asyncio>=0.21.0" \
+  "pytest-cov>=4.0.0" \
+  "pytest-mock>=3.10.0" \
+  "requests>=2.28.0"
+
 # ── Playwright browser binary ─────────────────────────────────────────────────
 echo ""
 echo "      Installing Playwright Chromium browser binary..."

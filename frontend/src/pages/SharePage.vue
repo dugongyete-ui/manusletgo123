@@ -153,7 +153,6 @@ const {
   isLoading,
   sessionId,
   messages,
-  toolPanelSize,
   realTime,
   follow,
   title,

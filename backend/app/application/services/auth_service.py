@@ -207,10 +207,10 @@ class AuthService:
     async def verify_token(self, token: str) -> Optional[User]:
         """Verify JWT access token and return user.
         
-        Enforces token type == 'access' to prevent refresh tokens from
-        being used as access tokens (token-type confusion attack).
+        Enforces token type == 'access' and checks the Redis revocation
+        blacklist so that logged-out tokens are immediately rejected.
         """
-        payload = self.token_service.verify_access_token(token)
+        payload = await self.token_service.async_verify_access_token(token)
         if not payload:
             return None
         user_info = {
@@ -241,10 +241,10 @@ class AuthService:
         )
     
     async def logout(self, token: str) -> bool:
-        """Logout user by revoking token"""
+        """Logout user by revoking token — adds it to the Redis blacklist."""
         if self.settings.auth_provider == "none":
             raise BadRequestError("Logout is not allowed")
-        return self.token_service.revoke_token(token)
+        return await self.token_service.async_revoke_token(token)
     
     async def change_password(self, user_id: str, old_password: str, new_password: str) -> bool:
         """Change user password"""

@@ -1,4 +1,5 @@
 from typing import Optional, AsyncGenerator, List
+import asyncio
 import logging
 from datetime import datetime
 from app.domain.models.session import Session, SessionStatus
@@ -22,7 +23,17 @@ class AgentDomainService:
     """
     Agent domain service, responsible for coordinating the work of planning agent and execution agent
     """
-    
+
+    # Per-session asyncio locks prevent concurrent sandbox creation for the same
+    # session (warmup task vs first-chat _create_task race condition — M1).
+    _session_locks: dict[str, asyncio.Lock] = {}
+
+    def _get_session_lock(self, session_id: str) -> asyncio.Lock:
+        """Return (creating if needed) the asyncio.Lock for a given session."""
+        if session_id not in self._session_locks:
+            self._session_locks[session_id] = asyncio.Lock()
+        return self._session_locks[session_id]
+
     def __init__(
         self,
         agent_repository: AgentRepository,
@@ -48,51 +59,75 @@ class AgentDomainService:
         await self._task_cls.destroy()
         logger.info("All agents closed successfully")
 
-    async def _create_task(self, session: Session) -> Task:
-        """Create a new agent task"""
-        sandbox = None
-        sandbox_id = session.sandbox_id
-        if sandbox_id:
+    async def warmup_sandbox(self, session_id: str) -> None:
+        """Create an E2B sandbox eagerly in the background right after session
+        creation so the first chat message is not blocked by setup wait.
+        Uses a per-session lock to avoid racing with _create_task."""
+        async with self._get_session_lock(session_id):
             try:
-                sandbox = await self._sandbox_cls.get(sandbox_id)
-                if sandbox:
-                    await sandbox.ensure_sandbox()
-            except Exception as exc:
-                logger.warning(
-                    "Failed to reconnect to existing sandbox %s (%s) — creating a new one",
-                    sandbox_id, exc,
-                )
-                sandbox = None
-        if not sandbox:
-            sandbox = await self._sandbox_cls.create()
-            session.sandbox_id = sandbox.id
+                session = await self._session_repository.find_by_id(session_id)
+                if not session:
+                    logger.warning("[Warmup] Session %s not found — skipping", session_id)
+                    return
+                if session.sandbox_id:
+                    logger.info("[Warmup] Session %s already has sandbox %s — skipping", session_id, session.sandbox_id)
+                    return
+                sandbox = await self._sandbox_cls.create()
+                session.sandbox_id = sandbox.id
+                await self._session_repository.save(session)
+                logger.info("[Warmup] Sandbox %s created for session %s — running ensure_sandbox…", sandbox.id, session_id)
+                await sandbox.ensure_sandbox()
+                logger.info("[Warmup] Sandbox %s fully ready for session %s", sandbox.id, session_id)
+            except Exception as e:
+                logger.warning("[Warmup] Background sandbox warmup failed for session %s: %s", session_id, e)
+
+    async def _create_task(self, session: Session) -> Task:
+        """Create a new agent task — uses a per-session lock to prevent
+        concurrent sandbox creation racing with the warmup task (M1)."""
+        async with self._get_session_lock(session.id):
+            sandbox = None
+            sandbox_id = session.sandbox_id
+            if sandbox_id:
+                try:
+                    sandbox = await self._sandbox_cls.get(sandbox_id)
+                    if sandbox:
+                        await sandbox.ensure_sandbox()
+                except Exception as exc:
+                    logger.warning(
+                        "Failed to reconnect to existing sandbox %s (%s) — creating a new one",
+                        sandbox_id, exc,
+                    )
+                    sandbox = None
+            if not sandbox:
+                sandbox = await self._sandbox_cls.create()
+                session.sandbox_id = sandbox.id
+                await self._session_repository.save(session)
+                await sandbox.ensure_sandbox()
+            browser = await sandbox.get_browser()
+            if not browser:
+                logger.error(f"Failed to get browser for Sandbox {sandbox_id}")
+                raise RuntimeError(f"Failed to get browser for Sandbox {sandbox_id}")
+
             await self._session_repository.save(session)
-            await sandbox.ensure_sandbox()
-        browser = await sandbox.get_browser()
-        if not browser:
-            logger.error(f"Failed to get browser for Sandbox {sandbox_id}")
-            raise RuntimeError(f"Failed to get browser for Sandbox {sandbox_id}")
-        
-        await self._session_repository.save(session)
 
-        task_runner = AgentTaskRunner(
-            session_id=session.id,
-            agent_id=session.agent_id,
-            user_id=session.user_id,
-            sandbox=sandbox,
-            browser=browser,
-            file_storage=self._file_storage,
-            search_engine=self._search_engine,
-            session_repository=self._session_repository,
-            agent_repository=self._repository,
-            mcp_repository=self._mcp_repository,
-        )
+            task_runner = AgentTaskRunner(
+                session_id=session.id,
+                agent_id=session.agent_id,
+                user_id=session.user_id,
+                sandbox=sandbox,
+                browser=browser,
+                file_storage=self._file_storage,
+                search_engine=self._search_engine,
+                session_repository=self._session_repository,
+                agent_repository=self._repository,
+                mcp_repository=self._mcp_repository,
+            )
 
-        task = self._task_cls.create(task_runner)
-        session.task_id = task.id
-        await self._session_repository.save(session)
+            task = self._task_cls.create(task_runner)
+            session.task_id = task.id
+            await self._session_repository.save(session)
 
-        return task
+            return task
         
     async def _get_task(self, session: Session) -> Optional[Task]:
         """Get a task for the given session"""

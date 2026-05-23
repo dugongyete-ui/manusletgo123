@@ -77,7 +77,7 @@ const { theme } = useTheme();
 const monacoTheme = computed(() => theme.value === 'dark' ? 'vs-dark' : 'vs');
 
 const fileContent = ref("");
-const refreshTimer = ref<number | null>(null);
+const refreshTimer = ref<ReturnType<typeof setInterval> | null>(null);
 
 const filePath = computed(() => {
   if (props.toolContent && props.toolContent.args.file) {

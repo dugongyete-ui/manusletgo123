@@ -149,7 +149,7 @@ const cleanLinkText = (href: string, text: string): string => {
 };
 
 const renderer = new marked.Renderer();
-renderer.link = ({ href, title, text }: { href: string; title?: string | null; text: string }) => {
+renderer.link = ({ href, title: _title, text }: { href: string; title?: string | null; text: string }) => {
   if (href && isSandboxPath(href)) {
     return `<a href="#" data-sandbox-file="${href}" title="${href}" class="sandbox-file-link">${text}</a>`;
   }

@@ -72,7 +72,7 @@ watch(
           : `${API_CONFIG.host}${screenshotId}`;
         return;
       }
-      const url = await getFileDownloadUrl({ file_id: screenshotId });
+      const url = await getFileDownloadUrl({ file_id: screenshotId } as import('@/api/file').FileInfo);
       imageUrl.value = url;
     } catch {
       imageUrl.value = screenshotId;
