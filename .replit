@@ -119,7 +119,6 @@ exposeLocalhost = true
 [deployment]
 deploymentTarget = "autoscale"
 build = ["bash", "-c", "cd frontend && pnpm install && pnpm build"]
-publicDir = "frontend/dist"
 run = ["bash", "-c", "cd backend && python3 -m uvicorn app.main:app --host 0.0.0.0 --port 5000"]
 
 [userenv]
