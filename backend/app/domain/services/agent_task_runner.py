@@ -254,6 +254,10 @@ class AgentTaskRunner(TaskRunner):
                         event.tool_content = ImageToolContent(downloaded_file=downloaded or file_path)
                         if downloaded:
                             synced_file = await self._sync_file_to_storage(downloaded)
+                elif event.tool_name == "message":
+                    # message_notify_user / message_ask_user — no special content needed,
+                    # the text is streamed directly by the execution agent.
+                    logger.debug(f"Agent {self._agent_id} received message tool event: {event.function_name}")
                 elif event.tool_name == "mcp":
                     logger.debug(f"Processing MCP tool event: function_result={event.function_result}")
                     if event.function_result:
