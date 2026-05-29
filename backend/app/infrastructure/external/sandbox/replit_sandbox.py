@@ -83,7 +83,7 @@ class ReplitSandbox(Sandbox):
         This is a simple poll — no Chrome installation or CDP proxy deployment needed
         because those services are pre-installed in the Replit container.
         """
-        max_retries = 60
+        max_retries = 20
         retry_interval = 2
 
         for attempt in range(max_retries):
