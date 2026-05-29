@@ -8,6 +8,7 @@ from app.domain.models.plan import Plan, Step
 from app.domain.models.file import FileInfo
 import json
 from app.domain.models.search import SearchResultItem
+from app.domain.models.image import ImageSearchResultItem
 
 
 class PlanStatus(str, Enum):
@@ -70,12 +71,18 @@ class McpToolContent(BaseModel):
     """MCP tool content"""
     result: Any
 
+class ImageToolContent(BaseModel):
+    """Image tool content — search results or download confirmation"""
+    results: List[ImageSearchResultItem] = Field(default_factory=list)
+    downloaded_file: Optional[str] = None
+
 ToolContent = Union[
     BrowserToolContent,
     SearchToolContent,
     ShellToolContent,
     FileToolContent,
-    McpToolContent
+    McpToolContent,
+    ImageToolContent,
 ]
 
 class ToolEvent(BaseEvent):

@@ -33,6 +33,10 @@ export const TOOL_FUNCTION_MAP: {[key: string]: string} = {
   // Search tools
   "info_search_web": "Searching web",
   
+  // Image tools
+  "image_search_web": "Searching images",
+  "image_download": "Downloading image",
+  
   // Message tools
   "message_notify_user": "Sending notification",
   "message_ask_user": "Asking question"
@@ -65,6 +69,8 @@ export const TOOL_FUNCTION_ARG_MAP: {[key: string]: string} = {
   "browser_console_exec": "code",
   "browser_console_view": "console",
   "info_search_web": "query",
+  "image_search_web": "query",
+  "image_download": "url",
   "message_notify_user": "message",
   "message_ask_user": "question"
 };
@@ -77,6 +83,7 @@ export const TOOL_NAME_MAP: {[key: string]: string} = {
   "file": "File",
   "browser": "Browser",
   "info": "Information",
+  "image": "Image",
   "message": "Message",
   "mcp": "MCP Tool"
 };
@@ -94,8 +101,9 @@ export const TOOL_ICON_MAP: {[key: string]: any} = {
   "file": EditIcon,
   "browser": BrowserIcon,
   "search": SearchIcon,
+  "image": SearchIcon,
   "message": "",
-  "mcp": SearchIcon  // 暂时使用搜索图标，可以后续创建专门的MCP图标
+  "mcp": SearchIcon
 };
 
 import ShellToolView from '@/components/toolViews/ShellToolView.vue';
@@ -104,6 +112,7 @@ import SearchToolView from '@/components/toolViews/SearchToolView.vue';
 import BrowserToolView from '@/components/toolViews/BrowserToolView.vue';
 import ConsoleToolView from '@/components/toolViews/ConsoleToolView.vue';
 import McpToolView from '@/components/toolViews/McpToolView.vue';
+import ImageToolView from '@/components/toolViews/ImageToolView.vue';
 
 /**
  * Mapping from tool names to components (fallback)
@@ -113,6 +122,7 @@ export const TOOL_COMPONENT_MAP: {[key: string]: any} = {
   "file": FileToolView,
   "search": SearchToolView,
   "browser": BrowserToolView,
+  "image": ImageToolView,
   "mcp": McpToolView
 };
 

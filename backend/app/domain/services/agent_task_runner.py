@@ -20,6 +20,7 @@ from app.domain.models.event import (
     ShellToolContent,
     SearchToolContent,
     BrowserToolContent,
+    ImageToolContent,
     ToolStatus,
     AgentEvent,
     McpToolContent,
@@ -189,7 +190,7 @@ class AgentTaskRunner(TaskRunner):
     
 
     # File-writing function names — these produce output files we should deliver to the user
-    _FILE_WRITE_FUNCTIONS = {"file_write", "file_str_replace"}
+    _FILE_WRITE_FUNCTIONS = {"file_write", "file_str_replace", "image_download"}
 
     # TODO: refactor this function
     async def _handle_tool_event(self, event: ToolEvent) -> Optional[FileInfo]:
@@ -236,6 +237,21 @@ class AgentTaskRunner(TaskRunner):
                                 synced_file = file_info
                     else:
                         event.tool_content = FileToolContent(content="(No Content)")
+                elif event.tool_name == "image":
+                    image_result = event.function_result
+                    if event.function_name == "image_search_web":
+                        results = []
+                        if image_result and image_result.success and image_result.data:
+                            results = image_result.data.results if hasattr(image_result.data, "results") else []
+                        event.tool_content = ImageToolContent(results=results)
+                    elif event.function_name == "image_download":
+                        file_path = event.function_args.get("file_path") or event.function_args.get("url", "")
+                        downloaded = None
+                        if image_result and image_result.success and image_result.data:
+                            downloaded = image_result.data.get("file_path") if isinstance(image_result.data, dict) else None
+                        event.tool_content = ImageToolContent(downloaded_file=downloaded or file_path)
+                        if downloaded:
+                            synced_file = await self._sync_file_to_storage(downloaded)
                 elif event.tool_name == "mcp":
                     logger.debug(f"Processing MCP tool event: function_result={event.function_result}")
                     if event.function_result:

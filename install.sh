@@ -106,7 +106,8 @@ python3 -m pip install $PIP_FLAGS -q \
   "async-lru>=2.0.0" \
   "debugpy>=1.8.17" \
   "supervisor>=4.2.0" \
-  "websockify>=0.11.0"
+  "websockify>=0.11.0" \
+  "duckduckgo-search>=6.0.0"
 
 # ── 4b. File extraction dependencies ─────────────────────────────────────────
 echo "      Installing file-extraction dependencies..."

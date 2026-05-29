@@ -26,6 +26,7 @@ from app.domain.services.tools.browser import BrowserToolkit
 from app.domain.services.tools.file import FileToolkit
 from app.domain.services.tools.message import MessageToolkit
 from app.domain.services.tools.search import SearchToolkit
+from app.domain.services.tools.image import ImageToolkit
 
 logger = logging.getLogger(__name__)
 
@@ -61,6 +62,7 @@ class PlanActFlow(BaseFlow):
             BrowserToolkit(browser),
             FileToolkit(sandbox),
             MessageToolkit(),
+            ImageToolkit(sandbox),
             mcp_tool
         ]
         
