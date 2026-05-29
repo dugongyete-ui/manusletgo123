@@ -104,7 +104,9 @@ python3 -m pip install $PIP_FLAGS -q \
   "mcp>=1.9.0" \
   "rich>=14.2.0" \
   "async-lru>=2.0.0" \
-  "debugpy>=1.8.17"
+  "debugpy>=1.8.17" \
+  "supervisor>=4.2.0" \
+  "websockify>=0.11.0"
 
 # ── 4b. File extraction dependencies ─────────────────────────────────────────
 echo "      Installing file-extraction dependencies..."
