@@ -1,4 +1,7 @@
 from redis.asyncio import Redis
+from redis.asyncio.retry import Retry
+from redis.backoff import ExponentialBackoff
+from redis.exceptions import TimeoutError, ConnectionError, BusyLoadingError
 import logging
 from app.core.config import get_settings
 
@@ -15,15 +18,21 @@ class RedisClient:
             return
             
         try:
-            # Connect to Redis
+            retry = Retry(ExponentialBackoff(cap=10, base=1), retries=3)
             self._client = Redis(
                 host=self._settings.redis_host,
                 port=self._settings.redis_port,
                 db=self._settings.redis_db,
                 password=self._settings.redis_password,
-                decode_responses=True
+                decode_responses=True,
+                socket_keepalive=True,
+                socket_timeout=30,
+                socket_connect_timeout=10,
+                health_check_interval=20,
+                retry=retry,
+                retry_on_timeout=True,
+                retry_on_error=[TimeoutError, ConnectionError, BusyLoadingError],
             )
-            # Verify the connection
             await self._client.ping()
             logger.info("Successfully connected to Redis")
         except Exception as e:
@@ -36,7 +45,6 @@ class RedisClient:
             await self._client.close()
             self._client = None
             logger.info("Disconnected from Redis")
-                # Clear cache for this module
         get_redis.cache_clear()
     
     @property
@@ -51,4 +59,4 @@ from functools import lru_cache
 @lru_cache()
 def get_redis() -> RedisClient:
     """Get the Redis client instance."""
-    return RedisClient() 
+    return RedisClient()
