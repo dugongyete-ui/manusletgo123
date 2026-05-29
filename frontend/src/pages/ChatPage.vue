@@ -107,7 +107,7 @@
             @toolClick="handleToolClick" />
 
           <!-- Loading indicator — hidden while streaming acknowledgment chunks -->
-          <LoadingIndicator v-if="isLoading && !streamingMessageContent" :text="$t('Thinking')" />
+          <LoadingIndicator v-if="isLoading && !streamingMessageContent" :text="currentThinkingText || $t('Thinking')" />
           <!-- Wait indicator — agent is expecting user input -->
           <div v-if="isWaitingForInput && !isLoading"
             class="flex items-center gap-2 px-4 py-2 mx-auto rounded-xl text-sm text-[var(--text-secondary)] bg-[var(--fill-tsp-white-main)] border border-[var(--border-main)] w-fit">
@@ -153,6 +153,7 @@ import {
   AgentSSEEvent,
 } from '../types/event';
 import ToolPanel from '../components/ToolPanel.vue'
+import { TOOL_FUNCTION_MAP } from '../constants/tool'
 import PlanPanel from '../components/PlanPanel.vue';
 import { ArrowDown, FileSearch, PanelLeft, Lock, Globe, Link, Check } from 'lucide-vue-next';
 import ShareIcon from '@/components/icons/ShareIcon.vue';
@@ -190,6 +191,7 @@ const createInitialState = () => ({
   lastEventId: undefined as string | undefined,
   cancelCurrentChat: null as (() => void) | null,
   streamingMessageContent: null as MessageContent | null,
+  currentThinkingText: null as string | null,
   attachments: [] as FileInfo[],
   shareMode: 'private' as 'private' | 'public', // Default to private mode
   linkCopied: false,
@@ -215,6 +217,7 @@ const {
   lastEventId,
   cancelCurrentChat,
   streamingMessageContent,
+  currentThinkingText,
   attachments,
   shareMode,
   linkCopied,
@@ -356,6 +359,13 @@ const handleMessageEvent = (messageData: MessageEventData) => {
 
 // Handle tool event
 const handleToolEvent = (toolData: ToolEventData) => {
+  // Update thinking text: show current action while calling, reset to null when done
+  if (toolData.status === 'calling') {
+    currentThinkingText.value = t(TOOL_FUNCTION_MAP[toolData.function] || toolData.function);
+  } else {
+    currentThinkingText.value = null;
+  }
+
   const lastStep = getLastStep();
   let toolContent: ToolContent = {
     ...toolData
