@@ -46,9 +46,13 @@ const props = defineProps<{
   isShare: boolean;
 }>();
 
-const jsCode = computed(() =>
-  props.toolContent?.content?.js_code ?? props.toolContent?.args?.javascript ?? ''
-);
+const jsCode = computed(() => {
+  const raw = props.toolContent?.content?.js_code ?? props.toolContent?.args?.javascript ?? '';
+  return raw
+    .replace(/^async\s*\(\.\.\.\w+\)\s*=>\s*\(?([\s\S]*?)\)?$/, '$1')
+    .replace(/^\(\.\.\.\w+\)\s*=>\s*/, '')
+    .trim();
+});
 
 const jsResult = computed(() =>
   props.toolContent?.content?.js_result
