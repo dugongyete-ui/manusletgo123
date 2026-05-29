@@ -1,7 +1,7 @@
 from typing import Optional, AsyncGenerator, List
 import asyncio
 import logging
-from datetime import datetime
+from datetime import datetime, timezone
 from app.domain.models.session import Session, SessionStatus
 from app.domain.external.sandbox import Sandbox
 from app.domain.external.search import SearchEngine
@@ -171,35 +171,64 @@ class AgentDomainService:
             task = await self._get_task(session)
 
             if message:
-                if session.status != SessionStatus.RUNNING or task is None:
-                    task = await self._create_task(session)
-                    if not task:
-                        raise RuntimeError("Failed to create task")
+                # ── Deduplication ──────────────────────────────────────────────
+                # fetchEventSource (frontend) automatically retries the same POST
+                # when the SSE connection drops.  If the session is already RUNNING
+                # and the incoming timestamp is within 10 s of the last queued
+                # message we treat this as a reconnect — skip re-queuing and just
+                # re-subscribe to the already-running output stream.
+                def _to_utc_naive(dt: datetime) -> datetime:
+                    """Strip timezone for safe comparison."""
+                    if dt.tzinfo is not None:
+                        return dt.astimezone(timezone.utc).replace(tzinfo=None)
+                    return dt
 
-                assert task is not None, "task must not be None after creation guard"
-                await self._session_repository.update_latest_message(session_id, message, timestamp or datetime.now())
+                incoming_ts = _to_utc_naive(timestamp) if timestamp else None
+                stored_ts   = _to_utc_naive(session.latest_message_at) if session.latest_message_at else None
 
-                message_event = MessageEvent(
-                    message=message, 
-                    role="user", 
-                    attachments=[
-                        FileInfo(
-                            file_id=attachment.get("file_id"),
-                            filename=attachment.get("filename"),
-                            content_type=attachment.get("content_type"),
-                            size=attachment.get("size"),
-                        )
-                        for attachment in attachments
-                    ] if attachments else None
+                is_reconnect = (
+                    session.status == SessionStatus.RUNNING
+                    and task is not None
+                    and incoming_ts is not None
+                    and stored_ts is not None
+                    and abs((incoming_ts - stored_ts).total_seconds()) < 10
                 )
 
-                event_id = await task.input_stream.put(message_event.model_dump_json())
+                if is_reconnect:
+                    logger.info(
+                        "[Dedup] Session %s: duplicate message detected (reconnect) — "
+                        "skipping re-queue, re-subscribing to existing task output",
+                        session_id,
+                    )
+                else:
+                    if session.status != SessionStatus.RUNNING or task is None:
+                        task = await self._create_task(session)
+                        if not task:
+                            raise RuntimeError("Failed to create task")
 
-                message_event.id = event_id
-                await self._session_repository.add_event(session_id, message_event)
-                
-                await task.run()
-                logger.debug(f"Put message into Session {session_id}'s event queue: {message[:50]}...")
+                    assert task is not None, "task must not be None after creation guard"
+                    await self._session_repository.update_latest_message(session_id, message, timestamp or datetime.now())
+
+                    message_event = MessageEvent(
+                        message=message,
+                        role="user",
+                        attachments=[
+                            FileInfo(
+                                file_id=attachment.get("file_id"),
+                                filename=attachment.get("filename"),
+                                content_type=attachment.get("content_type"),
+                                size=attachment.get("size"),
+                            )
+                            for attachment in attachments
+                        ] if attachments else None
+                    )
+
+                    event_id = await task.input_stream.put(message_event.model_dump_json())
+                    message_event.id = event_id
+                    await self._session_repository.add_event(session_id, message_event)
+
+                    await task.run()
+                    logger.debug(f"Put message into Session {session_id}'s event queue: {message[:50]}...")
             
             logger.info(f"Session {session_id} started")
             logger.debug(f"Session {session_id} task: {task}")
