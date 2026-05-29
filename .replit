@@ -175,6 +175,9 @@ BROWSER_ENGINE = "browser_use"
 PASSWORD_SALT = "manus-salt-2025"
 SHOW_GITHUB_BUTTON = "false"
 E2B_TEMPLATE_ID = "i8f9hfxofj2d4nfajala"
+SANDBOX_CDP_URL = "http://localhost:8222"
+SANDBOX_BASE_URL = "http://localhost:8080"
+SANDBOX_VNC_URL = "ws://localhost:5901"
 
 [postMerge]
 path = "scripts/post-merge.sh"
