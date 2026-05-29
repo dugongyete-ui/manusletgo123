@@ -29,8 +29,7 @@ class BrowserUseBrowser:
         """Return a started BrowserSession, initialising it if necessary.
 
         Uses generous retries because the first browser tool call may arrive
-        while Chrome is still warming up inside the e2b sandbox (e.g. after a
-        snap-stub fix that installs Google Chrome on first use).
+        while Chrome is still warming up in the Replit sandbox.
         """
         if self._session is not None:
             return self._session

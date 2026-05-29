@@ -118,7 +118,15 @@ class AgentTaskRunner(TaskRunner):
             logger.exception(f"Agent {self._agent_id} failed to sync file: {e}")
     
     async def _sync_file_to_sandbox(self, file_id: str) -> Optional[FileInfo]:
-        """Download file from storage to sandbox"""
+        """Download file from storage to sandbox.
+
+        Always returns FileInfo when the GridFS download succeeds, even if the
+        sandbox upload fails.  Vision images and text-extractable files only
+        need the file_id (they pull bytes from GridFS directly), so dropping
+        the attachment when the sandbox path fails would silently block vision
+        processing.  file_path is set only when the sandbox upload succeeds;
+        the downstream code already filters sandbox_attachments by file_path.
+        """
         try:
             file_data, file_info = await self._file_storage.download_file(file_id, self._user_id)
             # Use file_id prefix to prevent name collisions between uploads
@@ -127,7 +135,12 @@ class AgentTaskRunner(TaskRunner):
             result = await self._sandbox.file_upload(file_data, file_path)
             if result.success:
                 file_info.file_path = file_path
-                return file_info
+            else:
+                logger.warning(
+                    f"Agent {self._agent_id}: sandbox upload failed for {file_info.filename!r} "
+                    f"(file_id={file_id}) — keeping file_id for vision/extraction fallback"
+                )
+            return file_info
         except Exception as e:
             logger.exception(f"Agent {self._agent_id} failed to sync file: {e}")
 

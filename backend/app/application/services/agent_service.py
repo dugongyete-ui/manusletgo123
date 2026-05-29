@@ -58,8 +58,8 @@ class AgentService:
         session = Session(agent_id=agent.id, user_id=user_id)
         logger.info(f"Created new Session with ID: {session.id} for user: {user_id}")
         await self._session_repository.save(session)
-        # Warm up E2B sandbox in background — Chrome install happens now so the
-        # first chat message is not blocked by the 2-4 minute setup wait.
+        # Warm up Replit sandbox in background so the first chat message is not
+        # blocked by the sandbox readiness check.
         asyncio.get_event_loop().create_task(
             self._warmup_sandbox(session.id),
             name=f"sandbox-warmup-{session.id}",

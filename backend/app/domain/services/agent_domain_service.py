@@ -60,9 +60,10 @@ class AgentDomainService:
         logger.info("All agents closed successfully")
 
     async def warmup_sandbox(self, session_id: str) -> None:
-        """Create an E2B sandbox eagerly in the background right after session
-        creation so the first chat message is not blocked by setup wait.
-        Uses a per-session lock to avoid racing with _create_task."""
+        """Warm up the Replit sandbox eagerly in the background right after
+        session creation so the first chat message is not blocked by the
+        sandbox readiness check.  Uses a per-session lock to avoid racing
+        with _create_task."""
         async with self._get_session_lock(session_id):
             try:
                 session = await self._session_repository.find_by_id(session_id)
