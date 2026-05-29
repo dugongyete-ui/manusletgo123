@@ -120,7 +120,7 @@ outputType = "console"
 
 [[workflows.workflow.tasks]]
 task = "shell.exec"
-args = "cd sandbox && .venv/bin/supervisord -n -c replit_supervisord.conf"
+args = "cd sandbox && /home/runner/workspace/.pythonlibs/bin/supervisord -n -c replit_supervisord.conf"
 
 [[ports]]
 localPort = 5000
@@ -168,8 +168,8 @@ REDIS_PASSWORD = "dA82OZIdJg62zWqsPJ9sDNvgtpCKbAAs"
 E2B_API_KEY = "e2b_f7aa18578ebf00b0816c4bc4446389f8bf52ad5f"
 JWT_SECRET_KEY = "ai-manus-jwt-secret-key-2025-super-secure"
 TAVILY_API_KEY = "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"
-VISION_API_KEY = "sk-dzcxoFk5uiobcoJ0AHqjVUIqrgAVThSxgCt8zws8PG2K4rbQ"
-API_KEY = "sk-dzcxoFk5uiobcoJ0AHqjVUIqrgAVThSxgCt8zws8PG2K4rbQ"
+VISION_API_KEY = "sk-dzcxkUe6LPHgVL5gMLR2jmXyoXOQsWbBQXLP9Wgw8cus1Ugl"
+API_KEY = "sk-dzcxkUe6LPHgVL5gMLR2jmXyoXOQsWbBQXLP9Wgw8cus1Ugl"
 SANDBOX_TTL_MINUTES = "30"
 BROWSER_ENGINE = "browser_use"
 PASSWORD_SALT = "manus-salt-2025"
