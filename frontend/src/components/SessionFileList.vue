@@ -19,9 +19,29 @@
             </header>
             <div class="flex-1 min-h-0 flex flex-col">
                 <div v-if="files.length > 0" class="flex-1 min-h-0 overflow-auto px-3 mt-4 pb-4">
-                    <div class="flex flex-col gap-1 first:pt-0 pt-2">
-                        <div class="">
-                            <div v-for="file in files" 
+                    <!-- Image grid for image files -->
+                    <div v-if="imageFiles.length > 0" class="mb-4">
+                        <p class="text-xs text-[var(--text-tertiary)] font-medium px-2 mb-2">Images</p>
+                        <div class="grid grid-cols-2 gap-2 px-1">
+                            <div v-for="file in imageFiles" :key="file.file_id"
+                                class="relative group rounded-lg overflow-hidden border border-[var(--border-light)] bg-[var(--background-gray-main)] cursor-pointer"
+                                @click="showFile(file)">
+                                <SessionImageThumbnail :file="file" />
+                                <div class="absolute inset-0 bg-black/40 opacity-0 group-hover:opacity-100 transition-opacity flex items-end p-2">
+                                    <span class="text-white text-xs truncate flex-1">{{ file.filename }}</span>
+                                    <div @click.stop="downloadFile(file)"
+                                        class="flex items-center justify-center w-6 h-6 rounded bg-black/50 hover:bg-black/70 ml-1">
+                                        <Download class="size-3.5 text-white" />
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                    <!-- List for non-image files -->
+                    <div v-if="nonImageFiles.length > 0">
+                        <p v-if="imageFiles.length > 0" class="text-xs text-[var(--text-tertiary)] font-medium px-2 mb-2">Files</p>
+                        <div class="flex flex-col gap-1">
+                            <div v-for="file in nonImageFiles" :key="file.file_id"
                                 class="flex items-center gap-3 px-3 py-2.5 hover:bg-[var(--fill-tsp-gray-main)] transition-colors rounded-lg clickable">
                                 <div class="relative flex items-center justify-center">
                                     <component :is="getFileType(file.filename).icon" />
@@ -32,16 +52,13 @@
                                             <div class="flex-1 min-w-0 flex gap-2 items-center">
                                                 <span
                                                     class="inline-block whitespace-nowrap text-sm text-[var(--text-primary)]"
-                                                    style="overflow: hidden; text-overflow: ellipsis;">{{ file.filename
-                                                    }}</span>
-                                                <div class="flex gap-2 flex-shrink-0 items-center"></div>
+                                                    style="overflow: hidden; text-overflow: ellipsis;">{{ file.filename }}</span>
                                             </div>
                                             <span class="text-xs text-[var(--text-tertiary)]">{{
                                                 formatRelativeTime(parseISODateTime(file.upload_date)) }}</span>
                                         </div>
-                                        <div @click="downloadFile(file)"
-                                            class="flex items-center justify-center cursor-pointer hover:bg-[var(--fill-tsp-gray-main)] rounded-md w-8 h-8 text-[var(--icon-tertiary)]"
-                                            aria-expanded="false" aria-haspopup="dialog">
+                                        <div @click.stop="downloadFile(file)"
+                                            class="flex items-center justify-center cursor-pointer hover:bg-[var(--fill-tsp-gray-main)] rounded-md w-8 h-8 text-[var(--icon-tertiary)]">
                                             <Download class="size-5 text-[var(--icon-tertiary)]" />
                                         </div>
                                     </div>
@@ -61,7 +78,7 @@
 
 <script setup lang="ts">
 import { X, Download, File } from 'lucide-vue-next';
-import { ref, watch } from 'vue';
+import { ref, computed, watch } from 'vue';
 import { useRoute } from 'vue-router';
 import type { FileInfo } from '../api/file';
 import { getFileDownloadUrl } from '../api/file';
@@ -70,18 +87,28 @@ import { formatRelativeTime, parseISODateTime } from '../utils/time';
 import { getFileType } from '../utils/fileType';
 import { useSessionFileList } from '../composables/useSessionFileList';
 import { useFilePanel } from '../composables/useFilePanel';
+import SessionImageThumbnail from './SessionImageThumbnail.vue';
 
 const route = useRoute();
 const files = ref<FileInfo[]>([]);
 
 const { showFilePanel } = useFilePanel();
-
 const { visible, hideSessionFileList, shared } = useSessionFileList();
 
+const imageExtensions = new Set([
+    'jpg', 'jpeg', 'png', 'gif', 'bmp', 'webp', 'svg', 'ico', 'tiff', 'tif', 'heic', 'heif',
+]);
+
+function isImageFile(filename: string): boolean {
+    const ext = (filename ?? '').split('.').pop()?.toLowerCase() ?? '';
+    return imageExtensions.has(ext);
+}
+
+const imageFiles = computed(() => files.value.filter(f => isImageFile(f.filename ?? '')));
+const nonImageFiles = computed(() => files.value.filter(f => !isImageFile(f.filename ?? '')));
+
 const fetchFiles = async (sessionId: string) => {
-    if (!sessionId) {
-        return;
-    }
+    if (!sessionId) return;
     let response: FileInfo[] = [];
     if (shared.value) {
         response = await getSharedSessionFiles(sessionId);
@@ -89,17 +116,17 @@ const fetchFiles = async (sessionId: string) => {
         response = await getSessionFiles(sessionId);
     }
     files.value = response;
-}
+};
 
 const downloadFile = async (fileInfo: FileInfo) => {
     const url = await getFileDownloadUrl(fileInfo);
     window.open(url, '_blank');
-}
+};
 
 const showFile = (file: FileInfo) => {
     showFilePanel(file);
     hideSessionFileList();
-}
+};
 
 watch(visible, (newVisible) => {
     if (newVisible) {
@@ -108,5 +135,5 @@ watch(visible, (newVisible) => {
             fetchFiles(sessionId);
         }
     }
-})
+});
 </script>

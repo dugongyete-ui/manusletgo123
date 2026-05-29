@@ -444,14 +444,18 @@ class AgentTaskRunner(TaskRunner):
                     files_written = [f for f in files_written if f.file_path != file_info.file_path]
                     files_written.append(file_info)
             elif isinstance(event, MessageEvent):
-                # Auto-attach files written this run if the agent's message
-                # didn't reference them as attachments.
-                if files_written and not event.attachments:
-                    event.attachments = list(files_written)
-                    logger.info(
-                        f"Agent {self._agent_id} auto-attached {len(files_written)} file(s) "
-                        f"to MessageEvent: {[f.filename for f in files_written]}"
-                    )
+                # Always merge files_written into the message attachments.
+                # The agent may attach some files (e.g. a summary .md) while
+                # forgetting to include downloaded images — we merge both.
+                if files_written:
+                    existing_paths = {f.file_path for f in (event.attachments or []) if f.file_path}
+                    extra = [f for f in files_written if f.file_path not in existing_paths]
+                    if extra:
+                        event.attachments = list(event.attachments or []) + extra
+                        logger.info(
+                            f"Agent {self._agent_id} merged {len(extra)} written file(s) "
+                            f"into MessageEvent: {[f.filename for f in extra]}"
+                        )
                 await self._sync_message_attachments_to_storage(event)
 
             yield event
