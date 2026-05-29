@@ -1,0 +1,373 @@
+import asyncio
+import io
+import logging
+import os
+from typing import Optional, BinaryIO
+
+import httpx
+
+from app.domain.external.sandbox import Sandbox, Browser
+from app.infrastructure.external.browser.browser_use_browser import BrowserUseBrowser
+from app.infrastructure.external.browser.playwright_browser import PlaywrightBrowser
+from app.core.config import get_settings
+from app.domain.models.tool_result import ToolResult
+
+logger = logging.getLogger(__name__)
+
+_SYS_BASE_SESSION = "__sys__"
+
+
+class ReplitSandbox(Sandbox):
+    """
+    Replit-local Sandbox implementation.
+
+    All sandbox services (xvfb, Chrome, x11vnc, websockify, FastAPI sandbox API)
+    run as permanent processes inside the Replit container managed by supervisord.
+
+    This is a singleton: create() and get() both return the same global instance.
+    There are no remote tunnels — all URLs point to localhost.
+    """
+
+    _instance: Optional["ReplitSandbox"] = None
+    _instance_lock: asyncio.Lock = asyncio.Lock()
+
+    def __init__(self) -> None:
+        settings = get_settings()
+        self.client = httpx.AsyncClient(timeout=600)
+        self._id = "replit-local"
+        self.base_url = getattr(settings, "sandbox_base_url", None) or "http://localhost:8080"
+        self._vnc_url = getattr(settings, "sandbox_vnc_url", None) or "ws://localhost:5901"
+        self._cdp_url = getattr(settings, "sandbox_cdp_url", None) or "http://localhost:9222"
+        logger.info(
+            "ReplitSandbox initialised: base_url=%s vnc=%s cdp=%s",
+            self.base_url, self._vnc_url, self._cdp_url,
+        )
+
+    # ------------------------------------------------------------------
+    # Internal helpers
+    # ------------------------------------------------------------------
+
+    async def _run_admin_cmd(self, cmd: str, timeout: int = 30) -> str:
+        """Run a one-shot admin command via the sandbox shell HTTP API."""
+        session = f"{_SYS_BASE_SESSION}_{os.urandom(4).hex()}"
+        try:
+            await self.client.post(
+                f"{self.base_url}/api/v1/shell/exec",
+                json={"id": session, "exec_dir": "/root", "command": cmd},
+            )
+            await self.client.post(
+                f"{self.base_url}/api/v1/shell/wait",
+                json={"id": session, "seconds": timeout},
+            )
+            await asyncio.sleep(1.0)
+            view_resp = await self.client.post(
+                f"{self.base_url}/api/v1/shell/view",
+                json={"id": session, "console": False},
+            )
+            data = view_resp.json()
+            result = data.get("data", {})
+            if isinstance(result, dict):
+                return str(result.get("output", "") or "")
+            return str(result or "")
+        except Exception as exc:
+            logger.warning("Admin cmd failed (%s): %s", cmd[:60], exc)
+            return ""
+
+    # ------------------------------------------------------------------
+    # Lifecycle
+    # ------------------------------------------------------------------
+
+    async def ensure_sandbox(self) -> None:
+        """
+        Poll the sandbox supervisor status endpoint until all services are RUNNING.
+        This is a simple poll — no Chrome installation or CDP proxy deployment needed
+        because those services are pre-installed in the Replit container.
+        """
+        max_retries = 60
+        retry_interval = 2
+
+        for attempt in range(max_retries):
+            try:
+                response = await self.client.get(
+                    f"{self.base_url}/api/v1/supervisor/status"
+                )
+                response.raise_for_status()
+                tool_result = ToolResult(**response.json())
+                if not tool_result.success:
+                    if attempt % 5 == 0:
+                        logger.info(
+                            "ensure_sandbox: waiting for API (attempt %d/%d)…",
+                            attempt + 1, max_retries,
+                        )
+                    await asyncio.sleep(retry_interval)
+                    continue
+
+                services = tool_result.data or []
+                if not services:
+                    await asyncio.sleep(retry_interval)
+                    continue
+
+                non_running = [
+                    f"{s.get('name', '?')}({s.get('statename', '?')})"
+                    for s in services
+                    if s.get("statename") != "RUNNING"
+                ]
+                if not non_running:
+                    logger.info(
+                        "All %d sandbox services RUNNING — sandbox ready", len(services)
+                    )
+                    return
+
+                if attempt % 5 == 0 or attempt < 3:
+                    logger.info(
+                        "Waiting for services (attempt %d/%d): %s",
+                        attempt + 1, max_retries, non_running,
+                    )
+            except Exception as exc:
+                if attempt % 5 == 0 or attempt < 3:
+                    logger.warning(
+                        "ensure_sandbox attempt %d/%d failed: %s",
+                        attempt + 1, max_retries, exc,
+                    )
+            await asyncio.sleep(retry_interval)
+
+        logger.error(
+            "Sandbox services failed to become ready after %d attempts (%ds)",
+            max_retries, max_retries * retry_interval,
+        )
+
+    async def destroy(self) -> bool:
+        """No-op — the Replit sandbox is a permanent process and is never destroyed."""
+        logger.info("ReplitSandbox.destroy() called — no-op (permanent process)")
+        return True
+
+    async def get_browser(self) -> Browser:
+        """Return a Browser connected to the sandbox Chrome via CDP."""
+        settings = get_settings()
+        engine = (settings.browser_engine or "browser_use").lower().strip()
+        if engine == "browser_use":
+            logger.info("Using BrowserUseBrowser (CDP: %s)", self.cdp_url)
+            return BrowserUseBrowser(self.cdp_url)
+        logger.info("Using PlaywrightBrowser (CDP: %s)", self.cdp_url)
+        return PlaywrightBrowser(self.cdp_url)
+
+    # ------------------------------------------------------------------
+    # Shell operations
+    # ------------------------------------------------------------------
+
+    async def exec_command(
+        self,
+        session_id: str,
+        exec_dir: str,
+        command: str,
+    ) -> ToolResult:
+        response = await self.client.post(
+            f"{self.base_url}/api/v1/shell/exec",
+            json={"id": session_id, "exec_dir": exec_dir, "command": command},
+        )
+        return ToolResult(**response.json())
+
+    async def view_shell(
+        self,
+        session_id: str,
+        console: bool = False,
+    ) -> ToolResult:
+        response = await self.client.post(
+            f"{self.base_url}/api/v1/shell/view",
+            json={"id": session_id, "console": console},
+        )
+        return ToolResult(**response.json())
+
+    async def wait_for_process(
+        self,
+        session_id: str,
+        seconds: Optional[int] = None,
+    ) -> ToolResult:
+        response = await self.client.post(
+            f"{self.base_url}/api/v1/shell/wait",
+            json={"id": session_id, "seconds": seconds},
+        )
+        return ToolResult(**response.json())
+
+    async def write_to_process(
+        self,
+        session_id: str,
+        input_text: str,
+        press_enter: bool = True,
+    ) -> ToolResult:
+        response = await self.client.post(
+            f"{self.base_url}/api/v1/shell/write",
+            json={"id": session_id, "input": input_text, "press_enter": press_enter},
+        )
+        return ToolResult(**response.json())
+
+    async def kill_process(self, session_id: str) -> ToolResult:
+        response = await self.client.post(
+            f"{self.base_url}/api/v1/shell/kill",
+            json={"id": session_id},
+        )
+        return ToolResult(**response.json())
+
+    # ------------------------------------------------------------------
+    # File operations
+    # ------------------------------------------------------------------
+
+    async def file_write(
+        self,
+        file: str,
+        content: str,
+        append: bool = False,
+        leading_newline: bool = False,
+        trailing_newline: bool = False,
+        sudo: bool = False,
+    ) -> ToolResult:
+        response = await self.client.post(
+            f"{self.base_url}/api/v1/file/write",
+            json={
+                "file": file,
+                "content": content,
+                "append": append,
+                "leading_newline": leading_newline,
+                "trailing_newline": trailing_newline,
+                "sudo": sudo,
+            },
+        )
+        return ToolResult(**response.json())
+
+    async def file_read(
+        self,
+        file: str,
+        start_line: Optional[int] = None,
+        end_line: Optional[int] = None,
+        sudo: bool = False,
+    ) -> ToolResult:
+        response = await self.client.post(
+            f"{self.base_url}/api/v1/file/read",
+            json={
+                "file": file,
+                "start_line": start_line,
+                "end_line": end_line,
+                "sudo": sudo,
+            },
+        )
+        return ToolResult(**response.json())
+
+    async def file_exists(self, path: str) -> ToolResult:
+        out = await self._run_admin_cmd(
+            f"test -e '{path}' && echo __exists__ || echo __absent__"
+        )
+        exists = "__exists__" in out and "__absent__" not in out
+        return ToolResult(
+            success=True,
+            message="File exists check completed",
+            data={"exists": exists},
+        )
+
+    async def file_delete(self, path: str) -> ToolResult:
+        await self._run_admin_cmd(f"rm -rf '{path}'")
+        return ToolResult(
+            success=True,
+            message=f"Deleted: {path}",
+            data={"path": path},
+        )
+
+    async def file_list(self, path: str) -> ToolResult:
+        output = await self._run_admin_cmd(f"ls -la '{path}'")
+        return ToolResult(
+            success=True,
+            message="Directory listed",
+            data={"listing": output},
+        )
+
+    async def file_replace(
+        self,
+        file: str,
+        old_str: str,
+        new_str: str,
+        sudo: bool = False,
+    ) -> ToolResult:
+        response = await self.client.post(
+            f"{self.base_url}/api/v1/file/replace",
+            json={"file": file, "old_str": old_str, "new_str": new_str, "sudo": sudo},
+        )
+        return ToolResult(**response.json())
+
+    async def file_search(
+        self,
+        file: str,
+        regex: str,
+        sudo: bool = False,
+    ) -> ToolResult:
+        response = await self.client.post(
+            f"{self.base_url}/api/v1/file/search",
+            json={"file": file, "regex": regex, "sudo": sudo},
+        )
+        return ToolResult(**response.json())
+
+    async def file_find(self, path: str, glob_pattern: str) -> ToolResult:
+        response = await self.client.post(
+            f"{self.base_url}/api/v1/file/find",
+            json={"path": path, "glob": glob_pattern},
+        )
+        return ToolResult(**response.json())
+
+    async def file_upload(
+        self,
+        file_data: BinaryIO,
+        path: str,
+        filename: Optional[str] = None,
+    ) -> ToolResult:
+        files = {"file": (filename or "upload", file_data, "application/octet-stream")}
+        data = {"path": path}
+        response = await self.client.post(
+            f"{self.base_url}/api/v1/file/upload",
+            files=files,
+            data=data,
+        )
+        return ToolResult(**response.json())
+
+    async def file_download(self, path: str) -> BinaryIO:
+        response = await self.client.get(
+            f"{self.base_url}/api/v1/file/download",
+            params={"path": path},
+        )
+        response.raise_for_status()
+        return io.BytesIO(response.content)
+
+    # ------------------------------------------------------------------
+    # Properties
+    # ------------------------------------------------------------------
+
+    @property
+    def id(self) -> str:
+        return self._id
+
+    @property
+    def cdp_url(self) -> str:
+        return self._cdp_url
+
+    @property
+    def vnc_url(self) -> str:
+        return self._vnc_url
+
+    # ------------------------------------------------------------------
+    # Factory class methods — singleton pattern
+    # ------------------------------------------------------------------
+
+    @classmethod
+    async def create(cls) -> "ReplitSandbox":
+        """Return the global singleton ReplitSandbox instance, creating it if needed."""
+        async with cls._instance_lock:
+            if cls._instance is None:
+                cls._instance = cls()
+                logger.info("ReplitSandbox singleton created")
+            return cls._instance
+
+    @classmethod
+    async def get(cls, id: str) -> "ReplitSandbox":
+        """Return the global singleton ReplitSandbox instance (id is ignored)."""
+        async with cls._instance_lock:
+            if cls._instance is None:
+                cls._instance = cls()
+                logger.info("ReplitSandbox singleton created via get()")
+            return cls._instance

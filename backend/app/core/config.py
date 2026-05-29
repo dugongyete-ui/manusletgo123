@@ -45,11 +45,16 @@ class Settings(BaseSettings):
     redis_db: int = 0
     redis_password: str | None = None
     
-    # Sandbox configuration (E2B)
+    # Sandbox configuration
     sandbox_address: str | None = None
     sandbox_ttl_minutes: int | None = 30
+    # Legacy E2B fields — kept as optional so existing .env files are not broken
     e2b_api_key: str | None = None
     e2b_template_id: str = "i8f9hfxofj2d4nfajala"
+    # Replit-local sandbox URLs (default to localhost services)
+    sandbox_base_url: str = "http://localhost:8080"
+    sandbox_vnc_url: str = "ws://localhost:5901"
+    sandbox_cdp_url: str = "http://localhost:8222"
 
     # Vision model configuration (optional, for browser screenshot analysis)
     vision_model_name: str | None = None

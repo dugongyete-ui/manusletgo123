@@ -236,7 +236,7 @@ async def vnc_websocket(
         logger.info(f"Connecting to VNC WebSocket at {sandbox_ws_url}")
     
         # Connect to sandbox WebSocket (binary subprotocol required by noVNC/websockify)
-        # Use ssl=True for wss:// E2B tunnel connections; create permissive context as fallback
+        # ws://localhost connections do not require SSL
         ssl_context = None
         if sandbox_ws_url.startswith("wss://"):
             ssl_context = ssl.create_default_context()

@@ -32,7 +32,6 @@ dependencies = [
     "langchain-openai>=1.0.3",
     "openai>=2.8.0",
     # ── Sandbox / browser / search ───────────────────────────────────────────
-    "e2b>=1.0.0",
     "browser-use>=0.12.1",
     "playwright>=1.42.0",
     "tavily-python>=0.5.0",
