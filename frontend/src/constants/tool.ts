@@ -102,10 +102,11 @@ import ShellToolView from '@/components/toolViews/ShellToolView.vue';
 import FileToolView from '@/components/toolViews/FileToolView.vue';
 import SearchToolView from '@/components/toolViews/SearchToolView.vue';
 import BrowserToolView from '@/components/toolViews/BrowserToolView.vue';
+import ConsoleToolView from '@/components/toolViews/ConsoleToolView.vue';
 import McpToolView from '@/components/toolViews/McpToolView.vue';
 
 /**
- * Mapping from tool names to components
+ * Mapping from tool names to components (fallback)
  */
 export const TOOL_COMPONENT_MAP: {[key: string]: any} = {
   "shell": ShellToolView,
@@ -113,4 +114,12 @@ export const TOOL_COMPONENT_MAP: {[key: string]: any} = {
   "search": SearchToolView,
   "browser": BrowserToolView,
   "mcp": McpToolView
+};
+
+/**
+ * Mapping from specific function names to components (takes priority over TOOL_COMPONENT_MAP)
+ */
+export const TOOL_FUNCTION_COMPONENT_MAP: {[key: string]: any} = {
+  "browser_console_exec": ConsoleToolView,
+  "browser_console_view": ConsoleToolView,
 };

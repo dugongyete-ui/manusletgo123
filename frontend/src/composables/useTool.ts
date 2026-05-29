@@ -1,7 +1,7 @@
 import { computed, Ref } from 'vue';
 import type { ToolContent } from '../types/message';
 import { useI18n } from 'vue-i18n';
-import { TOOL_ICON_MAP, TOOL_NAME_MAP, TOOL_FUNCTION_MAP, TOOL_FUNCTION_ARG_MAP, TOOL_COMPONENT_MAP } from '../constants/tool';
+import { TOOL_ICON_MAP, TOOL_NAME_MAP, TOOL_FUNCTION_MAP, TOOL_FUNCTION_ARG_MAP, TOOL_COMPONENT_MAP, TOOL_FUNCTION_COMPONENT_MAP } from '../constants/tool';
 
 export function useToolInfo(tool?: Ref<ToolContent | undefined>) {
   const { t } = useI18n();
@@ -45,7 +45,7 @@ export function useToolInfo(tool?: Ref<ToolContent | undefined>) {
       name: t(TOOL_NAME_MAP[tool.value.name] || ''),
       function: t(TOOL_FUNCTION_MAP[tool.value.function] || tool.value.function),
       functionArg: functionArg,
-      view: TOOL_COMPONENT_MAP[tool.value.name] || null
+      view: TOOL_FUNCTION_COMPONENT_MAP[tool.value.function] || TOOL_COMPONENT_MAP[tool.value.name] || null
     };
   });
 
