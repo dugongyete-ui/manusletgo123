@@ -1,4 +1,4 @@
-# 🤖 AI Manus × Claw Open Source General AI Agent
+# 🤖 AI Dzeck × Claw Open Source General AI Agent
 
 Official Site: <https://ai-manus.com>
 
@@ -10,11 +10,11 @@ Join our community: [QQ Group (1005477581)](https://qun.qq.com/universal-share/s
 
 ---
 
-AI Manus is a general-purpose AI Agent system that can be fully privately deployed and supports running various tools and operations in a sandbox environment. Now with deep **Claw** integration (powered by [OpenClaw](https://github.com/anthropics/openclaw)), delivering the Manus × Claw experience: one-click AI assistant deployment, per-user isolated containers, auto-expiry countdown, and full chat history.
+AI Dzeck is a general-purpose AI Agent system that can be fully privately deployed and supports running various tools and operations in a sandbox environment. Now with deep **Claw** integration (powered by [OpenClaw](https://github.com/anthropics/openclaw)), delivering the Dzeck × Claw experience: one-click AI assistant deployment, per-user isolated containers, auto-expiry countdown, and full chat history.
 
-The goal of AI Manus project is to become a fully privately deployable enterprise-level Manus application. Vertical Manus applications have many repetitive engineering tasks, and this project hopes to unify this part, allowing everyone to build vertical Manus applications like building blocks.
+The goal of AI Dzeck project is to become a fully privately deployable enterprise-level Dzeck application. Vertical Dzeck applications have many repetitive engineering tasks, and this project hopes to unify this part, allowing everyone to build vertical Dzeck applications like building blocks.
 
-Each service and tool in AI Manus includes a Built-in version that can be fully privately deployed. Later, through A2A and MCP protocols, both Built-in Agents and Tools can be replaced. The underlying infrastructure can also be replaced by providing diverse provider configurations or simple development adaptations. AI Manus supports distributed multi-instance deployment from the architectural design, facilitating horizontal scaling to meet enterprise-level deployment requirements.
+Each service and tool in AI Dzeck includes a Built-in version that can be fully privately deployed. Later, through A2A and MCP protocols, both Built-in Agents and Tools can be replaced. The underlying infrastructure can also be replaced by providing diverse provider configurations or simple development adaptations. AI Dzeck supports distributed multi-instance deployment from the architectural design, facilitating horizontal scaling to meet enterprise-level deployment requirements.
 
 ---
 

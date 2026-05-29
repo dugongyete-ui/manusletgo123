@@ -1,4 +1,4 @@
-# AI Manus × Claw
+# AI Dzeck × Claw
 
 English | [中文](README_zh.md) | [Official Site](https://ai-manus.com) | [Documents](https://docs.ai-manus.com/#/en/)
 
@@ -6,17 +6,17 @@ English | [中文](README_zh.md) | [Official Site](https://ai-manus.com) | [Docu
 &ensp;
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
-AI Manus is a general-purpose AI Agent system that supports running various tools and operations in a sandbox environment. Now with **Claw** — a deeply integrated [OpenClaw](https://github.com/anthropics/openclaw) AI assistant that brings one-click deployment, per-user isolated containers, and seamless chat history to the Manus ecosystem.
+AI Dzeck is a general-purpose AI Agent system that supports running various tools and operations in a sandbox environment. Now with **Claw** — a deeply integrated [OpenClaw](https://github.com/anthropics/openclaw) AI assistant that brings one-click deployment, per-user isolated containers, and seamless chat history to the Dzeck ecosystem.
 
-Enjoy your own agent with AI Manus × Claw!
+Enjoy your own agent with AI Dzeck × Claw!
 
 👏 Join [QQ Group(1005477581)](https://qun.qq.com/universal-share/share?ac=1&authKey=p4X3Da5iMpR4liAenxwvhs7IValPKiCFtUevRlJouz9qSTSZsMnPJc3hzsJjgQYv&busi_data=eyJncm91cENvZGUiOiIxMDA1NDc3NTgxIiwidG9rZW4iOiJNZmUrTmQ0UzNDZDNqNDFVdjVPS1VCRkJGRWVlV0R3RFJSRVFoZDAwRjFDeUdUM0t6aUIyczlVdzRjV1BYN09IIiwidWluIjoiMzQyMjExODE1In0%3D&data=C3B-E6BlEbailV32co77iXL5vxPIhtD9y_itWLSq50hKqosO_55_isOZym2Faaq4hs9-517tUY8GSWaDwPom-A&svctype=4&tempid=h5_group_info)
 
-❤️ Like AI Manus? Give it a star 🌟 or [Sponsor](docs/sponsor.md) to support the development!
+❤️ Like AI Dzeck? Give it a star 🌟 or [Sponsor](docs/sponsor.md) to support the development!
 
 🚀 [Try a Demo](https://app.ai-manus.com)
 
-📝 [Blog: Rebuild Manus with WebUI and Sandbox](https://simpleyyt.com/2026/03/07/rebuild-manus-with-webui-and-sandbox/)
+📝 [Blog: Rebuild Dzeck with WebUI and Sandbox](https://simpleyyt.com/2026/03/07/rebuild-manus-with-webui-and-sandbox/)
 
 ## Demos
 
@@ -94,19 +94,19 @@ Docker Compose is recommended for deployment:
 ```yaml
 services:
   frontend:
-    image: simpleyyt/manus-frontend
+    image: simpleyyt/dzeck-frontend
     ports:
       - "5173:80"
     depends_on:
       - backend
     restart: unless-stopped
     networks:
-      - manus-network
+      - dzeck-network
     environment:
       - BACKEND_URL=http://backend:8000
 
   backend:
-    image: simpleyyt/manus-backend
+    image: simpleyyt/dzeck-backend
     depends_on:
       - sandbox
       - claw
@@ -115,7 +115,7 @@ services:
       - /var/run/docker.sock:/var/run/docker.sock:ro
       #- ./mcp.json:/etc/mcp.json # Mount MCP servers directory
     networks:
-      - manus-network
+      - dzeck-network
     environment:
       # OpenAI API base URL
       - API_BASE=https://api.openai.com/v1
@@ -130,18 +130,18 @@ services:
       # More configuration options: https://docs.ai-manus.com/#/configuration
 
   sandbox:
-    image: simpleyyt/manus-sandbox
+    image: simpleyyt/dzeck-sandbox
     command: /bin/sh -c "exit 0"  # prevent sandbox from starting, ensure image is pulled
     restart: "no"
     networks:
-      - manus-network
+      - dzeck-network
 
   claw:
-    image: simpleyyt/manus-claw
+    image: simpleyyt/dzeck-claw
     entrypoint: /bin/sh -c "exit 0"  # prevent claw from starting, ensure image is pulled
     restart: "no"
     networks:
-      - manus-network
+      - dzeck-network
 
   mongodb:
     image: mongo:7.0
@@ -151,21 +151,21 @@ services:
     #ports:
     #  - "27017:27017"
     networks:
-      - manus-network
+      - dzeck-network
 
   redis:
     image: redis:7.0
     restart: unless-stopped
     networks:
-      - manus-network
+      - dzeck-network
 
 volumes:
   mongodb_data:
-    name: manus-mongodb-data
+    name: dzeck-mongodb-data
 
 networks:
-  manus-network:
-    name: manus-network
+  dzeck-network:
+    name: dzeck-network
     driver: bridge
 ```
 <!-- /docker-compose-example.yml -->
@@ -178,7 +178,7 @@ docker compose up -d
 
 > Note: If you see `sandbox-1 exited with code 0`, this is normal, as it ensures the sandbox image is successfully pulled locally.
 
-Open your browser and visit <http://localhost:5173> to access Manus. For more configuration options, see: https://docs.ai-manus.com/#/en/configuration
+Open your browser and visit <http://localhost:5173> to access Dzeck. For more configuration options, see: https://docs.ai-manus.com/#/en/configuration
 
 ## Development Guide
 
@@ -186,10 +186,10 @@ Open your browser and visit <http://localhost:5173> to access Manus. For more co
 
 This project consists of the following sub-projects:
 
-* `frontend`: Manus frontend
-* `backend`: Manus backend
-* `sandbox`: Manus sandbox
-* `claw`: Manus Claw — OpenClaw plugin & container image bridging OpenClaw Gateway with Manus backend
+* `frontend`: Dzeck frontend
+* `backend`: Dzeck backend
+* `sandbox`: Dzeck sandbox
+* `claw`: Dzeck Claw — OpenClaw plugin & container image bridging OpenClaw Gateway with Dzeck backend
 * `mockserver`: Mock LLM server (for development/testing)
 
 ### Environment Setup

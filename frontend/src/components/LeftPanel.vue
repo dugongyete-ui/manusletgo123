@@ -57,7 +57,7 @@
             <div class="claw-nav-icon w-[18px] h-[18px]" />
           </div>
           <div class="flex-1 min-w-0 flex gap-[4px] items-center text-[14px] text-[var(--text-primary)]">
-            <span class="truncate">Manus Claw</span>
+            <span class="truncate">Dzeck Claw</span>
           </div>
         </div>
 

@@ -13,7 +13,7 @@
             </div>
             <div class="flex">
               <Bot :size="30" />
-              <ManusLogoTextIcon />
+              <DzeckLogoTextIcon />
             </div>
           </div>
           <div class="flex items-center gap-2">
@@ -78,7 +78,7 @@ import ChatBox from '../components/ChatBox.vue';
 import { createSession } from '../api/agent';
 import { showErrorToast } from '../utils/toast';
 import { Bot, PanelLeft, Github } from 'lucide-vue-next';
-import ManusLogoTextIcon from '../components/icons/ManusLogoTextIcon.vue';
+import DzeckLogoTextIcon from '../components/icons/DzeckLogoTextIcon.vue';
 import type { FileInfo } from '../api/file';
 import { useLeftPanel } from '../composables/useLeftPanel';
 import { useFilePanel } from '../composables/useFilePanel';

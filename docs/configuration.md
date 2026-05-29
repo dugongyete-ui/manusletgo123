@@ -23,7 +23,7 @@
 | 配置项 | 默认值 | 是否必需 | 说明 |
 |--------|--------|----------|------|
 | `MONGODB_URI` | `mongodb://mongodb:27017` | 否 | MongoDB 连接字符串 |
-| `MONGODB_DATABASE` | `manus` | 否 | 数据库名称 |
+| `MONGODB_DATABASE` | `dzeck` | 否 | 数据库名称 |
 | `MONGODB_USERNAME` | - | 否 | MongoDB 用户名 |
 | `MONGODB_PASSWORD` | - | 否 | MongoDB 密码 |
 
@@ -45,10 +45,10 @@
 | 配置项 | 默认值 | 是否必需 | 说明 |
 |--------|--------|----------|------|
 | `SANDBOX_ADDRESS` | - | 否 | 沙箱服务器地址 |
-| `SANDBOX_IMAGE` | `simpleyyt/manus-sandbox` | 否 | Docker 沙箱镜像名称 |
+| `SANDBOX_IMAGE` | `simpleyyt/dzeck-sandbox` | 否 | Docker 沙箱镜像名称 |
 | `SANDBOX_NAME_PREFIX` | `sandbox` | 否 | 沙箱容器名称前缀 |
 | `SANDBOX_TTL_MINUTES` | `30` | 否 | 沙箱生存时间（分钟） |
-| `SANDBOX_NETWORK` | `manus-network` | 否 | Docker 网络名称 |
+| `SANDBOX_NETWORK` | `dzeck-network` | 否 | Docker 网络名称 |
 | `SANDBOX_CHROME_ARGS` | - | 否 | Chrome 浏览器启动参数 |
 | `SANDBOX_HTTPS_PROXY` | - | 否 | HTTPS 代理设置 |
 | `SANDBOX_HTTP_PROXY` | - | 否 | HTTP 代理设置 |
@@ -59,14 +59,14 @@
 | 配置项 | 默认值 | 是否必需 | 说明 |
 |--------|--------|----------|------|
 | `CLAW_ENABLED` | `true` | 否 | 是否启用 Claw 功能，设为 `false` 关闭左侧面板入口 |
-| `CLAW_IMAGE` | `simpleyyt/manus-claw` | 否 | Claw Docker 镜像名称 |
-| `CLAW_NAME_PREFIX` | `manus-claw` | 否 | Claw 容器名称前缀 |
+| `CLAW_IMAGE` | `simpleyyt/dzeck-claw` | 否 | Claw Docker 镜像名称 |
+| `CLAW_NAME_PREFIX` | `dzeck-claw` | 否 | Claw 容器名称前缀 |
 | `CLAW_TTL_SECONDS` | `3600` | 否 | Claw 容器生存时间（秒），设为 `0` 表示不限时 |
 | `CLAW_NETWORK` | - | 否 | Claw 容器使用的 Docker 网络桥名称 |
 | `CLAW_READY_TIMEOUT` | `300` | 否 | 等待 Claw 容器就绪的最大秒数（默认 5 分钟） |
 | `CLAW_ADDRESS` | - | 否 | 固定 Claw 地址（开发环境使用，设置后跳过 Docker 容器创建） |
 | `CLAW_API_KEY` | - | 否 | 静态 API 密钥（开发环境 / 固定容器使用） |
-| `MANUS_API_BASE_URL` | `http://backend:8000` | 否 | 后端 API 地址，供 Claw 容器回调使用 |
+| `DZECK_API_BASE_URL` | `http://backend:8000` | 否 | 后端 API 地址，供 Claw 容器回调使用 |
 
 ### 搜索引擎配置
 

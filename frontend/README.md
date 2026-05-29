@@ -1,8 +1,8 @@
-# AI Manus × Claw Frontend
+# AI Dzeck × Claw Frontend
 
 English | [中文](README_zh.md)
 
-This is the frontend for AI Manus × Claw, built with Vue 3 + TypeScript + Vite.
+This is the frontend for AI Dzeck × Claw, built with Vue 3 + TypeScript + Vite.
 
 ## Features
 

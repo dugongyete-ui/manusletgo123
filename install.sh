@@ -2,7 +2,7 @@
 set -e
 
 echo "========================================"
-echo "  AI Manus × Claw — Install Script"
+echo "  AI Dzeck × Claw — Install Script"
 echo "========================================"
 
 # ── 0. Prerequisites check ────────────────────────────────────────────────────

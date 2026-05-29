@@ -378,11 +378,11 @@ class PlaywrightBrowser:
                     text = text.substring(0, 97) + '...';
                 }
                 
-                // Only add data-manus-id attribute to elements that meet the conditions
-                element.setAttribute('data-manus-id', `manus-element-${validElementIndex}`);
+                // Only add data-dzeck-id attribute to elements that meet the conditions
+                element.setAttribute('data-dzeck-id', `dzeck-element-${validElementIndex}`);
                                                         
-                // Build selector - using only data-manus-id
-                const selector = `[data-manus-id="manus-element-${validElementIndex}"]`;
+                // Build selector - using only data-dzeck-id
+                const selector = `[data-dzeck-id="dzeck-element-${validElementIndex}"]`;
                 
                 // Add element information to the array
                 interactiveElements.push({
@@ -439,7 +439,7 @@ class PlaywrightBrowser:
 
     
     async def _get_element_by_index(self, index: int) -> Optional[Any]:
-        """Get element by index using data-manus-id selector
+        """Get element by index using data-dzeck-id selector
         
         Args:
             index: Element index
@@ -451,8 +451,8 @@ class PlaywrightBrowser:
         if not hasattr(self.page, 'interactive_elements_cache') or not self.page.interactive_elements_cache or index >= len(self.page.interactive_elements_cache):
             return None
         
-        # Use data-manus-id selector
-        selector = f'[data-manus-id="manus-element-{index}"]'
+        # Use data-dzeck-id selector
+        selector = f'[data-dzeck-id="dzeck-element-{index}"]'
         return await self.page.query_selector(selector)
     
     async def click(

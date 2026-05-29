@@ -33,19 +33,19 @@ Deploy using Docker Compose: at minimum set `API_KEY`, and adjust `API_BASE` and
 ```yaml
 services:
   frontend:
-    image: simpleyyt/manus-frontend
+    image: simpleyyt/dzeck-frontend
     ports:
       - "5173:80"
     depends_on:
       - backend
     restart: unless-stopped
     networks:
-      - manus-network
+      - dzeck-network
     environment:
       - BACKEND_URL=http://backend:8000
 
   backend:
-    image: simpleyyt/manus-backend
+    image: simpleyyt/dzeck-backend
     depends_on:
       - sandbox
       - claw
@@ -54,7 +54,7 @@ services:
       - /var/run/docker.sock:/var/run/docker.sock:ro
       #- ./mcp.json:/etc/mcp.json # Mount MCP servers directory
     networks:
-      - manus-network
+      - dzeck-network
     environment:
       # OpenAI API base URL
       - API_BASE=https://api.openai.com/v1
@@ -69,18 +69,18 @@ services:
       # More configuration options: https://docs.ai-manus.com/#/configuration
 
   sandbox:
-    image: simpleyyt/manus-sandbox
+    image: simpleyyt/dzeck-sandbox
     command: /bin/sh -c "exit 0"  # prevent sandbox from starting, ensure image is pulled
     restart: "no"
     networks:
-      - manus-network
+      - dzeck-network
 
   claw:
-    image: simpleyyt/manus-claw
+    image: simpleyyt/dzeck-claw
     entrypoint: /bin/sh -c "exit 0"  # prevent claw from starting, ensure image is pulled
     restart: "no"
     networks:
-      - manus-network
+      - dzeck-network
 
   mongodb:
     image: mongo:7.0
@@ -90,21 +90,21 @@ services:
     #ports:
     #  - "27017:27017"
     networks:
-      - manus-network
+      - dzeck-network
 
   redis:
     image: redis:7.0
     restart: unless-stopped
     networks:
-      - manus-network
+      - dzeck-network
 
 volumes:
   mongodb_data:
-    name: manus-mongodb-data
+    name: dzeck-mongodb-data
 
 networks:
-  manus-network:
-    name: manus-network
+  dzeck-network:
+    name: dzeck-network
     driver: bridge
 ```
 <!-- /docker-compose-example.yml -->
@@ -130,7 +130,7 @@ MAX_TOKENS=2000
 
 # MongoDB configuration
 #MONGODB_URI=mongodb://mongodb:27017
-#MONGODB_DATABASE=manus
+#MONGODB_DATABASE=dzeck
 #MONGODB_USERNAME=
 #MONGODB_PASSWORD=
 
@@ -142,10 +142,10 @@ MAX_TOKENS=2000
 
 # Sandbox configuration
 #SANDBOX_ADDRESS=
-SANDBOX_IMAGE=simpleyyt/manus-sandbox
+SANDBOX_IMAGE=simpleyyt/dzeck-sandbox
 SANDBOX_NAME_PREFIX=sandbox
 SANDBOX_TTL_MINUTES=30
-SANDBOX_NETWORK=manus-network
+SANDBOX_NETWORK=dzeck-network
 #SANDBOX_CHROME_ARGS=
 #SANDBOX_HTTPS_PROXY=
 #SANDBOX_HTTP_PROXY=
@@ -215,13 +215,13 @@ JWT_REFRESH_TOKEN_EXPIRE_DAYS=7
 # Enable or disable Claw feature (hides sidebar entry when false)
 #CLAW_ENABLED=true
 # Docker image used for Claw containers
-#CLAW_IMAGE=simpleyyt/manus-claw
+#CLAW_IMAGE=simpleyyt/dzeck-claw
 # Prefix for Claw container names
-#CLAW_NAME_PREFIX=manus-claw
+#CLAW_NAME_PREFIX=dzeck-claw
 # Time-to-live for Claw containers in seconds (0 = unlimited)
 #CLAW_TTL_SECONDS=3600
 # Docker network bridge name for Claw containers
-#CLAW_NETWORK=manus-network
+#CLAW_NETWORK=dzeck-network
 # Max seconds to wait for Claw container to become ready
 #CLAW_READY_TIMEOUT=300
 # Fixed Claw address (for development; skips Docker container creation)
@@ -229,7 +229,7 @@ JWT_REFRESH_TOKEN_EXPIRE_DAYS=7
 # Static API key for Claw (for development / fixed container)
 #CLAW_API_KEY=
 # Backend API URL used by Claw containers for callbacks
-#MANUS_API_BASE_URL=http://backend:8000
+#DZECK_API_BASE_URL=http://backend:8000
 
 # Extra headers for LLM API requests (JSON format)
 #EXTRA_HEADERS={"X-Custom-Header": "value"}
@@ -246,7 +246,7 @@ LOG_LEVEL=INFO
 
 ```yaml
   backend:
-    image: simpleyyt/manus-backend
+    image: simpleyyt/dzeck-backend
     # ...
     env_file:
       - .env
@@ -262,4 +262,4 @@ docker compose up -d
 
 > Note: If you see `sandbox-1 exited with code 0`, this is normal — it ensures the sandbox image is successfully pulled locally.
 
-Open your browser and visit <http://localhost:5173> to access Manus.
+Open your browser and visit <http://localhost:5173> to access Dzeck.

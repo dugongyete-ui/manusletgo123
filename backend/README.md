@@ -1,8 +1,8 @@
-# AI Manus × Claw Backend Service
+# AI Dzeck × Claw Backend Service
 
 English | [中文](README_zh.md)
 
-AI Manus × Claw is an intelligent conversation agent system based on FastAPI and LangChain chat models. The backend adopts Domain-Driven Design (DDD) architecture, supporting intelligent dialogue, file operations, Shell command execution, browser automation, and integrated [OpenClaw](https://github.com/anthropics/openclaw) AI assistant management (Claw).
+AI Dzeck × Claw is an intelligent conversation agent system based on FastAPI and LangChain chat models. The backend adopts Domain-Driven Design (DDD) architecture, supporting intelligent dialogue, file operations, Shell command execution, browser automation, and integrated [OpenClaw](https://github.com/anthropics/openclaw) AI assistant management (Claw).
 
 ## Project Architecture
 
@@ -40,7 +40,7 @@ backend/
    - Web search integration
 4. **Sandbox Environment**: Use Docker containers to provide isolated execution environments
 5. **VNC Visualization**: Support remote viewing of the sandbox environment via WebSocket connection
-6. **Claw (Manus × Claw)**: Per-user OpenClaw container lifecycle management, chat history merge (MongoDB + OpenClaw `.jsonl` sessions), WebSocket real-time messaging, file upload/resolve, and OpenAI-compatible LLM proxy for Claw containers
+6. **Claw (Dzeck × Claw)**: Per-user OpenClaw container lifecycle management, chat history merge (MongoDB + OpenClaw `.jsonl` sessions), WebSocket real-time messaging, file upload/resolve, and OpenAI-compatible LLM proxy for Claw containers
 
 ## Requirements
 
@@ -79,14 +79,14 @@ GOOGLE_SEARCH_API_KEY=                   # Google Search API key for web search 
 GOOGLE_SEARCH_ENGINE_ID=                 # Google custom search engine ID (optional)
 
 # Sandbox configuration
-SANDBOX_IMAGE=simpleyyt/manus-sandbox          # Sandbox environment Docker image
+SANDBOX_IMAGE=simpleyyt/dzeck-sandbox          # Sandbox environment Docker image
 SANDBOX_NAME_PREFIX=sandbox              # Sandbox container name prefix
 SANDBOX_TTL_MINUTES=30                   # Sandbox container time-to-live (minutes)
-SANDBOX_NETWORK=manus-network            # Docker network name for communication between sandbox containers
+SANDBOX_NETWORK=dzeck-network            # Docker network name for communication between sandbox containers
 
 # Database configuration
 MONGODB_URI=mongodb://localhost:27017    # MongoDB connection URL
-MONGODB_DATABASE=manus                   # MongoDB database name
+MONGODB_DATABASE=dzeck                   # MongoDB database name
 REDIS_HOST=localhost                     # Redis host
 REDIS_PORT=6379                          # Redis port
 REDIS_DB=0                               # Redis DB index
@@ -108,10 +108,10 @@ The service will start at http://localhost:8000.
 ### Docker Deployment
 ```bash
 # Build Docker image
-docker build -t manus-ai-agent .
+docker build -t dzeck-ai-agent .
 
 # Run container
-docker run -p 8000:8000 --env-file .env -v /var/run/docker.sock:/var/run/docker.sock manus-ai-agent
+docker run -p 8000:8000 --env-file .env -v /var/run/docker.sock:/var/run/docker.sock dzeck-ai-agent
 ```
 
 > Note: If using Docker deployment, you need to mount the Docker socket so the backend can create sandbox containers.

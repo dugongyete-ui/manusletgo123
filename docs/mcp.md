@@ -2,7 +2,7 @@
 
 ## 简介
 
-MCP（Model Context Protocol）是一个开放的标准协议，用于在语言模型应用程序和外部数据源及工具之间提供安全的连接。在 AI Manus 中，MCP 允许 AI 助手访问和使用各种外部服务和工具，如 GitHub API、文件系统、数据库等。
+MCP（Model Context Protocol）是一个开放的标准协议，用于在语言模型应用程序和外部数据源及工具之间提供安全的连接。在 AI Dzeck 中，MCP 允许 AI 助手访问和使用各种外部服务和工具，如 GitHub API、文件系统、数据库等。
 
 ## 演示
 
@@ -65,7 +65,7 @@ MCP 服务器的配置通过 `mcp.json` 文件进行管理，该文件包含了�
 ...
 services:
   backend:
-    image: simpleyyt/manus-backend
+    image: simpleyyt/dzeck-backend
     volumes:
       - ./mcp.json:/etc/mcp.json  # 挂载 MCP 配置文件
       - ...

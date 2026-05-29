@@ -3,7 +3,7 @@ import { ref, watch } from 'vue'
 import messages from '../locales'
 import type { Locale } from '../locales'
 
-const STORAGE_KEY = 'manus-locale'
+const STORAGE_KEY = 'dzeck-locale'
 
 // Get browser language and map to supported locale
 const getBrowserLocale = (): Locale => {

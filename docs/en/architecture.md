@@ -19,13 +19,13 @@
     2. Web's NoVNC component forwards to Sandbox through Server's WebSocket Forward, enabling browser viewing.
 - Other tools: Other tools work on similar principles.
 
-## Claw (Manus × Claw)
+## Claw (Dzeck × Claw)
 
-Claw is AI Manus's deeply integrated [OpenClaw](https://github.com/anthropics/openclaw) AI assistant module, delivering the **Manus × Claw** experience as a standalone chat interface.
+Claw is AI Dzeck's deeply integrated [OpenClaw](https://github.com/anthropics/openclaw) AI assistant module, delivering the **Dzeck × Claw** experience as a standalone chat interface.
 
 **Architecture Overview:**
 
-- **claw/ container image:** Built on `ghcr.io/openclaw/openclaw:latest`, includes the `manus-claw` Node plugin, runs the OpenClaw Gateway with TTL auto-expiry support.
+- **claw/ container image:** Built on `ghcr.io/openclaw/openclaw:latest`, includes the `dzeck-claw` Node plugin, runs the OpenClaw Gateway with TTL auto-expiry support.
 - **Backend integration:** Server dynamically creates per-user Claw Docker containers (or connects to a fixed dev instance), manages state in the MongoDB `claws` collection, merges MongoDB history with OpenClaw `.jsonl` session files, and exposes REST + WebSocket + file upload/resolve + OpenAI-compatible LLM proxy endpoints.
-- **Frontend integration:** When `claw_enabled` is turned on, a "Manus Claw" entry appears in the sidebar, routing to the `/chat/claw` page with real-time chat over WebSocket.
-- **manus-claw plugin:** Bridges the OpenClaw Gateway with the Manus backend, providing an HTTP server, the `manus_upload_file` tool, file resolution, and session history reads.
+- **Frontend integration:** When `claw_enabled` is turned on, a "Dzeck Claw" entry appears in the sidebar, routing to the `/chat/claw` page with real-time chat over WebSocket.
+- **dzeck-claw plugin:** Bridges the OpenClaw Gateway with the Dzeck backend, providing an HTTP server, the `dzeck_upload_file` tool, file resolution, and session history reads.

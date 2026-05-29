@@ -246,7 +246,7 @@ class AgentTaskRunner(TaskRunner):
             # Kick off sandbox + MCP init concurrently in the background.
             # The planner only needs the LLM, so we can stream the initial
             # acknowledgment response to the user in < 1 s while the sandbox
-            # warms up, exactly like Manus does.
+            # warms up, exactly like Dzeck does.
             mcp_config = await self._mcp_repository.get_mcp_config()
             sandbox_task = asyncio.create_task(self._sandbox.ensure_sandbox())
             mcp_task = asyncio.create_task(self._mcp_tool.initialized(mcp_config))
@@ -417,7 +417,7 @@ class AgentTaskRunner(TaskRunner):
 
             # After the plan has been streamed to the client, ensure the
             # sandbox and MCP tools are fully ready before the executor starts.
-            # This is the exact point Manus uses: plan is visible, execution
+            # This is the exact point Dzeck uses: plan is visible, execution
             # hasn't started yet.
             if not sandbox_ready and isinstance(event, PlanEvent) and event.status == PlanStatus.CREATED:
                 sandbox_ready = True

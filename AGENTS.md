@@ -1,19 +1,19 @@
 # AGENTS.md
 
-> Canonical guide for AI coding agents working on the **AI Manus × Claw** codebase.
+> Canonical guide for AI coding agents working on the **AI Dzeck × Claw** codebase.
 
 ---
 
 ## Project Overview
 
-AI Manus × Claw is a general-purpose AI Agent system with an integrated [OpenClaw](https://github.com/anthropics/openclaw) AI assistant, comprising five services:
+AI Dzeck × Claw is a general-purpose AI Agent system with an integrated [OpenClaw](https://github.com/anthropics/openclaw) AI assistant, comprising five services:
 
 | Service | Stack | Port (dev) | Entry Point |
 |---|---|---|---|
 | **Frontend** | Vue 3 + TypeScript, Vite 4, Tailwind CSS | 5173 | `frontend/src/main.ts` |
 | **Backend** | Python 3.12, FastAPI, LangChain, Beanie/Motor | 8000 | `backend/app/main.py` |
 | **Sandbox** | Python 3.10, FastAPI, Xvfb/Chrome/VNC | 8080 (API), 5900 (VNC) | `sandbox/app/main.py` |
-| **Claw** | Node.js, OpenClaw Gateway, manus-claw plugin | 18788 | `claw/entrypoint.sh` |
+| **Claw** | Node.js, OpenClaw Gateway, dzeck-claw plugin | 18788 | `claw/entrypoint.sh` |
 | **Mockserver** | Python, FastAPI | 8090 | `mockserver/main.py` |
 
 Infrastructure: **MongoDB 7.0**, **Redis 7.0**, **Docker** (sandbox & Claw orchestration).
@@ -23,7 +23,7 @@ Infrastructure: **MongoDB 7.0**, **Redis 7.0**, **Docker** (sandbox & Claw orche
 ## Directory Structure
 
 ```
-ai-manus/
+dzeck/
 ├── frontend/          # Vue 3 SPA (Vite, TypeScript, Tailwind)
 ├── backend/           # FastAPI backend (DDD layout)
 │   └── app/
@@ -34,8 +34,8 @@ ai-manus/
 │       ├── core/             # Config (config.py)
 │       └── main.py
 ├── sandbox/           # Sandbox service (shell, file, supervisor APIs)
-├── claw/              # Claw service (OpenClaw Gateway + manus-claw plugin)
-│   └── manus-claw/   # Node.js plugin bridging OpenClaw with Manus backend
+├── claw/              # Claw service (OpenClaw Gateway + dzeck-claw plugin)
+│   └── dzeck-claw/   # Node.js plugin bridging OpenClaw with Dzeck backend
 ├── mockserver/        # Mock LLM server for dev/testing
 ├── docs/              # Docsify documentation site
 ├── .cursor/skills/    # Cursor agent skills
@@ -239,7 +239,7 @@ The dev compose starts the backend with **debugpy** on port `5678`. Attach a rem
 
 ### Resetting State
 
-- MongoDB data persists in volume `manus-mongodb-data`. Wipe with `./dev.sh down -v`.
+- MongoDB data persists in volume `dzeck-mongodb-data`. Wipe with `./dev.sh down -v`.
 - Mockserver tracks response index; restart to reset: `./dev.sh restart mockserver`.
 
 ---

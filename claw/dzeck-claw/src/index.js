@@ -3,22 +3,22 @@ import fsp from 'node:fs/promises';
 import path from 'node:path';
 import { GatewayClient } from './gateway-client.js';
 import { GatewayBridge } from './gateway-bridge.js';
-import { ManusClawHttpServer } from './http-server.js';
-import { ManusFileResolver } from './manus-file-resolver.js';
+import { DzeckClawHttpServer } from './http-server.js';
+import { DzeckFileResolver } from './dzeck-file-resolver.js';
 
-// ─── manus_upload_file tool definition ───────────────────────────────────────
+// ─── dzeck_upload_file tool definition ───────────────────────────────────────
 
-const MANUS_UPLOAD_TOOL_NAME = 'manus_upload_file';
+const DZECK_UPLOAD_TOOL_NAME = 'dzeck_upload_file';
 
-const MANUS_UPLOAD_TOOL_DESCRIPTION =
-  'Upload local files from the workspace to the Manus platform so the user can download them. ' +
+const DZECK_UPLOAD_TOOL_DESCRIPTION =
+  'Upload local files from the workspace to the Dzeck platform so the user can download them. ' +
   'Use this whenever you create or modify a file that the user needs (code, documents, reports, data, etc.). ' +
   'A successful call means the files are already delivered to the user as downloadable file cards — ' +
   'do NOT include any download links, sandbox:// URLs, or markdown hyperlinks to the file in your text response. ' +
   'Simply confirm the file has been sent. ' +
   'Parameters must be local filesystem paths only (absolute, or relative to the workspace directory).';
 
-const MANUS_UPLOAD_TOOL_SCHEMA = {
+const DZECK_UPLOAD_TOOL_SCHEMA = {
   type: 'object',
   required: ['paths'],
   additionalProperties: false,
@@ -82,7 +82,7 @@ async function validateLocalFiles(rawPaths, workspaceDir) {
 /**
  * Upload a single file with timeout control (mirrors kimi-claw's AbortController pattern).
  */
-async function uploadFileToManus({ filePath, fileName, manusApiBaseUrl, manusApiKey }) {
+async function uploadFileToDzeck({ filePath, fileName, dzeckApiBaseUrl, dzeckApiKey }) {
   const fileData = await fsp.readFile(filePath);
   const ext = path.extname(fileName).toLowerCase();
   const mimeType = _inferMimeType(ext);
@@ -94,10 +94,10 @@ async function uploadFileToManus({ filePath, fileName, manusApiBaseUrl, manusApi
   const timer = setTimeout(() => controller.abort(), UPLOAD_TIMEOUT_MS);
 
   try {
-    const uploadUrl = `${manusApiBaseUrl}/api/v1/claw/upload`;
+    const uploadUrl = `${dzeckApiBaseUrl}/api/v1/claw/upload`;
     const response = await fetch(uploadUrl, {
       method: 'POST',
-      headers: { 'X-Claw-Api-Key': manusApiKey },
+      headers: { 'X-Claw-Api-Key': dzeckApiKey },
       body: formData,
       signal: controller.signal,
     });
@@ -131,7 +131,7 @@ async function uploadFileToManus({ filePath, fileName, manusApiBaseUrl, manusApi
 const UPLOAD_META_DIR_NAME = 'upload_meta';
 
 function getUploadMetaDir(openclawHome) {
-  return path.join(openclawHome || '/home/node/.openclaw', 'plugins', 'manus-claw', UPLOAD_META_DIR_NAME);
+  return path.join(openclawHome || '/home/node/.openclaw', 'plugins', 'dzeck-claw', UPLOAD_META_DIR_NAME);
 }
 
 function saveUploadMeta(metaDir, toolCallId, fileId, meta) {
@@ -208,20 +208,20 @@ function resolveConfig(pluginConfig, openclawConfig) {
 // ─── Plugin definition ────────────────────────────────────────────────────────
 
 const plugin = {
-  id: 'manus-claw',
-  name: 'manus-claw',
-  description: 'Connector plugin that bridges manus backend with the local OpenClaw Gateway.',
+  id: 'dzeck-claw',
+  name: 'dzeck-claw',
+  description: 'Connector plugin that bridges dzeck backend with the local OpenClaw Gateway.',
 
   register(context) {
     let gatewayClient = null;
     let gatewayBridge = null;
     let httpServer = null;
 
-    // Manus backend connection info (available as env vars in the container)
-    const manusApiBaseUrl = process.env.MANUS_API_BASE_URL || 'http://backend:8000';
-    const manusApiKey = process.env.MANUS_API_KEY || '';
+    // Dzeck backend connection info (available as env vars in the container)
+    const dzeckApiBaseUrl = process.env.DZECK_API_BASE_URL || 'http://backend:8000';
+    const dzeckApiKey = process.env.DZECK_API_KEY || '';
 
-    // ── Register manus_upload_file as a native OpenClaw plugin tool ────────────
+    // ── Register dzeck_upload_file as a native OpenClaw plugin tool ────────────
     // OpenClaw will expose this tool to the LLM automatically. When the agent
     // calls it, OpenClaw invokes execute() below in the plugin's process context.
     const openclawHome = process.env.OPENCLAW_HOME || '/home/node/.openclaw';
@@ -232,14 +232,14 @@ const plugin = {
     cleanInterval.unref?.();
 
     context.registerTool({
-      name: MANUS_UPLOAD_TOOL_NAME,
-      description: MANUS_UPLOAD_TOOL_DESCRIPTION,
-      parameters: MANUS_UPLOAD_TOOL_SCHEMA,
+      name: DZECK_UPLOAD_TOOL_NAME,
+      description: DZECK_UPLOAD_TOOL_DESCRIPTION,
+      parameters: DZECK_UPLOAD_TOOL_SCHEMA,
 
       async execute(toolCallId, args) {
         const logger = context.logger;
         const rawPaths = args?.paths || [];
-        logger?.info?.(`[manus_upload_file] called toolCallId=${toolCallId} paths=${JSON.stringify(rawPaths)}`);
+        logger?.info?.(`[dzeck_upload_file] called toolCallId=${toolCallId} paths=${JSON.stringify(rawPaths)}`);
 
         const openclawConfig = context.runtime?.config?.loadConfig?.();
         const workspaceDir = openclawConfig?.agents?.defaults?.workspace || '/home/node/.openclaw/workspace';
@@ -263,9 +263,9 @@ const plugin = {
 
         for (const { filePath, fileName, size } of validFiles) {
           try {
-            const fileInfo = await uploadFileToManus({ filePath, fileName, manusApiBaseUrl, manusApiKey });
+            const fileInfo = await uploadFileToDzeck({ filePath, fileName, dzeckApiBaseUrl, dzeckApiKey });
             uploaded.push(fileInfo);
-            logger?.info?.(`[manus_upload_file] uploaded ${fileName} -> file_id=${fileInfo.file_id}`);
+            logger?.info?.(`[dzeck_upload_file] uploaded ${fileName} -> file_id=${fileInfo.file_id}`);
 
             // 3) Notify via gateway bridge so frontend receives the file card
             gatewayBridge?.notifyFileUploaded(fileInfo);
@@ -276,7 +276,7 @@ const plugin = {
           } catch (err) {
             const msg = err.name === 'AbortError' ? `upload timed out after ${UPLOAD_TIMEOUT_MS / 1000}s` : String(err);
             uploadErrors.push(`${fileName}: ${msg}`);
-            logger?.warn?.(`[manus_upload_file] upload failed for ${fileName}: ${msg}`);
+            logger?.warn?.(`[dzeck_upload_file] upload failed for ${fileName}: ${msg}`);
           }
         }
 
@@ -294,10 +294,10 @@ const plugin = {
         const batchMeta = { toolCallId, files: uploaded, timestamp: Date.now() };
         saveUploadMeta(uploadMetaDir, toolCallId, null, batchMeta);
 
-        // 6) Return resource_link content blocks with manus-file:// URIs
+        // 6) Return resource_link content blocks with dzeck-file:// URIs
         const content = uploaded.map(u => ({
           type: 'resource_link',
-          uri: `manus-file://${u.file_id}`,
+          uri: `dzeck-file://${u.file_id}`,
           name: u.filename,
           mimeType: u.content_type,
         }));
@@ -305,7 +305,7 @@ const plugin = {
         const filesResult = uploaded.map(u => ({
           name: u.filename,
           file_id: u.file_id,
-          uri: `manus-file://${u.file_id}`,
+          uri: `dzeck-file://${u.file_id}`,
         }));
         const result = { ok: true, files: filesResult };
 
@@ -313,14 +313,14 @@ const plugin = {
           content.push({ type: 'text', text: `Partial failures:\n${uploadErrors.join('\n')}` });
         }
 
-        logger?.info?.(`[manus_upload_file] result=${JSON.stringify(result)}`);
+        logger?.info?.(`[dzeck_upload_file] result=${JSON.stringify(result)}`);
         return { output: result, result, content, isError: false };
       },
     });
 
     // ── Register the main service ──────────────────────────────────────────────
     context.registerService({
-      id: 'manus-claw',
+      id: 'dzeck-claw',
 
       start: (runtime) => {
         const openclawConfig = runtime?.config?.loadConfig?.();
@@ -330,7 +330,7 @@ const plugin = {
         const logger = context.logger;
 
         if (cfg.log.enabled) {
-          logger?.info?.(`[manus-claw] starting with gateway=${cfg.gateway.url} server=${cfg.server.host}:${cfg.server.port}`);
+          logger?.info?.(`[dzeck-claw] starting with gateway=${cfg.gateway.url} server=${cfg.server.host}:${cfg.server.port}`);
         }
 
         gatewayBridge = new GatewayBridge({ agentId: cfg.gateway.agentId, logger });
@@ -348,18 +348,18 @@ const plugin = {
 
         gatewayBridge.gatewayClient = gatewayClient;
 
-        // File resolver: manus-file:// → download → <MANUS_FILE />
+        // File resolver: dzeck-file:// → download → <DZECK_FILE />
         const fileDownloadDir = path.join(workspaceDir, 'download');
-        const fileResolver = new ManusFileResolver({
-          manusApiBaseUrl,
-          manusApiKey,
+        const fileResolver = new DzeckFileResolver({
+          dzeckApiBaseUrl: dzeckApiBaseUrl,
+          dzeckApiKey: dzeckApiKey,
           downloadDir: fileDownloadDir,
           uploadMetaDir,
           logger,
         });
         gatewayBridge.fileResolver = fileResolver;
 
-        httpServer = new ManusClawHttpServer({
+        httpServer = new DzeckClawHttpServer({
           port: cfg.server.port,
           host: cfg.server.host,
           logger,

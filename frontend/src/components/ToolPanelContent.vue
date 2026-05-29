@@ -3,7 +3,7 @@
 
     <!-- Header -->
     <div class="flex-shrink-0 flex items-center gap-2 px-4 pt-4 pb-2">
-      <div class="text-[var(--text-primary)] text-lg font-semibold flex-1">{{ $t('Manus Computer') }}</div>
+      <div class="text-[var(--text-primary)] text-lg font-semibold flex-1">{{ $t('Dzeck Computer') }}</div>
       <button
         class="w-7 h-7 relative rounded-md inline-flex items-center justify-center gap-2.5 cursor-pointer hover:bg-[var(--fill-tsp-gray-main)]"
         @click="hide">
@@ -18,7 +18,7 @@
       </div>
       <div class="flex-1 flex flex-col gap-1 min-w-0">
         <div class="text-[12px] text-[var(--text-tertiary)]">
-          {{ $t('Manus is using') }}
+          {{ $t('Dzeck is using') }}
           <span class="text-[var(--text-secondary)]">{{ toolInfo.name }}</span>
         </div>
         <div

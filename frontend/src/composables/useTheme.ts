@@ -2,7 +2,7 @@ import { ref, watch } from 'vue'
 
 type Theme = 'light' | 'dark'
 
-const STORAGE_KEY = 'manus-theme'
+const STORAGE_KEY = 'dzeck-theme'
 
 const theme = ref<Theme>((localStorage.getItem(STORAGE_KEY) as Theme) || 'light')
 

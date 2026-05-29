@@ -35,7 +35,7 @@ class Settings(BaseSettings):
     
     # MongoDB configuration
     mongodb_uri: str = "mongodb://mongodb:27017"
-    mongodb_database: str = "manus"
+    mongodb_database: str = "dzeck"
     mongodb_username: str | None = None
     mongodb_password: str | None = None
     
@@ -107,7 +107,7 @@ class Settings(BaseSettings):
     claw_ready_timeout: int = 300
     claw_address: str | None = None
     claw_api_key: str | None = None
-    manus_api_base_url: str = "http://localhost:8000"
+    dzeck_api_base_url: str = "http://localhost:8000"
 
     # MCP configuration
     mcp_config_path: str = "/etc/mcp.json"

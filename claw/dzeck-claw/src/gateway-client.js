@@ -208,7 +208,7 @@ export class GatewayClient {
         version: '1.0.0',
         platform: process.platform,
         mode: clientMode,
-        displayName: 'manus-bridge-connector',
+        displayName: 'dzeck-bridge-connector',
       },
       role,
       scopes,

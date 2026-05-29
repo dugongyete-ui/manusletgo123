@@ -16,7 +16,7 @@ async def test_mongodb():
     print("\n--- Mengetes MongoDB ---")
     from motor.motor_asyncio import AsyncIOMotorClient
     uri = os.getenv("MONGODB_URI")
-    db_name = os.getenv("MONGODB_DATABASE", "manus")
+    db_name = os.getenv("MONGODB_DATABASE", "dzeck")
     
     if not uri:
         print("MONGODB_URI tidak dikonfigurasi — skip")

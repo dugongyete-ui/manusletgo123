@@ -16,7 +16,7 @@ logger = logging.getLogger(__name__)
 
 def _generate_api_key() -> str:
     """Generate a secure per-user API key for LLM proxy authentication"""
-    return f"manus-{secrets.token_urlsafe(32)}"
+    return f"dzeck-{secrets.token_urlsafe(32)}"
 
 
 def _generate_claw_id() -> str:
@@ -189,7 +189,7 @@ class ClawDomainService:
     def _normalize_content(cls, text: str) -> str:
         """Normalize message text for dedup comparison."""
         text = cls._strip_openclaw_prefix(text)
-        text = re.sub(r'<MANUS_FILE\b[^>]*/>', '', text)
+        text = re.sub(r'<DZECK_FILE\b[^>]*/>', '', text)
         return text.strip()
 
     @classmethod

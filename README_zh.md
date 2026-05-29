@@ -1,4 +1,4 @@
-# AI Manus × Claw
+# AI Dzeck × Claw
 
 [English](README.md) | 中文 | [官方网站](https://ai-manus.com) | [文档](https://docs.ai-manus.com)
 
@@ -6,17 +6,17 @@
 &ensp;
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
-AI Manus 是一个通用的 AI Agent 系统，支持在沙盒环境中运行各种工具和操作。现已深度集成 **Claw** —— 基于 [OpenClaw](https://github.com/anthropics/openclaw) 的 AI 助手，一键部署、用户隔离容器、无缝聊天历史，为 Manus 生态带来全新体验。
+AI Dzeck 是一个通用的 AI Agent 系统，支持在沙盒环境中运行各种工具和操作。现已深度集成 **Claw** —— 基于 [OpenClaw](https://github.com/anthropics/openclaw) 的 AI 助手，一键部署、用户隔离容器、无缝聊天历史，为 Dzeck 生态带来全新体验。
 
-用 AI Manus × Claw 开启你的智能体之旅吧！
+用 AI Dzeck × Claw 开启你的智能体之旅吧！
 
 👏 欢迎加入 [QQ群(1005477581)](https://qun.qq.com/universal-share/share?ac=1&authKey=p4X3Da5iMpR4liAenxwvhs7IValPKiCFtUevRlJouz9qSTSZsMnPJc3hzsJjgQYv&busi_data=eyJncm91cENvZGUiOiIxMDA1NDc3NTgxIiwidG9rZW4iOiJNZmUrTmQ0UzNDZDNqNDFVdjVPS1VCRkJGRWVlV0R3RFJSRVFoZDAwRjFDeUdUM0t6aUIyczlVdzRjV1BYN09IIiwidWluIjoiMzQyMjExODE1In0%3D&data=C3B-E6BlEbailV32co77iXL5vxPIhtD9y_itWLSq50hKqosO_55_isOZym2Faaq4hs9-517tUY8GSWaDwPom-A&svctype=4&tempid=h5_group_info)
 
-❤️ 喜欢 AI Manus? 点亮小星星 🌟 或 [赞助开发者](docs/sponsor.md)! ❤️
+❤️ 喜欢 AI Dzeck? 点亮小星星 🌟 或 [赞助开发者](docs/sponsor.md)! ❤️
 
 🚀 [Demo 演示](https://app.ai-manus.com)
 
-📝 [博客：我也复刻了一个 Manus，带高仿 WebUI 和沙盒](https://simpleyyt.com/2026/03/07/rebuild-manus-with-webui-and-sandbox/)
+📝 [博客：我也复刻了一个 Dzeck，带高仿 WebUI 和沙盒](https://simpleyyt.com/2026/03/07/rebuild-manus-with-webui-and-sandbox/)
 
 ## 示例
 
@@ -76,19 +76,19 @@ https://github.com/user-attachments/assets/5cb2240b-0984-4db0-8818-a24f81624b04
 ```yaml
 services:
   frontend:
-    image: simpleyyt/manus-frontend
+    image: simpleyyt/dzeck-frontend
     ports:
       - "5173:80"
     depends_on:
       - backend
     restart: unless-stopped
     networks:
-      - manus-network
+      - dzeck-network
     environment:
       - BACKEND_URL=http://backend:8000
 
   backend:
-    image: simpleyyt/manus-backend
+    image: simpleyyt/dzeck-backend
     depends_on:
       - sandbox
       - claw
@@ -97,7 +97,7 @@ services:
       - /var/run/docker.sock:/var/run/docker.sock:ro
       #- ./mcp.json:/etc/mcp.json # Mount MCP servers directory
     networks:
-      - manus-network
+      - dzeck-network
     environment:
       # OpenAI API base URL
       - API_BASE=https://api.openai.com/v1
@@ -112,18 +112,18 @@ services:
       # More configuration options: https://docs.ai-manus.com/#/configuration
 
   sandbox:
-    image: simpleyyt/manus-sandbox
+    image: simpleyyt/dzeck-sandbox
     command: /bin/sh -c "exit 0"  # prevent sandbox from starting, ensure image is pulled
     restart: "no"
     networks:
-      - manus-network
+      - dzeck-network
 
   claw:
-    image: simpleyyt/manus-claw
+    image: simpleyyt/dzeck-claw
     entrypoint: /bin/sh -c "exit 0"  # prevent claw from starting, ensure image is pulled
     restart: "no"
     networks:
-      - manus-network
+      - dzeck-network
 
   mongodb:
     image: mongo:7.0
@@ -133,21 +133,21 @@ services:
     #ports:
     #  - "27017:27017"
     networks:
-      - manus-network
+      - dzeck-network
 
   redis:
     image: redis:7.0
     restart: unless-stopped
     networks:
-      - manus-network
+      - dzeck-network
 
 volumes:
   mongodb_data:
-    name: manus-mongodb-data
+    name: dzeck-mongodb-data
 
 networks:
-  manus-network:
-    name: manus-network
+  dzeck-network:
+    name: dzeck-network
     driver: bridge
 ```
 <!-- /docker-compose-example.yml -->
@@ -168,10 +168,10 @@ docker compose up -d
 
 本项目由以下子项目组成：
 
-* `frontend`: Manus 前端
-* `backend`: Manus 后端
-* `sandbox`: Manus 沙盒
-* `claw`: Manus Claw —— OpenClaw 插件与容器镜像，桥接 OpenClaw Gateway 与 Manus 后端
+* `frontend`: Dzeck 前端
+* `backend`: Dzeck 后端
+* `sandbox`: Dzeck 沙盒
+* `claw`: Dzeck Claw —— OpenClaw 插件与容器镜像，桥接 OpenClaw Gateway 与 Dzeck 后端
 * `mockserver`: 模拟 LLM 服务（开发/测试用）
 
 ### 整体设计

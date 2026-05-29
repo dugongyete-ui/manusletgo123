@@ -1,5 +1,5 @@
 """
-OpenAI-compatible API proxy for manus-claw.
+OpenAI-compatible API proxy for dzeck-claw.
 All LLM requests from OpenClaw containers go through this endpoint,
 authenticated using per-user API keys.
 """
@@ -105,7 +105,7 @@ def _openai_error_response(status_code: int, message: str, error_type: str) -> J
 async def chat_completions(request: Request):
     """
     OpenAI-compatible chat completions proxy.
-    Authenticates using per-user manus API keys and forwards to the configured LLM backend.
+    Authenticates using per-user dzeck API keys and forwards to the configured LLM backend.
     """
     api_key = _extract_bearer_token(request)
     if not api_key:
@@ -125,7 +125,7 @@ async def chat_completions(request: Request):
     settings = get_settings()
 
     # Override model with configured model name
-    if settings.model_name and body.get("model") in ("default", "manus-proxy/default", None):
+    if settings.model_name and body.get("model") in ("default", "dzeck-proxy/default", None):
         body = {**body, "model": settings.model_name}
 
     is_stream = body.get("stream", False)

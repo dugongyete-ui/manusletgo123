@@ -7,7 +7,7 @@
           <div class="flex items-center gap-2 sm:gap-3 flex-1 min-w-0 sm:flex-none"><a href="/" class="hidden sm:flex">
               <div class="flex items-center gap-[3px]">
                 <Bot :size="24" class="w-6 h-6" />
-                <ManusLogoTextIcon :height="30" :width="65" />
+                <DzeckLogoTextIcon :height="30" :width="65" />
               </div>
             </a>
             <div
@@ -48,7 +48,7 @@
             <div class="flex items-center gap-0.5 w-full sm:flex-1">
               <div class="w-6 h-6"><Bot :size="24" /></div>
               <div>
-                <p class="text-sm text-[var(--text-primary)]">{{ replayCompleted ? 'Manus 任务回放完成。' : 'Manus 正在回放任务...' }}</p>
+                <p class="text-sm text-[var(--text-primary)]">{{ replayCompleted ? 'Dzeck 任务回放完成。' : 'Dzeck 正在回放任务...' }}</p>
               </div>
             </div>
             <div class="flex items-center flex-row gap-[8px] max-sm:w-full">
@@ -80,7 +80,7 @@
           </svg>
         </button>
         <div class="text-center text-[var(--text-primary)] whitespace-pre-line"
-          v-html="$t('You are viewing a completed Manus task. Replay will start automatically in {countdown} seconds.', { countdown: `<strong>${countdown}</strong>` })">
+          v-html="$t('You are viewing a completed Dzeck task. Replay will start automatically in {countdown} seconds.', { countdown: `<strong>${countdown}</strong>` })">
         </div>
       </div>
     </div>
@@ -110,7 +110,7 @@ import {
 import ToolPanel from '../components/ToolPanel.vue'
 import PlanPanel from '../components/PlanPanel.vue';
 import { ArrowDown, FileSearch, Link, Bot } from 'lucide-vue-next';
-import ManusLogoTextIcon from '../components/icons/ManusLogoTextIcon.vue';
+import DzeckLogoTextIcon from '../components/icons/DzeckLogoTextIcon.vue';
 import { showErrorToast, showSuccessToast } from '../utils/toast';
 import type { FileInfo } from '../api/file';
 import { useSessionFileList } from '../composables/useSessionFileList'
