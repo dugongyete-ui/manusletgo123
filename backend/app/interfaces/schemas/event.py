@@ -115,7 +115,12 @@ class ToolSSEEvent(BaseSSEEvent):
         content = event.tool_content
         if isinstance(content, BrowserToolContent):
             from app.interfaces.dependencies import get_file_service
-            content = BrowserToolContent(screenshot=await get_file_service().create_signed_url(content.screenshot))
+            signed = await get_file_service().create_signed_url(content.screenshot) if content.screenshot else ""
+            content = BrowserToolContent(
+                screenshot=signed,
+                js_code=content.js_code,
+                js_result=content.js_result,
+            )
         return cls(
             data=ToolEventData(
                 **BaseEventData.base_event_data(event),
