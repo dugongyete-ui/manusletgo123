@@ -1,0 +1,8 @@
+uploads = []
+generated = []
+
+[[outputs]]
+id = "uSIJ-yFya4ZfTHc58Fyzi"
+uri = "file://VISION_WRAPPER_FIX.md"
+type = "text"
+title = "VISION_WRAPPER_FIX.md — Panduan Perbaikan Wrapper API"
