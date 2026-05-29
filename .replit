@@ -124,12 +124,12 @@ run = ["bash", "-c", "cd backend && python3 -m uvicorn app.main:app --host 0.0.0
 [userenv]
 
 [userenv.shared]
-API_BASE = "https://api.cohere.com/compatibility/v1"
-MODEL_NAME = "command-a-03-2025"
+API_BASE = "https://divine-vittoria-dzeckyete-d2996f6e.koyeb.app/v1"
+MODEL_NAME = "qwen3.7-max"
 MODEL_PROVIDER = "openai"
 TEMPERATURE = "0.7"
-MAX_TOKENS = "8192"
-VISION_MODEL_NAME = "command-a-vision-07-2025"
+MAX_TOKENS = "8000"
+VISION_MODEL_NAME = "qwen3.7-max"
 VISION_MODEL_PROVIDER = "openai"
 VISION_API_BASE = "https://api.cohere.com/compatibility/v1"
 MONGODB_DATABASE = "manus"
