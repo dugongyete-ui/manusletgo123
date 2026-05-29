@@ -37,7 +37,7 @@ class ReplitSandbox(Sandbox):
         self._id = "replit-local"
         self.base_url = getattr(settings, "sandbox_base_url", None) or "http://localhost:8080"
         self._vnc_url = getattr(settings, "sandbox_vnc_url", None) or "ws://localhost:5901"
-        self._cdp_url = getattr(settings, "sandbox_cdp_url", None) or "http://localhost:9222"
+        self._cdp_url = getattr(settings, "sandbox_cdp_url", None) or "http://localhost:8222"
         logger.info(
             "ReplitSandbox initialised: base_url=%s vnc=%s cdp=%s",
             self.base_url, self._vnc_url, self._cdp_url,
