@@ -50,7 +50,9 @@ class PlanEvent(BaseEvent):
 
 class BrowserToolContent(BaseModel):
     """Browser tool content"""
-    screenshot: str
+    screenshot: str = ""
+    js_code: Optional[str] = None
+    js_result: Optional[Any] = None
 
 class SearchToolContent(BaseModel):
     """Search tool content"""

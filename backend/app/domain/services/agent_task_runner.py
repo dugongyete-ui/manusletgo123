@@ -123,7 +123,7 @@ class AgentTaskRunner(TaskRunner):
             file_data, file_info = await self._file_storage.download_file(file_id, self._user_id)
             # Use file_id prefix to prevent name collisions between uploads
             safe_name = f"{file_id[:8]}_{file_info.filename}" if file_info.filename else file_id
-            file_path = "/home/ubuntu/upload/" + safe_name
+            file_path = "/home/runner/upload/" + safe_name
             result = await self._sandbox.file_upload(file_data, file_path)
             if result.success:
                 file_info.file_path = file_path
@@ -173,7 +173,20 @@ class AgentTaskRunner(TaskRunner):
         try:
             if event.status == ToolStatus.CALLED:
                 if event.tool_name == "browser":
-                    event.tool_content = BrowserToolContent(screenshot=await self._get_browser_screenshot())
+                    screenshot = await self._get_browser_screenshot()
+                    if event.function_name == "browser_console_exec":
+                        js_code = event.function_args.get("javascript", "")
+                        js_result = None
+                        if event.function_result and hasattr(event.function_result, "data"):
+                            js_result = (event.function_result.data or {}).get("result")
+                        event.tool_content = BrowserToolContent(screenshot=screenshot, js_code=js_code, js_result=js_result)
+                    elif event.function_name == "browser_console_view":
+                        js_result = None
+                        if event.function_result and hasattr(event.function_result, "data"):
+                            js_result = (event.function_result.data or {}).get("logs")
+                        event.tool_content = BrowserToolContent(screenshot=screenshot, js_result=js_result)
+                    else:
+                        event.tool_content = BrowserToolContent(screenshot=screenshot)
                 elif event.tool_name == "search":
                     search_results: ToolResult[SearchResults] = event.function_result
                     logger.debug(f"Search tool results: {search_results}")
