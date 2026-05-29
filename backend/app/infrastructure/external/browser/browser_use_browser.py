@@ -444,10 +444,17 @@ class BrowserUseBrowser:
         """Execute arbitrary JavaScript in the current page context."""
         try:
             page = await self._get_current_page()
-            # browser_use actor Page.evaluate() requires arrow-function syntax
+            # page.evaluate() requires a function; wrap bare expressions/statements
             js = javascript.strip()
             if not (js.startswith("(") and "=>" in js):
-                js = f"() => {{ {js} }}"
+                # Use async IIFE so await works inside, and wrap in parens so
+                # it evaluates as an expression (not a statement).
+                # If the code contains explicit return statements leave it as a
+                # block body; otherwise treat the whole thing as a return value.
+                if "return " in js:
+                    js = f"async () => {{ {js} }}"
+                else:
+                    js = f"async () => ({js})"
             result = await page.evaluate(js)
             return ToolResult(success=True, data={"result": result})
         except Exception as exc:

@@ -4,6 +4,7 @@
     <div class="flex-1 flex items-center justify-center">
       <div class="max-w-[250px] truncate text-[var(--text-tertiary)] text-sm font-medium text-center">
         {{ isConsole ? 'JS Console' : (toolContent?.args?.url || 'Browser') }}
+        <span v-if="!isConsole && toolContent?.function" class="ml-1 text-[9px] text-[var(--text-tertiary)] opacity-50">[{{ toolContent.function }}]</span>
       </div>
     </div>
   </div>
@@ -82,10 +83,13 @@ const props = defineProps<{
 const { t } = useI18n();
 const imageUrl = ref('');
 
-const isConsole = computed(() =>
-  props.toolContent?.function === 'browser_console_exec' ||
-  props.toolContent?.function === 'browser_console_view'
-);
+const isConsole = computed(() => {
+  const fn = props.toolContent?.function;
+  if (fn === 'browser_console_exec' || fn === 'browser_console_view') return true;
+  if (props.toolContent?.args?.javascript !== undefined) return true;
+  if (props.toolContent?.content?.js_code !== undefined) return true;
+  return false;
+});
 
 const formatResult = (val: any): string => {
   if (val === null || val === undefined) return 'null';
