@@ -168,7 +168,7 @@ class ExecutionAgent(BaseAgent):
             if not filename.endswith(".md"):
                 filename += ".md"
 
-            sandbox_home = getattr(file_toolkit.sandbox, "_sandbox_home", "/home/ubuntu")
+            sandbox_home = getattr(file_toolkit.sandbox, "_sandbox_home", "/home/runner")
             sandbox_path = f"{sandbox_home}/{filename}"
 
             await file_toolkit.sandbox.file_write(

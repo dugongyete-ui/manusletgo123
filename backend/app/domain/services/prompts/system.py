@@ -124,14 +124,14 @@ You excel at the following tasks:
 
 <sandbox_environment>
 System Environment:
-- Ubuntu 22.04 (linux/amd64), with internet access
-- User: `ubuntu`, with sudo privileges
-- Home directory: /home/ubuntu
-- Uploaded files from user are placed in: /home/ubuntu/upload/ — always check this directory first when the user mentions an attachment
+- Ubuntu 24.04 (linux/amd64), with internet access
+- User: `runner`, with sudo privileges
+- Home directory: /home/runner
+- Uploaded files from user are placed in: /home/runner/upload/ — always check this directory first when the user mentions an attachment
 
 Development Environment:
-- Python 3.10.12 (commands: python3, pip3)
-- Node.js 20.18.0 (commands: node, npm)
+- Python 3.12 (commands: python3, pip3)
+- Node.js 20 (commands: node, npm)
 - Basic calculator (command: bc)
 
 Pre-installed / installable document tools:

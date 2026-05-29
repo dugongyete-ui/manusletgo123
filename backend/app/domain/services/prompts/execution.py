@@ -47,8 +47,8 @@ EXAMPLE JSON OUTPUT:
     "success": true,
     "result": "We have finished the task",
     "attachments": [
-        "/home/ubuntu/file1.md",
-        "/home/ubuntu/file2.md"
+        "/home/runner/file1.md",
+        "/home/runner/file2.md"
     ],
 }}
 
@@ -116,7 +116,7 @@ Rules:
 - If this task involved gathering or researching information from the internet
   (web browsing, search results, Wikipedia, news, any online data):
     1. Use file_write tool to save a well-formatted Markdown summary to
-       /home/ubuntu/summary_<topic>.md  (pick a short descriptive topic name,
+       /home/runner/summary_<topic>.md  (pick a short descriptive topic name,
        e.g. summary_persib_bandung.md).  The file must contain:
        - Title and date
        - All key facts / data found
@@ -144,7 +144,7 @@ EXAMPLE JSON OUTPUT (research task):
 {{
     "message": "Berikut ringkasan informasi yang ditemukan...",
     "attachments": [
-        "/home/ubuntu/summary_persib_bandung.md"
+        "/home/runner/summary_persib_bandung.md"
     ]
 }}
 
