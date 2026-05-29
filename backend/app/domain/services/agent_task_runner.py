@@ -127,22 +127,34 @@ class AgentTaskRunner(TaskRunner):
         processing.  file_path is set only when the sandbox upload succeeds;
         the downstream code already filters sandbox_attachments by file_path.
         """
+        # Step 1: Download from GridFS — if this fails there is nothing to do.
         try:
             file_data, file_info = await self._file_storage.download_file(file_id, self._user_id)
-            # Use file_id prefix to prevent name collisions between uploads
-            safe_name = f"{file_id[:8]}_{file_info.filename}" if file_info.filename else file_id
-            file_path = "/home/runner/upload/" + safe_name
+        except Exception as e:
+            logger.exception(f"Agent {self._agent_id} failed to download file {file_id} from storage: {e}")
+            return None
+
+        # Step 2: Upload to sandbox filesystem — non-fatal; vision/extractable
+        # files don't need the sandbox path so we proceed regardless.
+        safe_name = f"{file_id[:8]}_{file_info.filename}" if file_info.filename else file_id
+        file_path = "/home/runner/upload/" + safe_name
+        try:
             result = await self._sandbox.file_upload(file_data, file_path)
             if result.success:
                 file_info.file_path = file_path
+                logger.debug(f"Agent {self._agent_id}: file {file_info.filename!r} uploaded to sandbox at {file_path}")
             else:
                 logger.warning(
-                    f"Agent {self._agent_id}: sandbox upload failed for {file_info.filename!r} "
+                    f"Agent {self._agent_id}: sandbox upload returned failure for {file_info.filename!r} "
                     f"(file_id={file_id}) — keeping file_id for vision/extraction fallback"
                 )
-            return file_info
         except Exception as e:
-            logger.exception(f"Agent {self._agent_id} failed to sync file: {e}")
+            logger.warning(
+                f"Agent {self._agent_id}: sandbox upload raised exception for {file_info.filename!r} "
+                f"(file_id={file_id}): {e} — keeping file_id for vision/extraction fallback"
+            )
+
+        return file_info
 
     async def _sync_message_attachments_to_storage(self, event: MessageEvent) -> None:
         """Sync message attachments and update event attachments"""
