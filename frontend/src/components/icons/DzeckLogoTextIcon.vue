@@ -1,23 +1,6 @@
 <template>
-    <svg xmlns="http://www.w3.org/2000/svg" :width="width" :height="height" viewBox="0 0 88 38" fill="none">
-        <text
-            y="28"
-            font-family="ui-serif, Georgia, Cambria, 'Times New Roman', Times, serif"
-            font-size="26"
-            font-weight="500"
-            fill="var(--logo-color)"
-            letter-spacing="-0.8">Dzeck</text>
-    </svg>
+    <span
+        style="font-family: ui-serif, Georgia, Cambria, 'Times New Roman', Times, serif; font-size: 22px; font-weight: 500; color: var(--logo-color); letter-spacing: -0.5px; line-height: 1; display: inline-block; padding-left: 4px;">
+        Dzeck
+    </span>
 </template>
-<script setup lang="ts">
-defineProps({
-    width: {
-        type: [String, Number],
-        default: 88
-    },
-    height: {
-        type: [String, Number],
-        default: 38
-    }
-})
-</script>
