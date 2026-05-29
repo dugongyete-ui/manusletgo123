@@ -18,10 +18,7 @@
         </svg>
       </template>
       <template v-else>
-        <img
-          class="size-[18px] object-cover [filter:brightness(0)_saturate(100%)_invert(52%)_sepia(7%)_saturate(141%)_hue-rotate(349deg)_brightness(95%)_contrast(86%)]"
-          :alt="session.title || ''"
-          src="https://files.manuscdn.com/assets/icon/session/chatting.svg" />
+        <MessageCircle class="size-[18px] text-[var(--icon-tertiary)]" />
       </template>
     
     </div>
@@ -47,7 +44,7 @@
 </template>
 
 <script setup lang="ts">
-import { Ellipsis } from 'lucide-vue-next';
+import { Ellipsis, MessageCircle } from 'lucide-vue-next';
 import { computed, ref } from 'vue';
 import { useI18n } from 'vue-i18n';
 import { useRoute, useRouter } from 'vue-router';

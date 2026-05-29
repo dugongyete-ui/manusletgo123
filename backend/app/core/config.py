@@ -79,7 +79,7 @@ class Settings(BaseSettings):
     # Auth configuration
     auth_provider: str = "password"  # "password", "none", "local"
     show_github_button: bool = True
-    github_repository_url: str = "https://github.com/simpleyyt/ai-manus"
+    github_repository_url: str = "https://github.com/simpleyyt/dzeck"
     password_salt: str | None = None
     password_hash_rounds: int = 10
     password_hash_algorithm: str = "pbkdf2_sha256"

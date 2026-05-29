@@ -95,7 +95,7 @@ const { toggleLeftPanel, isLeftPanelShow } = useLeftPanel();
 const { hideFilePanel } = useFilePanel();
 const { currentUser } = useAuth();
 const showGithubButton = ref(false);
-const githubRepositoryUrl = ref('https://github.com/simpleyyt/ai-manus');
+const githubRepositoryUrl = ref('https://github.com/simpleyyt/dzeck');
 
 // Get first letter of user's fullname for avatar display
 const avatarLetter = computed(() => {
