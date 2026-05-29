@@ -105,13 +105,15 @@ class AgentTaskRunner(TaskRunner):
 
     async def _sync_file_to_storage(self, file_path: str) -> Optional[FileInfo]:
         """Upload or update file and return FileInfo"""
+        import mimetypes
         try:
             file_info = await self._session_repository.get_file_by_path(self._session_id, file_path)
             file_data = await self._sandbox.file_download(file_path)
             if file_info:
                 await self._session_repository.remove_file(self._session_id, file_info.file_id)
             file_name = file_path.split("/")[-1]
-            file_info = await self._file_storage.upload_file(file_data, file_name, self._user_id)
+            content_type, _ = mimetypes.guess_type(file_name)
+            file_info = await self._file_storage.upload_file(file_data, file_name, self._user_id, content_type=content_type)
             file_info.file_path = file_path
             await self._session_repository.add_file(self._session_id, file_info)
             return file_info

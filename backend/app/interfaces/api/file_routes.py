@@ -1,6 +1,7 @@
 from fastapi import APIRouter, Depends, UploadFile, File
 from fastapi.responses import StreamingResponse
 import logging
+import mimetypes
 
 from app.application.services.file_service import FileService
 from app.application.errors.exceptions import NotFoundError
@@ -14,6 +15,26 @@ from app.domain.services import file_extractor
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/files", tags=["files"])
+
+_INLINE_MIME_PREFIXES = ("image/", "video/", "audio/", "text/plain", "application/pdf")
+
+def _resolve_media_type(content_type: str | None, filename: str | None) -> str:
+    """Return the best Content-Type for a file, falling back to mimetypes detection."""
+    if content_type and content_type != "application/octet-stream":
+        return content_type
+    if filename:
+        guessed, _ = mimetypes.guess_type(filename)
+        if guessed:
+            return guessed
+    return content_type or "application/octet-stream"
+
+def _disposition(media_type: str, filename: str | None) -> str:
+    """Use inline for browser-renderable types, attachment otherwise."""
+    import urllib.parse
+    encoded = urllib.parse.quote(filename or "file", safe='')
+    if any(media_type.startswith(p) for p in _INLINE_MIME_PREFIXES):
+        return f'inline; filename*=UTF-8\'\'{encoded}'
+    return f'attachment; filename*=UTF-8\'\'{encoded}'
 
 @router.post("", response_model=APIResponse[FileInfoResponse])
 async def upload_file(
@@ -48,20 +69,9 @@ async def download_file_with_signature(
     except PermissionError:
         raise NotFoundError("File not found")  # Don't reveal if file exists but user has no access
     
-    # Encode filename properly for Content-Disposition header
-    # Use URL encoding for non-ASCII characters to ensure latin-1 compatibility
-    import urllib.parse
-    encoded_filename = urllib.parse.quote(file_info.filename, safe='')
-    
-    headers = {
-        'Content-Disposition': f'attachment; filename*=UTF-8\'\'{encoded_filename}'
-    }
-    
-    return StreamingResponse(
-        file_data,
-        media_type=file_info.content_type or 'application/octet-stream',
-        headers=headers
-    )
+    media_type = _resolve_media_type(file_info.content_type, file_info.filename)
+    headers = {'Content-Disposition': _disposition(media_type, file_info.filename)}
+    return StreamingResponse(file_data, media_type=media_type, headers=headers)
 
 @router.get("/{file_id}/download")
 async def download_file(
@@ -71,28 +81,16 @@ async def download_file(
 ):
     """Download file with optional access token"""
     
-    # Download file (authentication is handled by middleware for non-token requests)
     try:
         file_data, file_info = await file_service.download_file(file_id, current_user.id if current_user else None)
     except FileNotFoundError:
         raise NotFoundError("File not found")
     except PermissionError:
-        raise NotFoundError("File not found")  # Don't reveal if file exists but user has no access
-    
-    # Encode filename properly for Content-Disposition header
-    # Use URL encoding for non-ASCII characters to ensure latin-1 compatibility
-    import urllib.parse
-    encoded_filename = urllib.parse.quote(file_info.filename, safe='')
-    
-    headers = {
-        'Content-Disposition': f'attachment; filename*=UTF-8\'\'{encoded_filename}'
-    }
-    
-    return StreamingResponse(
-        file_data,
-        media_type=file_info.content_type or 'application/octet-stream',
-        headers=headers
-    )
+        raise NotFoundError("File not found")
+
+    media_type = _resolve_media_type(file_info.content_type, file_info.filename)
+    headers = {'Content-Disposition': _disposition(media_type, file_info.filename)}
+    return StreamingResponse(file_data, media_type=media_type, headers=headers)
 
 @router.post("/{file_id}/extract", response_model=APIResponse[FileExtractResponse])
 async def extract_file_text(
