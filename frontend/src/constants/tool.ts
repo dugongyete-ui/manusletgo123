@@ -92,18 +92,30 @@ import SearchIcon from '../components/icons/SearchIcon.vue';
 import EditIcon from '../components/icons/EditIcon.vue';
 import BrowserIcon from '../components/icons/BrowserIcon.vue';
 import ShellIcon from '../components/icons/ShellIcon.vue';
+import ImageSearchIcon from '../components/icons/ImageSearchIcon.vue';
+import ImageDownloadIcon from '../components/icons/ImageDownloadIcon.vue';
+import McpIcon from '../components/icons/McpIcon.vue';
 
 /**
- * Tool icon mapping
+ * Tool icon mapping (per toolkit name)
  */
 export const TOOL_ICON_MAP: {[key: string]: any} = {
   "shell": ShellIcon,
   "file": EditIcon,
   "browser": BrowserIcon,
   "search": SearchIcon,
-  "image": SearchIcon,
+  "info": SearchIcon,
+  "image": ImageSearchIcon,
   "message": "",
-  "mcp": SearchIcon
+  "mcp": McpIcon
+};
+
+/**
+ * Per-function icon overrides (takes priority over TOOL_ICON_MAP)
+ */
+export const TOOL_FUNCTION_ICON_MAP: {[key: string]: any} = {
+  "image_search_web": ImageSearchIcon,
+  "image_download": ImageDownloadIcon,
 };
 
 import ShellToolView from '@/components/toolViews/ShellToolView.vue';
