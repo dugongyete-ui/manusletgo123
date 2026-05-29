@@ -12,25 +12,6 @@ env_path = backend_path / ".env"
 if env_path.exists():
     load_dotenv(str(env_path))
 
-async def test_e2b_sandbox():
-    print("--- Mengetes E2B Sandbox ---")
-    from app.infrastructure.external.sandbox.e2b_sandbox import E2BSandbox
-    
-    try:
-        print("Mencoba membuat sandbox E2B...")
-        sandbox = await E2BSandbox.create()
-        print(f"Berhasil membuat sandbox! ID: {sandbox.id}")
-        print(f"Hostname: {sandbox.ip}")
-        print(f"CDP URL: {sandbox.cdp_url}")
-        
-        print("Menghancurkan sandbox...")
-        await sandbox.destroy()
-        print("Sandbox berhasil dihancurkan.")
-        return True
-    except Exception as e:
-        print(f"Gagal mengetes E2B Sandbox: {e}")
-        return False
-
 async def test_mongodb():
     print("\n--- Mengetes MongoDB ---")
     from motor.motor_asyncio import AsyncIOMotorClient
@@ -72,12 +53,10 @@ async def test_redis():
         return False
 
 async def main():
-    e2b_ok = await test_e2b_sandbox()
     mongo_ok = await test_mongodb()
     redis_ok = await test_redis()
     
     print("\n--- Ringkasan Hasil ---")
-    print(f"E2B Sandbox: {'OK' if e2b_ok else 'FAILED' if e2b_ok is False else 'SKIP'}")
     print(f"MongoDB: {'OK' if mongo_ok else 'FAILED' if mongo_ok is False else 'SKIP'}")
     print(f"Redis: {'OK' if redis_ok else 'FAILED' if redis_ok is False else 'SKIP'}")
 
