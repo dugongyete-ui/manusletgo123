@@ -29,7 +29,7 @@
       </div>
     </div>
     <div
-      class="max-w-none p-0 m-0 prose prose-sm sm:prose-base dark:prose-invert [&_pre:not(.shiki)]:!bg-[var(--fill-tsp-white-light)] [&_pre:not(.shiki)]:text-[var(--text-primary)] text-base text-[var(--text-primary)]"
+      class="md-prose max-w-none p-0 m-0 prose dark:prose-invert text-[var(--text-primary)]"
       v-html="renderMarkdown(messageContent.content)"
       @click="handleMarkdownClick"></div>
   </div>
@@ -187,11 +187,15 @@ renderer.blockquote = ({ text }: { text: string }) => {
 };
 
 renderer.table = (token: any) => {
+  const renderCell = (cell: any): string => {
+    const raw = typeof cell === 'object' ? (cell.text ?? '') : cell;
+    try { return marked.parseInline(raw) as string; } catch { return raw; }
+  };
   const header = token.header.map((cell: any) =>
-    `<th>${typeof cell === 'object' ? cell.text : cell}</th>`
+    `<th>${renderCell(cell)}</th>`
   ).join('');
   const rows = token.rows.map((row: any[]) =>
-    `<tr>${row.map((cell: any) => `<td>${typeof cell === 'object' ? cell.text : cell}</td>`).join('')}</tr>`
+    `<tr>${row.map((cell: any) => `<td>${renderCell(cell)}</td>`).join('')}</tr>`
   ).join('');
   return `<div class="md-table-wrap"><table class="md-table"><thead><tr>${header}</tr></thead><tbody>${rows}</tbody></table></div>`;
 };
