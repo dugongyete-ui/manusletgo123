@@ -81,6 +81,10 @@ class Browser(Protocol):
         """Execute JavaScript code"""
         ...
     
+    async def list_tabs(self) -> ToolResult:
+        """List all currently open browser tabs with their index and URL"""
+        ...
+
     async def open_tab(self, url: str) -> ToolResult:
         """Open a URL in a new browser tab"""
         ...

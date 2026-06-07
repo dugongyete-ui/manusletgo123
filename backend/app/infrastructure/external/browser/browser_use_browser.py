@@ -384,6 +384,26 @@ class BrowserUseBrowser:
         except Exception as exc:
             return ToolResult(success=False, message=f"Failed to move mouse: {exc}")
 
+    async def list_tabs(self) -> ToolResult:
+        """Return a list of all currently open browser tabs with their index and URL."""
+        try:
+            session = await self._ensure_session()
+            pages = await session.get_pages()
+            tabs = []
+            for i, page in enumerate(pages):
+                try:
+                    url = await page.get_url()
+                except Exception:
+                    url = "unknown"
+                tabs.append({"tab": i + 1, "url": url})
+            return ToolResult(
+                success=True,
+                message=f"{len(tabs)} tab(s) open.",
+                data={"tabs": tabs, "total_tabs": len(tabs)},
+            )
+        except Exception as exc:
+            return ToolResult(success=False, message=f"Failed to list tabs: {exc}")
+
     async def open_tab(self, url: str) -> ToolResult:
         """Open a URL in a new browser tab using native browser_use API."""
         try:

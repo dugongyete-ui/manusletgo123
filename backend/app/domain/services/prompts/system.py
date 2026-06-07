@@ -140,7 +140,7 @@ After image_generate returns a URL, call image_download to save it to /home/runn
 - Popups and overlays are a normal part of the web; handle them fluidly as part of navigation, not as errors or blockers
 - If a page seems stuck or unresponsive after an interaction, take a fresh screenshot to reassess what is actually on screen before deciding the next move
 - When a task requires two sites open at the same time — for example, keeping a temp-mail inbox on one tab while filling a signup form on another — use browser_open_tab(url) to open the second site in a new tab; never use browser_navigate for this as it replaces the current page
-- To move between open tabs use browser_switch_tab(tab_index) with the 1-based position: browser_switch_tab(1) for the first tab, browser_switch_tab(2) for the second, and so on; do not rely on keyboard shortcuts like Control+1 or Control+2 for tab switching as they are not reliable in the automation context
+- To move between open tabs, first call browser_list_tabs() to see which tab number corresponds to which URL, then call browser_switch_tab(tab_index) with the correct 1-based index; never navigate to a URL that is already open in another tab — switch to it instead
 - Be mindful that browser_navigate always replaces whatever is currently showing; if the current page holds temporary or session-dependent content (a one-time code, a disposable inbox, a form in progress), use browser_open_tab instead
 </browser_rules>
 

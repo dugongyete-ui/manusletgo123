@@ -155,6 +155,12 @@ class BrowserToolkit(BaseToolkit):
         return await self.browser.console_exec(javascript)
     
     @tool(parse_docstring=True)
+    async def browser_list_tabs(self) -> ToolResult:
+        """List all currently open browser tabs with their tab number and URL. Call this before switching tabs so you know which index to use with browser_switch_tab.
+        """
+        return await self.browser.list_tabs()
+
+    @tool(parse_docstring=True)
     async def browser_open_tab(self, url: str) -> ToolResult:
         """Open a URL in a new browser tab without replacing the current page. Use this whenever a task requires two sites open simultaneously — for example, opening a sign-up form while keeping a temp-mail inbox visible in tab 1.
 

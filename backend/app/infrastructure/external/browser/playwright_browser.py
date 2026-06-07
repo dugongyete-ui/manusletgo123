@@ -545,6 +545,23 @@ class PlaywrightBrowser:
         await self.page.mouse.move(coordinate_x, coordinate_y)
         return ToolResult(success=True)
     
+    async def list_tabs(self) -> ToolResult:
+        """Return a list of all currently open browser tabs with their index and URL."""
+        try:
+            await self._ensure_browser()
+            contexts = self.browser.contexts
+            if not contexts:
+                return ToolResult(success=True, message="0 tab(s) open.", data={"tabs": [], "total_tabs": 0})
+            pages = contexts[0].pages
+            tabs = [{"tab": i + 1, "url": p.url} for i, p in enumerate(pages)]
+            return ToolResult(
+                success=True,
+                message=f"{len(tabs)} tab(s) open.",
+                data={"tabs": tabs, "total_tabs": len(tabs)},
+            )
+        except Exception as e:
+            return ToolResult(success=False, message=f"Failed to list tabs: {e}")
+
     async def open_tab(self, url: str) -> ToolResult:
         """Open a URL in a new browser tab."""
         try:
