@@ -165,88 +165,61 @@ body,html {
   border-radius: 0 !important;
 }
 
-/* ── Callout / Alert boxes ── */
+/* ── Callout / Alert boxes — neutral professional ── */
 .md-callout {
   display: flex;
   gap: 10px;
   align-items: flex-start;
-  padding: 12px 16px;
-  border-radius: 8px;
+  padding: 11px 14px;
+  border-radius: 6px;
   margin: 0.75rem 0;
-  border-left: 3px solid;
+  border: 1px solid var(--border-dark, #0000001f);
+  border-left: 3px solid var(--border-dark, #0000001f);
+  background: var(--fill-tsp-white-light, #37352f0a);
   font-size: 0.88rem;
   line-height: 1.6;
+  color: var(--text-secondary);
+}
+.dark .md-callout {
+  background: #1a1d21;
+  border-color: #30363d;
+  color: #8b949e;
 }
 
 .md-callout-icon {
-  font-size: 1rem;
+  font-size: 0.95rem;
   flex-shrink: 0;
   margin-top: 1px;
+  opacity: 0.55;
 }
 
 .md-callout-body {
   flex: 1;
   min-width: 0;
+  color: var(--text-primary);
+}
+.dark .md-callout-body {
+  color: #cdd5df;
 }
 
 .md-callout-body p {
   margin: 0 !important;
 }
 
-.md-callout-default {
-  background: var(--fill-tsp-white-main, #37352f0f);
-  border-color: var(--border-dark, #0000001f);
-  color: var(--text-secondary);
-}
-.dark .md-callout-default {
-  background: #21262d;
-  border-color: #30363d;
-  color: #8b949e;
-}
+/* All callout types share the same neutral base — only left-border shade varies */
+.md-callout-default  { border-left-color: var(--border-dark, #0000001f); }
+.md-callout-note,
+.md-callout-info     { border-left-color: #6b7280; }
+.md-callout-tip      { border-left-color: #6b7280; }
+.md-callout-warning  { border-left-color: #9ca3af; }
+.md-callout-danger   { border-left-color: #6b7280; }
 
-.md-callout-note, .md-callout-info {
-  background: #dbeafe;
-  border-color: #3b82f6;
-  color: #1e40af;
-}
-.dark .md-callout-note, .dark .md-callout-info {
-  background: #0c1a2e;
-  border-color: #3b82f6;
-  color: #93c5fd;
-}
-
-.md-callout-tip {
-  background: #dcfce7;
-  border-color: #22c55e;
-  color: #166534;
-}
-.dark .md-callout-tip {
-  background: #052e16;
-  border-color: #22c55e;
-  color: #86efac;
-}
-
-.md-callout-warning {
-  background: #fef9c3;
-  border-color: #eab308;
-  color: #854d0e;
-}
-.dark .md-callout-warning {
-  background: #1c1500;
-  border-color: #eab308;
-  color: #fde047;
-}
-
-.md-callout-danger {
-  background: #fee2e2;
-  border-color: #ef4444;
-  color: #991b1b;
-}
-.dark .md-callout-danger {
-  background: #1c0a0a;
-  border-color: #ef4444;
-  color: #fca5a5;
-}
+.dark .md-callout-default  { border-left-color: #374151; }
+.dark .md-callout-note,
+.dark .md-callout-info,
+.dark .md-callout-tip      { border-left-color: #4b5563; }
+.dark .md-callout-warning  { border-left-color: #6b7280; }
+.dark .md-callout-danger   { border-left-color: #4b5563; }
 
 /* ── Styled Tables ── */
 .md-table-wrap {
@@ -311,22 +284,22 @@ body,html {
   background: #161b22;
 }
 
-/* ── Inline code badge style ── */
+/* ── Inline code badge style — neutral ── */
 .prose code:not(.hljs),
 .max-w-none code:not(.hljs) {
   font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
   font-size: 0.8em;
   background: var(--fill-tsp-gray-dark, #37352f14) !important;
-  color: #e11d48 !important;
+  color: var(--text-primary) !important;
   padding: 2px 6px !important;
-  border-radius: 5px !important;
+  border-radius: 4px !important;
   border: 1px solid var(--border-dark, #0000001f);
   font-weight: 500;
 }
 .dark .prose code:not(.hljs),
 .dark .max-w-none code:not(.hljs) {
   background: #21262d !important;
-  color: #f97583 !important;
+  color: #cdd5df !important;
   border-color: #30363d;
 }
 
@@ -354,23 +327,28 @@ body,html {
   font-weight: 600;
   margin-top: 0.8rem;
   margin-bottom: 0.3rem;
-  color: var(--text-brand, #0081f2);
+  color: var(--text-primary);
 }
 .dark .prose h1, .dark .max-w-none h1,
 .dark .prose h2, .dark .max-w-none h2 {
   border-color: #30363d;
 }
 
-/* ── Blockquote default (non-callout) ── */
+/* ── Blockquote default (non-callout) — neutral ── */
 .prose blockquote:not(.md-callout),
 .max-w-none blockquote:not(.md-callout) {
-  border-left: 3px solid var(--text-brand, #0081f2);
-  background: var(--fill-blue, #0081f214);
+  border-left: 3px solid var(--border-dark, #0000001f);
+  background: var(--fill-tsp-white-light, #37352f0a);
   padding: 8px 14px;
   border-radius: 0 6px 6px 0;
   color: var(--text-secondary);
   font-style: normal;
   margin: 0.75rem 0;
+}
+.dark .prose blockquote:not(.md-callout),
+.dark .max-w-none blockquote:not(.md-callout) {
+  border-left-color: #374151;
+  background: #1a1d21;
 }
 .prose blockquote:not(.md-callout) p,
 .max-w-none blockquote:not(.md-callout) p {
@@ -393,12 +371,12 @@ body,html {
   border-color: #30363d;
 }
 
-/* ── List styling ── */
+/* ── List styling — neutral ── */
 .prose ul > li::marker {
-  color: var(--text-brand, #0081f2);
+  color: var(--text-tertiary);
 }
 .prose ol > li::marker {
-  color: var(--text-brand, #0081f2);
+  color: var(--text-secondary);
   font-weight: 600;
 }
 
