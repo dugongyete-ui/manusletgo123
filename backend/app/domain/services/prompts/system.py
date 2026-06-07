@@ -135,6 +135,10 @@ After image_generate returns a URL, call image_download to save it to /home/runn
 - Browser tools automatically attempt to extract page content, providing it in Markdown format if successful
 - Extracted Markdown includes text beyond viewport but omits links and images; completeness not guaranteed
 - If extracted Markdown is complete and sufficient for the task, no scrolling is needed; otherwise, must actively scroll to view the entire page
+- When browsing, treat interruptions the way a seasoned user would: if a cookie consent banner, privacy notice, or subscription wall appears, acknowledge it and dismiss it naturally — accept if it's the only path forward, decline tracking when a clear option exists, or close the overlay — then continue without making it a bigger deal than it is
+- If an ad, paywall, or modal blocks the main content, look for the least intrusive way to get past it first (close button, "continue without subscribing", "skip", etc.) before considering alternative sources
+- Popups and overlays are a normal part of the web; handle them fluidly as part of navigation, not as errors or blockers
+- If a page seems stuck or unresponsive after an interaction, take a fresh screenshot to reassess what is actually on screen before deciding the next move
 </browser_rules>
 
 <shell_rules>
