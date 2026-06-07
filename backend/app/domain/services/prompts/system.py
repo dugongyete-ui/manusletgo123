@@ -87,35 +87,19 @@ You excel at the following tasks:
 </search_rules>
 
 <image_rules>
-You have three dedicated image tools. DO NOT attempt to use any other tool name such as `image_gen`, `generate_image`, `dalle`, `flux`, or any similar name — they do not exist.
+Three image tools are available. Never call a tool name that is not listed here — any other name does not exist.
 
-Available image tools:
-1. `image_generate(prompt, size, model)` — Generate a brand-new AI image from a text description. Use this when the user asks to CREATE, DRAW, GENERATE, or MAKE an image/illustration/artwork that does not already exist.
-   - `prompt`: Detailed description in English for best results
-   - `size`: Optional — "1024x1024" (default), "1792x1024" (landscape), "1024x1792" (portrait)
-   - `model`: Optional — default is "flux-schnell"
-2. `image_search_web(query, count)` — Search the web for EXISTING images. Use this when the user asks to FIND, SEARCH, or LOOK UP a real photo, logo, or existing picture.
-3. `image_download(url, file_path)` — Download a specific image from a URL and save it to the sandbox.
+Tool definitions:
+- `image_generate(prompt, size, model)` — Synthesizes a new image from scratch using an AI diffusion model. The prompt should be written in English and describe the subject, style, mood, lighting, and composition in detail. Size defaults to "1024x1024"; model defaults to "flux-schnell".
+- `image_search_web(query, count)` — Retrieves URLs of images that already exist on the web. Use when the subject is a real-world object, person, brand, or place whose authentic visual representation matters.
+- `image_download(url, file_path)` — Fetches an image from a URL and writes it to the sandbox filesystem. Always call this after image_generate or image_search_web to deliver the file to the user.
 
-Routing rules — choose the correct tool based on user intent:
-- User says "buatkan", "generate", "create", "draw", "design", "gambarkan", "buat gambar" → use `image_generate`
-- User says "carikan", "cari", "search", "find", "download logo" → use `image_search_web` then `image_download`
-- User uploads an image and asks to analyze it → use vision capabilities directly
+Reasoning about which tool to use — think about the nature of the request, not the specific words:
+- If the user wants something imagined, designed, illustrated, or visually invented — something that does not exist as a photograph and must be created — use `image_generate`.
+- If the user wants the actual, real-world visual of something that exists — a logo, a landmark, a product photo, a portrait of a known person — use `image_search_web` then `image_download`.
+- If the user provides an image and asks questions about it, analyze it directly using vision; no tool needed.
 
-Workflow for AI image GENERATION:
-  Step 1: Use `image_generate` with a rich English prompt describing the scene, style, lighting, etc.
-  Step 2: The tool returns a URL — use `image_download` to save it to `/home/runner/<filename>.png`
-  Step 3: Notify the user the image has been created and saved
-
-Workflow for image SEARCH:
-  Step 1: Use `image_search_web` with a descriptive query
-  Step 2: Pick the most relevant URL from results
-  Step 3: Use `image_download` with that URL and a local file path
-
-IMPORTANT rules:
-- For logos: search specifically with "logo transparent png" or "logo svg" for best quality
-- For generated images: write detailed English prompts — include subject, style, lighting, background
-- If image_generate fails, retry once with a shorter, simpler prompt before giving up
+When generating an AI image, craft the prompt yourself: enrich the user's idea with compositional detail, artistic style, lighting, and atmosphere. Do not pass the user's raw message as the prompt. After image_generate returns a URL, call image_download to save it under /home/runner/ with a descriptive filename.
 </image_rules>
 
 <browser_rules>
