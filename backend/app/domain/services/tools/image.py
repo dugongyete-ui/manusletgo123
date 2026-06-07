@@ -139,7 +139,7 @@ class ImageToolkit(BaseToolkit):
         use_model = model or "flux-schnell"
 
         try:
-            async with httpx.AsyncClient(timeout=90) as client:
+            async with httpx.AsyncClient(timeout=90, verify=False) as client:
                 response = await client.post(
                     f"{api_base.rstrip('/')}/images/generations",
                     headers={
@@ -204,7 +204,7 @@ class ImageToolkit(BaseToolkit):
                     "Chrome/120.0.0.0 Safari/537.36"
                 )
             }
-            async with httpx.AsyncClient(timeout=30, follow_redirects=True) as client:
+            async with httpx.AsyncClient(timeout=30, follow_redirects=True, verify=False) as client:
                 response = await client.get(url, headers=headers)
                 response.raise_for_status()
                 image_data = response.content
