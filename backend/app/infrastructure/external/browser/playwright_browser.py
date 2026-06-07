@@ -545,6 +545,25 @@ class PlaywrightBrowser:
         await self.page.mouse.move(coordinate_x, coordinate_y)
         return ToolResult(success=True)
     
+    async def open_tab(self, url: str) -> ToolResult:
+        """Open a URL in a new browser tab."""
+        try:
+            await self._ensure_browser()
+            contexts = self.browser.contexts
+            context = contexts[0] if contexts else await self.browser.new_context()
+            new_page = await context.new_page()
+            await new_page.goto(url, timeout=30000)
+            await new_page.bring_to_front()
+            self.page = new_page
+            pages = context.pages
+            return ToolResult(
+                success=True,
+                message=f"Opened new tab with {url}. Total tabs: {len(pages)}.",
+                data={"url": url, "tab": len(pages), "total_tabs": len(pages)},
+            )
+        except Exception as e:
+            return ToolResult(success=False, message=f"Failed to open new tab: {e}")
+
     async def switch_tab(self, tab_index: int) -> ToolResult:
         """Switch the active browser tab by 1-based index."""
         try:

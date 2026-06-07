@@ -81,6 +81,10 @@ class Browser(Protocol):
         """Execute JavaScript code"""
         ...
     
+    async def open_tab(self, url: str) -> ToolResult:
+        """Open a URL in a new browser tab"""
+        ...
+
     async def switch_tab(self, tab_index: int) -> ToolResult:
         """Switch to a browser tab by 1-based index"""
         ...

@@ -155,6 +155,15 @@ class BrowserToolkit(BaseToolkit):
         return await self.browser.console_exec(javascript)
     
     @tool(parse_docstring=True)
+    async def browser_open_tab(self, url: str) -> ToolResult:
+        """Open a URL in a new browser tab without replacing the current page. Use this whenever a task requires two sites open simultaneously — for example, opening a sign-up form while keeping a temp-mail inbox visible in tab 1.
+
+        Args:
+            url: Complete URL to open in the new tab. Must include protocol prefix (e.g. https://).
+        """
+        return await self.browser.open_tab(url)
+
+    @tool(parse_docstring=True)
     async def browser_switch_tab(self, tab_index: int) -> ToolResult:
         """Switch to a specific browser tab by its 1-based position. Use this whenever you need to move between open tabs — for example, switching back to a temp-mail tab after submitting a form in another tab.
 
