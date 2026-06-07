@@ -141,6 +141,76 @@ class ReplitSandbox(Sandbox):
         logger.info("ReplitSandbox.destroy() called — no-op (permanent process)")
         return True
 
+    async def warmup_packages(self) -> None:
+        """
+        Pre-install all common Python packages and system tools inside the sandbox
+        so the AI agent can use them immediately without wasting task time on installs.
+
+        Uses a flag file /tmp/.sandbox_warmed_up to skip reinstall on subsequent
+        warmup calls within the same container lifetime.
+        """
+        flag = "/tmp/.sandbox_warmed_up"
+        check = await self._run_admin_cmd(
+            f"test -f {flag} && echo ALREADY || echo NEEDED", timeout=5
+        )
+        if "ALREADY" in check:
+            logger.info("Sandbox packages already warmed up — skipping")
+            return
+
+        logger.info("Starting sandbox package warmup…")
+
+        # ── System packages (apt) ──────────────────────────────────────────
+        apt_packages = " ".join([
+            "poppler-utils",    # pdftotext command
+            "ffmpeg",           # audio/video processing
+            "imagemagick",      # image conversion
+            "curl", "wget",     # network utilities
+            "unzip", "zip",     # archive tools
+        ])
+        await self._run_admin_cmd(
+            f"apt-get update -qq && apt-get install -y -qq {apt_packages} 2>&1 | tail -3",
+            timeout=120,
+        )
+        logger.info("apt warmup done")
+
+        # ── Python packages (pip) — batched for speed ──────────────────────
+        pip_batches = [
+            # Document processing (most common)
+            "python-pptx pdfplumber python-docx pandas openpyxl xlrd",
+            # Data science & visualization
+            "numpy matplotlib seaborn plotly scipy",
+            # PDF tools
+            "reportlab pypdf2 PyMuPDF",
+            # Web scraping & HTTP
+            "beautifulsoup4 lxml requests aiohttp",
+            # Image processing
+            "Pillow",
+            # Media & download
+            "yt-dlp pydub",
+            # Utilities
+            "certifi qrcode[pil] markdown tabulate tqdm colorama",
+            # Search
+            "duckduckgo-search",
+            # Data formats
+            "toml pyyaml jsonschema",
+            # Code & text
+            "pygments rich",
+        ]
+
+        for batch in pip_batches:
+            result = await self._run_admin_cmd(
+                f"pip3 install -q --disable-pip-version-check {batch} 2>&1 | tail -2",
+                timeout=180,
+            )
+            logger.info("pip batch done: %s … result: %s", batch[:50], result[:80] if result else "ok")
+
+        # Mark as complete
+        await self._run_admin_cmd(
+            f"echo 'warmed_up' > {flag} && echo OK",
+            timeout=5,
+        )
+        logger.info("Sandbox package warmup complete ✓")
+
     async def get_browser(self) -> Browser:
         """Return a Browser connected to the sandbox Chrome via CDP."""
         settings = get_settings()

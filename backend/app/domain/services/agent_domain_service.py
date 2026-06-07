@@ -79,6 +79,10 @@ class AgentDomainService:
                 logger.info("[Warmup] Sandbox %s created for session %s — running ensure_sandbox…", sandbox.id, session_id)
                 await sandbox.ensure_sandbox()
                 logger.info("[Warmup] Sandbox %s fully ready for session %s", sandbox.id, session_id)
+                # Pre-install all common packages in the background so the
+                # agent never wastes task time on pip/apt installs.
+                if hasattr(sandbox, "warmup_packages"):
+                    asyncio.ensure_future(sandbox.warmup_packages())
             except Exception as e:
                 logger.warning("[Warmup] Background sandbox warmup failed for session %s: %s", session_id, e)
 
