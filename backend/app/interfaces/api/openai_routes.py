@@ -48,7 +48,7 @@ async def _stream_llm_response(
 
     target_url = f"{api_base.rstrip('/')}/chat/completions"
 
-    async with httpx.AsyncClient(timeout=120.0) as client:
+    async with httpx.AsyncClient(timeout=120.0, verify=False) as client:
         async with client.stream(
             "POST",
             target_url,
@@ -87,7 +87,7 @@ async def _get_llm_response(
 
     target_url = f"{api_base.rstrip('/')}/chat/completions"
 
-    async with httpx.AsyncClient(timeout=120.0) as client:
+    async with httpx.AsyncClient(timeout=120.0, verify=False) as client:
         resp = await client.post(target_url, json=request_body, headers=headers)
         resp.raise_for_status()
         return resp.json()

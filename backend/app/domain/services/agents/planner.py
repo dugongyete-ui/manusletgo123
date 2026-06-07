@@ -21,6 +21,7 @@ from app.domain.models.event import (
     DoneEvent,
 )
 from langchain.messages import HumanMessage as LCHumanMessage
+import httpx
 from langchain.chat_models import init_chat_model
 from app.core.config import get_settings
 from app.domain.external.sandbox import Sandbox
@@ -80,6 +81,10 @@ class PlannerAgent(BaseAgent):
                         kwargs["api_key"] = settings.vision_api_key
                 if settings.extra_headers:
                     kwargs["default_headers"] = settings.extra_headers
+                vision_base = settings.vision_api_base or settings.api_base
+                if vision_base:
+                    kwargs["http_client"] = httpx.Client(verify=False)
+                    kwargs["http_async_client"] = httpx.AsyncClient(verify=False)
                 self._vision_model = init_chat_model(**kwargs)
                 logger.info(
                     f"Vision model initialised: {settings.vision_model_name} "

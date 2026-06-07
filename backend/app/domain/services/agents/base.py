@@ -1,6 +1,7 @@
 import logging
 import asyncio
 import uuid
+import httpx
 from abc import ABC
 from typing import List, Dict, Any, Optional, AsyncGenerator, Union
 from app.domain.models.message import Message
@@ -60,6 +61,9 @@ class BaseAgent(ABC):
         )
         if settings.extra_headers:
             kwargs["default_headers"] = settings.extra_headers
+        if settings.api_base:
+            kwargs["http_client"] = httpx.Client(verify=False)
+            kwargs["http_async_client"] = httpx.AsyncClient(verify=False)
         self._model = init_chat_model(**kwargs)
         self._json_output_parser = RetryWithErrorOutputParser.from_llm(
             parser=JsonOutputParser(),
