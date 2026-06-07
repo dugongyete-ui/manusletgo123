@@ -97,6 +97,8 @@ import DzeckTextIcon from './icons/DzeckTextIcon.vue';
 import { Message, MessageContent, AttachmentsContent } from '../types/message';
 import ToolUse from './ToolUse.vue';
 import { marked } from 'marked';
+import { markedHighlight } from 'marked-highlight';
+import hljs from 'highlight.js';
 import DOMPurify from 'dompurify';
 import { CheckIcon } from 'lucide-vue-next';
 import { computed, ref, type Component } from 'vue';
@@ -106,6 +108,14 @@ import { Bot } from 'lucide-vue-next';
 import AttachmentsMessage from './AttachmentsMessage.vue';
 import { viewFile } from '../api/agent';
 
+marked.use(markedHighlight({
+  emptyLangClass: 'hljs',
+  langPrefix: 'hljs language-',
+  highlight(code, lang) {
+    const language = hljs.getLanguage(lang) ? lang : 'plaintext';
+    return hljs.highlight(code, { language }).value;
+  }
+}));
 
 const props = defineProps<{
   message: Message;
@@ -126,13 +136,11 @@ const handleToolClick = (tool: ToolContent) => {
   emit('toolClick', tool);
 };
 
-// For backward compatibility, provide the original computed properties
 const stepContent = computed(() => props.message.content as StepContent);
 const messageContent = computed(() => props.message.content as MessageContent);
 const toolContent = computed(() => props.message.content as ToolContent);
 const attachmentsContent = computed(() => props.message.content as AttachmentsContent);
 
-// Control content expand/collapse state
 const isExpanded = ref(true);
 
 const { relativeTime } = useRelativeTime();
@@ -149,6 +157,7 @@ const cleanLinkText = (href: string, text: string): string => {
 };
 
 const renderer = new marked.Renderer();
+
 renderer.link = ({ href, title: _title, text }: { href: string; title?: string | null; text: string }) => {
   if (href && isSandboxPath(href)) {
     return `<a href="#" data-sandbox-file="${href}" title="${href}" class="sandbox-file-link">${text}</a>`;
@@ -156,10 +165,41 @@ renderer.link = ({ href, title: _title, text }: { href: string; title?: string |
   return `<a href="${href}" target="_blank" rel="noopener noreferrer" title="${href}">${cleanLinkText(href, text)}</a>`;
 };
 
+renderer.code = ({ text, lang }: { text: string; lang?: string }) => {
+  const language = lang && hljs.getLanguage(lang) ? lang : 'plaintext';
+  const highlighted = hljs.highlight(text, { language }).value;
+  const langLabel = lang ? `<span class="md-code-lang">${lang}</span>` : '';
+  const copyBtn = `<button class="md-code-copy" onclick="navigator.clipboard.writeText(this.closest('.md-code-block').querySelector('code').innerText)" title="Copy">⎘</button>`;
+  return `<div class="md-code-block"><div class="md-code-header">${langLabel}${copyBtn}</div><pre><code class="hljs language-${language}">${highlighted}</code></pre></div>`;
+};
+
+renderer.blockquote = ({ text }: { text: string }) => {
+  const trimmed = text.trim();
+  let type = 'default';
+  let inner = trimmed;
+  const typeMatch = trimmed.match(/^\[!(NOTE|TIP|WARNING|DANGER|INFO)\]\s*/i);
+  if (typeMatch) {
+    type = typeMatch[1].toLowerCase();
+    inner = trimmed.slice(typeMatch[0].length);
+  }
+  const icons: Record<string, string> = { note: 'ℹ', tip: '✦', warning: '⚠', danger: '✖', info: '◉', default: '❝' };
+  return `<div class="md-callout md-callout-${type}"><span class="md-callout-icon">${icons[type] ?? icons.default}</span><div class="md-callout-body">${inner}</div></div>`;
+};
+
+renderer.table = (token: any) => {
+  const header = token.header.map((cell: any) =>
+    `<th>${typeof cell === 'object' ? cell.text : cell}</th>`
+  ).join('');
+  const rows = token.rows.map((row: any[]) =>
+    `<tr>${row.map((cell: any) => `<td>${typeof cell === 'object' ? cell.text : cell}</td>`).join('')}</tr>`
+  ).join('');
+  return `<div class="md-table-wrap"><table class="md-table"><thead><tr>${header}</tr></thead><tbody>${rows}</tbody></table></div>`;
+};
+
 const renderMarkdown = (text: string) => {
   if (typeof text !== 'string') return '';
-  const html = marked(text, { renderer }) as string;
-  return DOMPurify.sanitize(html, { ADD_ATTR: ['target', 'data-sandbox-file'] });
+  const html = marked(text, { renderer, gfm: true, breaks: true }) as string;
+  return DOMPurify.sanitize(html, { ADD_ATTR: ['target', 'data-sandbox-file', 'onclick', 'title'], FORCE_BODY: true });
 };
 
 const handleMarkdownClick = async (event: MouseEvent) => {
