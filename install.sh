@@ -39,6 +39,9 @@ if python3 -m pip install --break-system-packages --dry-run pip &>/dev/null 2>&1
   PIP_FLAGS="--break-system-packages"
 fi
 
+# Upgrade pip/setuptools first to avoid resolver issues
+python3 -m pip install $PIP_FLAGS -q --upgrade pip setuptools wheel 2>/dev/null || true
+
 # ── 1. Frontend dependencies ──────────────────────────────────────────────────
 echo ""
 echo "[1/5] Installing frontend dependencies..."
@@ -72,23 +75,45 @@ python3 -m pip install $PIP_FLAGS -q \
 echo "      Core dependencies installed"
 
 # ── 3. AI / LLM dependencies ─────────────────────────────────────────────────
+#
+#  Install order matters to avoid version conflicts:
+#  1. Pin openai + anthropic to ranges accepted by BOTH langchain and browser-use
+#  2. Install langchain stack
+#  3. Install browser-use with --no-deps to avoid re-pinning old client versions
+#
 echo ""
 echo "[3/5] Installing AI/LLM dependencies..."
 
+# 3a. Shared LLM clients — versions compatible with langchain ≥0.3 AND browser-use ≥0.2
 python3 -m pip install $PIP_FLAGS -q \
-  "langchain>=1.0.7" \
-  "langchain-classic>=1.0.7" \
-  "langchain-openai>=1.0.3" \
-  "langchain-anthropic>=1.2.0" \
-  "langchain-deepseek>=1.0.1" \
-  "langchain-ollama>=1.0.0" \
-  "langchain-community>=0.4.1" \
-  "openai>=2.8.0"
+  "openai>=1.58.1,<3.0.0" \
+  "anthropic>=0.40.0,<2.0.0"
 
+# 3b. LangChain ecosystem
 python3 -m pip install $PIP_FLAGS -q \
-  "e2b>=1.0.0" \
-  "browser-use>=0.12.1" \
-  "playwright>=1.42.0"
+  "langchain>=0.3.0" \
+  "langchain-core>=0.3.0" \
+  "langchain-openai>=0.3.0" \
+  "langchain-anthropic>=0.3.0" \
+  "langchain-ollama>=0.2.0" \
+  "langchain-community>=0.3.0"
+
+# 3c. DeepSeek (may not exist on all registries)
+python3 -m pip install $PIP_FLAGS -q "langchain-deepseek>=0.1.0" 2>/dev/null || \
+  echo "      INFO: langchain-deepseek not available, skipping"
+
+# 3d. browser-use — install without deps to keep the openai/anthropic versions above
+python3 -m pip install $PIP_FLAGS -q --no-deps "browser-use>=0.2.0" 2>/dev/null || \
+  python3 -m pip install $PIP_FLAGS -q --no-deps "browser-use>=0.1.0" 2>/dev/null || \
+  echo "      WARNING: browser-use install failed — browser automation unavailable"
+
+# browser-use remaining runtime deps (openai/anthropic already installed above)
+python3 -m pip install $PIP_FLAGS -q "playwright>=1.42.0"
+python3 -m pip install $PIP_FLAGS -q "patchright>=1.42.0" 2>/dev/null || true
+
+# 3e. E2B sandbox SDK
+python3 -m pip install $PIP_FLAGS -q "e2b>=1.0.0" 2>/dev/null || \
+  echo "      INFO: e2b not available, skipping"
 
 echo "      AI/LLM dependencies installed"
 
