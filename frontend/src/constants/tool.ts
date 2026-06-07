@@ -36,6 +36,7 @@ export const TOOL_FUNCTION_MAP: {[key: string]: string} = {
   // Image tools
   "image_search_web": "Searching images",
   "image_download": "Downloading image",
+  "image_generate": "Generating image",
   
   // Message tools
   "message_notify_user": "Sending notification",
@@ -71,6 +72,7 @@ export const TOOL_FUNCTION_ARG_MAP: {[key: string]: string} = {
   "info_search_web": "query",
   "image_search_web": "query",
   "image_download": "url",
+  "image_generate": "prompt",
   "message_notify_user": "message",
   "message_ask_user": "question"
 };
@@ -94,6 +96,7 @@ import BrowserIcon from '../components/icons/BrowserIcon.vue';
 import ShellIcon from '../components/icons/ShellIcon.vue';
 import ImageSearchIcon from '../components/icons/ImageSearchIcon.vue';
 import ImageDownloadIcon from '../components/icons/ImageDownloadIcon.vue';
+import ImageGenIcon from '../components/icons/ImageGenIcon.vue';
 import McpIcon from '../components/icons/McpIcon.vue';
 
 /**
@@ -116,6 +119,7 @@ export const TOOL_ICON_MAP: {[key: string]: any} = {
 export const TOOL_FUNCTION_ICON_MAP: {[key: string]: any} = {
   "image_search_web": ImageSearchIcon,
   "image_download": ImageDownloadIcon,
+  "image_generate": ImageGenIcon,
 };
 
 import ShellToolView from '@/components/toolViews/ShellToolView.vue';
@@ -125,6 +129,7 @@ import BrowserToolView from '@/components/toolViews/BrowserToolView.vue';
 import ConsoleToolView from '@/components/toolViews/ConsoleToolView.vue';
 import McpToolView from '@/components/toolViews/McpToolView.vue';
 import ImageToolView from '@/components/toolViews/ImageToolView.vue';
+import ImageGenToolView from '@/components/toolViews/ImageGenToolView.vue';
 
 /**
  * Mapping from tool names to components (fallback)
@@ -144,4 +149,5 @@ export const TOOL_COMPONENT_MAP: {[key: string]: any} = {
 export const TOOL_FUNCTION_COMPONENT_MAP: {[key: string]: any} = {
   "browser_console_exec": ConsoleToolView,
   "browser_console_view": ConsoleToolView,
+  "image_generate": ImageGenToolView,
 };

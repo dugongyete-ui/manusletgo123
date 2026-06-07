@@ -3,7 +3,7 @@ from typing import Optional
 from app.domain.external.sandbox import Sandbox
 from app.domain.services.tools.base import BaseToolkit
 from app.domain.models.tool_result import ToolResult
-from app.domain.models.image import ImageSearchResults, ImageSearchResultItem
+from app.domain.models.image import ImageSearchResults, ImageSearchResultItem, ImageGenerationResult
 from langchain.tools import tool
 
 
@@ -114,6 +114,73 @@ class ImageToolkit(BaseToolkit):
             ]
         except Exception:
             return []
+
+    @tool(parse_docstring=True)
+    async def image_generate(
+        self,
+        prompt: str,
+        size: Optional[str] = "1024x1024",
+        model: Optional[str] = "flux-schnell",
+    ) -> ToolResult:
+        """Generate an image using AI based on a text description.
+        Use this when the user asks to create, draw, generate, or make an image/picture/illustration.
+        Returns a URL to the generated image.
+
+        Args:
+            prompt: Detailed description of the image to generate, in English for best results
+            size: (Optional) Image size, e.g. "1024x1024", "1792x1024", "1024x1792". Default is "1024x1024"
+            model: (Optional) Model to use for generation. Default is "flux-schnell"
+        """
+        from app.core.config import get_settings
+        settings = get_settings()
+
+        api_key = settings.vision_api_key or settings.api_key
+        api_base = settings.vision_api_base or settings.api_base or "https://api.openai.com/v1"
+        use_model = model or "flux-schnell"
+
+        try:
+            async with httpx.AsyncClient(timeout=90) as client:
+                response = await client.post(
+                    f"{api_base.rstrip('/')}/images/generations",
+                    headers={
+                        "Authorization": f"Bearer {api_key}",
+                        "Content-Type": "application/json",
+                    },
+                    json={
+                        "model": use_model,
+                        "prompt": prompt,
+                        "n": 1,
+                        "size": size or "1024x1024",
+                    },
+                )
+                response.raise_for_status()
+                data = response.json()
+
+            images = data.get("data", [])
+            if not images:
+                return ToolResult(success=False, message="No image was returned by the API.")
+
+            img = images[0]
+            url = img.get("url", "")
+            revised_prompt = img.get("revised_prompt")
+
+            if not url:
+                return ToolResult(success=False, message="API returned an empty image URL.")
+
+            return ToolResult(
+                success=True,
+                message=f"Image generated successfully with model '{use_model}'.",
+                data=ImageGenerationResult(
+                    prompt=prompt,
+                    url=url,
+                    model=use_model,
+                    revised_prompt=revised_prompt,
+                ),
+            )
+        except httpx.HTTPStatusError as e:
+            return ToolResult(success=False, message=f"API error {e.response.status_code}: {e.response.text}")
+        except Exception as e:
+            return ToolResult(success=False, message=f"Image generation failed: {str(e)}")
 
     @tool(parse_docstring=True)
     async def image_download(
