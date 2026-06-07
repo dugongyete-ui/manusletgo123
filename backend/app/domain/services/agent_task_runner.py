@@ -246,6 +246,19 @@ class AgentTaskRunner(TaskRunner):
                         if image_result and image_result.success and image_result.data:
                             results = image_result.data.results if hasattr(image_result.data, "results") else []
                         event.tool_content = ImageToolContent(results=results)
+                    elif event.function_name == "image_generate":
+                        gen_url = None
+                        gen_prompt = event.function_args.get("prompt", "")
+                        gen_model = event.function_args.get("model", "flux-schnell")
+                        if image_result and image_result.success and image_result.data:
+                            gen_url = getattr(image_result.data, "url", None)
+                            gen_prompt = getattr(image_result.data, "revised_prompt", None) or gen_prompt
+                            gen_model = getattr(image_result.data, "model", gen_model)
+                        event.tool_content = ImageToolContent(
+                            generated_url=gen_url,
+                            generated_prompt=gen_prompt,
+                            generated_model=gen_model,
+                        )
                     elif event.function_name == "image_download":
                         file_path = event.function_args.get("file_path") or event.function_args.get("url", "")
                         downloaded = None

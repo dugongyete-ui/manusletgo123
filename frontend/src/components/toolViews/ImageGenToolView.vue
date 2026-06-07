@@ -69,7 +69,16 @@ const props = defineProps<{
 
 const result = computed(() => {
   const content = props.toolContent as any;
-  if (content?.url) return content;
+  const data = content?.content ?? content;
+  if (data?.generated_url) {
+    return {
+      url: data.generated_url,
+      prompt: data.generated_prompt,
+      model: data.generated_model,
+      revised_prompt: data.generated_prompt,
+    };
+  }
+  if (data?.url) return data;
   return null;
 });
 

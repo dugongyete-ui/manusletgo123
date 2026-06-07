@@ -72,9 +72,12 @@ class McpToolContent(BaseModel):
     result: Any
 
 class ImageToolContent(BaseModel):
-    """Image tool content — search results or download confirmation"""
+    """Image tool content — search results, download confirmation, or generated image"""
     results: List[ImageSearchResultItem] = Field(default_factory=list)
     downloaded_file: Optional[str] = None
+    generated_url: Optional[str] = None
+    generated_prompt: Optional[str] = None
+    generated_model: Optional[str] = None
 
 ToolContent = Union[
     BrowserToolContent,

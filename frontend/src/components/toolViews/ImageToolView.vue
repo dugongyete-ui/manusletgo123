@@ -49,7 +49,8 @@ const props = defineProps<{
 
 const images = computed(() => {
   const content = props.toolContent as any;
-  return content?.results ?? [];
+  const data = content?.content ?? content;
+  return data?.results ?? [];
 });
 
 function openImage(url: string) {
