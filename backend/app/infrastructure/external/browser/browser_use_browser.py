@@ -384,9 +384,85 @@ class BrowserUseBrowser:
         except Exception as exc:
             return ToolResult(success=False, message=f"Failed to move mouse: {exc}")
 
-    async def press_key(self, key: str) -> ToolResult:
-        """Simulate a key press."""
+    async def _get_all_pages(self):
+        """Return all open pages (tabs) ordered by their position in the context."""
         try:
+            page = await self._get_current_page()
+            context = page.context
+            return list(context.pages)
+        except Exception:
+            return []
+
+    async def switch_tab(self, tab_index: int) -> ToolResult:
+        """Switch the active browser tab by 1-based index."""
+        try:
+            pages = await self._get_all_pages()
+            if not pages:
+                return ToolResult(success=False, message="No tabs are open")
+            if tab_index < 1 or tab_index > len(pages):
+                return ToolResult(
+                    success=False,
+                    message=f"Tab {tab_index} does not exist. {len(pages)} tab(s) are currently open.",
+                )
+            target = pages[tab_index - 1]
+            await target.bring_to_front()
+            await asyncio.sleep(0.3)
+            return ToolResult(
+                success=True,
+                message=f"Switched to tab {tab_index}: {target.url}",
+                data={"tab": tab_index, "url": target.url, "total_tabs": len(pages)},
+            )
+        except Exception as exc:
+            return ToolResult(success=False, message=f"Failed to switch tab: {exc}")
+
+    async def press_key(self, key: str) -> ToolResult:
+        """Simulate a key press.
+
+        Tab-related browser shortcuts (Control+t, Control+1…9, Control+Tab,
+        Control+Shift+Tab) are handled natively via the Playwright context API
+        because they are browser-chrome shortcuts that page.press() cannot
+        dispatch to the browser UI.
+        """
+        try:
+            import re
+            key_norm = key.lower().replace(" ", "")
+
+            # Control+t → open a new tab and bring it to front
+            if key_norm in ("control+t", "ctrl+t"):
+                page = await self._get_current_page()
+                context = page.context
+                new_page = await context.new_page()
+                await new_page.bring_to_front()
+                await asyncio.sleep(0.2)
+                pages = list(context.pages)
+                return ToolResult(
+                    success=True,
+                    message=f"Opened new tab (tab {len(pages)}). Total tabs: {len(pages)}.",
+                    data={"tab": len(pages), "total_tabs": len(pages)},
+                )
+
+            # Control+1 … Control+9 → switch to tab N
+            tab_match = re.match(r"^(?:control|ctrl)\+([1-9])$", key_norm)
+            if tab_match:
+                return await self.switch_tab(int(tab_match.group(1)))
+
+            # Control+Tab → next tab
+            if key_norm in ("control+tab", "ctrl+tab"):
+                pages = await self._get_all_pages()
+                current = await self._get_current_page()
+                if pages:
+                    idx = pages.index(current) if current in pages else 0
+                    return await self.switch_tab((idx + 1) % len(pages) + 1)
+
+            # Control+Shift+Tab → previous tab
+            if key_norm in ("control+shift+tab", "ctrl+shift+tab"):
+                pages = await self._get_all_pages()
+                current = await self._get_current_page()
+                if pages:
+                    idx = pages.index(current) if current in pages else 0
+                    return await self.switch_tab((idx - 1) % len(pages) + 1)
+
+            # Default: dispatch to page
             page = await self._get_current_page()
             await page.press(key)
             return ToolResult(success=True)

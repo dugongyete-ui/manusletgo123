@@ -155,6 +155,15 @@ class BrowserToolkit(BaseToolkit):
         return await self.browser.console_exec(javascript)
     
     @tool(parse_docstring=True)
+    async def browser_switch_tab(self, tab_index: int) -> ToolResult:
+        """Switch to a specific browser tab by its 1-based position. Use this whenever you need to move between open tabs — for example, switching back to a temp-mail tab after submitting a form in another tab.
+
+        Args:
+            tab_index: The 1-based index of the tab to switch to (1 = first/leftmost tab, 2 = second tab, etc.).
+        """
+        return await self.browser.switch_tab(tab_index)
+
+    @tool(parse_docstring=True)
     async def browser_console_view(
         self,
         max_lines: Optional[int] = None
@@ -164,4 +173,4 @@ class BrowserToolkit(BaseToolkit):
         Args:
             max_lines: (Optional) Maximum number of log lines to return.
         """
-        return await self.browser.console_view(max_lines) 
+        return await self.browser.console_view(max_lines)

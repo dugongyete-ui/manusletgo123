@@ -81,6 +81,10 @@ class Browser(Protocol):
         """Execute JavaScript code"""
         ...
     
+    async def switch_tab(self, tab_index: int) -> ToolResult:
+        """Switch to a browser tab by 1-based index"""
+        ...
+
     async def console_view(self, max_lines: Optional[int] = None) -> ToolResult:
         """View console output"""
         ...
