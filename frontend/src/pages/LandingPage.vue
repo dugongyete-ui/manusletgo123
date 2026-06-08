@@ -107,8 +107,11 @@ const autoResize = () => {
   el.style.height = Math.min(el.scrollHeight, 200) + 'px'
 }
 
+const PENDING_KEY = 'dzeck_pending_prompt'
+
 const handleSend = () => {
   if (!message.value.trim()) return
+  localStorage.setItem(PENDING_KEY, message.value.trim())
   router.push('/login')
 }
 
@@ -116,6 +119,7 @@ const fillAndSend = async (text: string) => {
   message.value = text
   await nextTick()
   autoResize()
+  localStorage.setItem(PENDING_KEY, text)
   router.push('/login')
 }
 
@@ -216,12 +220,14 @@ const goToLogin = () => router.push('/login')
 }
 
 .headline {
-  font-size: clamp(26px, 4vw, 36px);
-  font-weight: 500;
-  letter-spacing: -0.02em;
+  font-size: clamp(26px, 4vw, 38px);
+  font-weight: 400;
+  letter-spacing: -0.025em;
+  font-family: ui-serif, Georgia, 'Times New Roman', serif;
   color: var(--text-primary);
   margin: 0 0 28px;
   text-align: center;
+  line-height: 1.2;
 }
 
 /* ── Input box ── */
@@ -229,21 +235,21 @@ const goToLogin = () => router.push('/login')
   width: 100%;
   max-width: 680px;
   background: var(--background-card);
-  border: 1px solid var(--border-main);
+  border: 1px solid var(--border-dark);
   border-radius: 16px;
   padding: 16px 16px 12px 20px;
   cursor: text;
-  box-shadow: 0 2px 8px var(--shadow-XS);
-  transition: box-shadow 0.15s, border-color 0.15s;
+  box-shadow: 0 1px 4px var(--shadow-XS);
+  transition: box-shadow 0.18s, border-color 0.18s;
   margin-bottom: 16px;
 }
 .input-box:hover {
-  border-color: var(--border-dark);
-  box-shadow: 0 4px 16px var(--shadow-S);
+  border-color: var(--border-input-active);
+  box-shadow: 0 2px 12px var(--shadow-S);
 }
 .input-box.focused {
   border-color: var(--border-input-active);
-  box-shadow: 0 0 0 3px var(--fill-blue), 0 4px 16px var(--shadow-S);
+  box-shadow: 0 0 0 3px var(--fill-blue), 0 2px 12px var(--shadow-S);
 }
 .input-textarea {
   width: 100%;

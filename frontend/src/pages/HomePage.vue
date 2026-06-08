@@ -31,7 +31,7 @@
               <div class="relative flex items-center justify-center font-bold cursor-pointer flex-shrink-0">
                 <div
                   class="relative flex items-center justify-center font-bold flex-shrink-0 rounded-full overflow-hidden"
-                  style="width: 32px; height: 32px; font-size: 16px; color: rgba(255, 255, 255, 0.9); background-color: rgb(59, 130, 246);">
+                  style="width: 32px; height: 32px; font-size: 16px; color: var(--text-onblack); background-color: var(--text-brand);">
                   {{ avatarLetter }}</div>
               </div>
               <!-- User Menu -->
@@ -122,8 +122,18 @@ const handleUserMenuLeave = () => {
   }, 200); // 200ms delay to allow moving to menu
 };
 
+const PENDING_KEY = 'dzeck_pending_prompt'
+
 onMounted(() => {
   hideFilePanel();
+  const pending = localStorage.getItem(PENDING_KEY)
+  if (pending) {
+    message.value = pending
+    localStorage.removeItem(PENDING_KEY)
+    setTimeout(() => {
+      handleSubmit()
+    }, 300)
+  }
 })
 
 onMounted(async () => {

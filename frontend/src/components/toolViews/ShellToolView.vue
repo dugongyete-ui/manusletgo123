@@ -52,7 +52,7 @@ const updateShellContent = (console: any) => {
   if (!console) return;
   let newShell = '';
   for (const e of console) {
-    newShell += `<span style="color: rgb(0, 187, 0);">${e.ps1}</span><span> ${e.command}</span>\n`;
+    newShell += `<span style="color: var(--function-success);">${e.ps1}</span><span style="color: var(--text-primary);"> ${e.command}</span>\n`;
     newShell += `<span>${e.output}</span>\n`;
   }
   if (newShell !== shell.value) {

@@ -103,7 +103,7 @@ watch(isAuthenticated, (authenticated) => {
 // Check if already logged in when page loads
 onMounted(() => {
   if (isAuthenticated.value) {
-    router.push('/')
+    router.push('/chat')
   }
 })
 </script>
