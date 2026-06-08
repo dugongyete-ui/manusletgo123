@@ -265,6 +265,7 @@ class BrowserUseBrowser:
             try:
                 pages = await session.get_pages()
                 current_page = await session.get_current_page()
+                current_target_id = current_page._target_id if current_page else None
                 for i, page in enumerate(pages):
                     try:
                         url = await page.get_url()
@@ -273,7 +274,7 @@ class BrowserUseBrowser:
                     tabs_info.append({
                         "tab": i + 1,
                         "url": url,
-                        "active": page == current_page,
+                        "active": page._target_id == current_target_id,
                     })
             except Exception:
                 pass
@@ -440,8 +441,9 @@ class BrowserUseBrowser:
             return ToolResult(success=False, message=f"Failed to open new tab: {exc}")
 
     async def switch_tab(self, tab_index: int) -> ToolResult:
-        """Switch the active browser tab by 1-based index using CDP Target.activateTarget."""
+        """Switch the active browser tab by 1-based index."""
         try:
+            from browser_use.browser.events import SwitchTabEvent
             session = await self._ensure_session()
             pages = await session.get_pages()
             if not pages:
@@ -452,9 +454,8 @@ class BrowserUseBrowser:
                     message=f"Tab {tab_index} does not exist. {len(pages)} tab(s) are currently open.",
                 )
             target = pages[tab_index - 1]
-            await session.cdp_client.send.Target.activateTarget(
-                params={"targetId": target.target_id}
-            )
+            target_id = target._target_id
+            await session.on_SwitchTabEvent(SwitchTabEvent(target_id=target_id))
             await asyncio.sleep(0.3)
             try:
                 url = await target.get_url()
