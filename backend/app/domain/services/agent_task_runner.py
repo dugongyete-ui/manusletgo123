@@ -26,6 +26,8 @@ from app.domain.models.event import (
     McpToolContent,
     PlanEvent,
     PlanStatus,
+    StepEvent,
+    StepStatus,
 )
 from app.domain.services.flows.plan_act import PlanActFlow
 from app.domain.external.sandbox import Sandbox
@@ -468,13 +470,42 @@ class AgentTaskRunner(TaskRunner):
                     # Deduplicate by file_path — keep the latest version
                     files_written = [f for f in files_written if f.file_path != file_info.file_path]
                     files_written.append(file_info)
+            elif isinstance(event, StepEvent) and event.status == StepStatus.COMPLETED:
+                # Sync files explicitly listed in step.attachments (e.g. .pptx created by shell_exec).
+                # These are the agent's intended output files but are never tracked by file_write.
+                if event.step and event.step.attachments:
+                    for attachment_path in event.step.attachments:
+                        if not attachment_path:
+                            continue
+                        try:
+                            file_info = await self._sync_file_to_storage(attachment_path)
+                            if file_info:
+                                files_written = [f for f in files_written if f.file_path != file_info.file_path]
+                                files_written.append(file_info)
+                                logger.info(
+                                    f"Agent {self._agent_id} synced step attachment: {attachment_path}"
+                                )
+                        except Exception as e:
+                            logger.warning(
+                                f"Agent {self._agent_id} failed to sync step attachment {attachment_path}: {e}"
+                            )
             elif isinstance(event, MessageEvent):
                 # Always merge files_written into the message attachments.
                 # The agent may attach some files (e.g. a summary .md) while
                 # forgetting to include downloaded images — we merge both.
                 if files_written:
+                    # Prefer actual output files over intermediate generator scripts (.py).
+                    # If there are non-.py output files, exclude bare generator scripts
+                    # (e.g. generate_foo.py) so they don't clutter the attachment list.
+                    def _is_generator_script(fi: FileInfo) -> bool:
+                        name = fi.filename or fi.file_path or ""
+                        return name.endswith(".py")
+
+                    non_scripts = [f for f in files_written if not _is_generator_script(f)]
+                    files_to_merge = non_scripts if non_scripts else files_written
+
                     existing_paths = {f.file_path for f in (event.attachments or []) if f.file_path}
-                    extra = [f for f in files_written if f.file_path not in existing_paths]
+                    extra = [f for f in files_to_merge if f.file_path not in existing_paths]
                     if extra:
                         event.attachments = list(event.attachments or []) + extra
                         logger.info(

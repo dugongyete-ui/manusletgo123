@@ -41,22 +41,35 @@ TypeScript Interface Definition:
 interface Response {{
   /** Whether the task is executed successfully **/
   success: boolean;
-  /** Array of file paths in sandbox for generated files to be delivered to user **/
+  /**
+   * Sandbox paths of FINAL OUTPUT files to deliver to the user.
+   * Rules:
+   * - Include the actual output file (e.g. /home/runner/report.pptx, /home/runner/data.xlsx)
+   * - Do NOT include intermediate helper/generator scripts (e.g. generate_report.py, build.sh)
+   * - If you wrote a Python/shell script just to generate another file, only list the generated file
+   * - Leave empty [] if no file output is needed
+   **/
   attachments: string[];
 
-  /** Task result, empty if no result to deliver **/
+  /** Task result summary, empty if no result to deliver **/
   result: string;
 }}
 ```
 
-EXAMPLE JSON OUTPUT:
+EXAMPLE JSON OUTPUT (creating a .pptx via a script):
 {{
     "success": true,
-    "result": "We have finished the task",
+    "result": "I have created the presentation with 8 slides covering all requested topics.",
     "attachments": [
-        "/home/runner/file1.md",
-        "/home/runner/file2.md"
+        "/home/runner/quarterly_review.pptx"
     ],
+}}
+
+EXAMPLE JSON OUTPUT (research task, no file):
+{{
+    "success": true,
+    "result": "Here are the findings...",
+    "attachments": [],
 }}
 
 Input:
