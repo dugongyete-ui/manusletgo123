@@ -4,7 +4,12 @@ from . import session_routes, file_routes, auth_routes, config_routes, claw_rout
 def create_api_router() -> APIRouter:
     """Create and configure the main API router"""
     api_router = APIRouter()
-    
+
+    @api_router.get("/health", tags=["health"])
+    async def health_check():
+        """Lightweight health endpoint for uptime monitoring (e.g., UptimeRobot)."""
+        return {"status": "ok"}
+
     # Include all sub-routers
     api_router.include_router(session_routes.router)
     api_router.include_router(file_routes.router)
@@ -15,4 +20,4 @@ def create_api_router() -> APIRouter:
     return api_router
 
 # Create the main router instance
-router = create_api_router() 
+router = create_api_router()

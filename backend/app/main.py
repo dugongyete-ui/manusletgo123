@@ -90,6 +90,12 @@ app.include_router(router, prefix="/api/v1")
 # OpenAI-compatible proxy (used by OpenClaw containers for LLM requests)
 app.include_router(openai_router)
 
+# Health check — must be BEFORE the catch-all frontend route
+@app.get("/health")
+async def health_check():
+    """Lightweight health endpoint for uptime monitoring (e.g., UptimeRobot)."""
+    return {"status": "ok"}
+
 # Serve compiled Vue frontend in production (when frontend/dist exists)
 _frontend_dist = os.path.normpath(
     os.path.join(os.path.dirname(__file__), "../../frontend/dist")
