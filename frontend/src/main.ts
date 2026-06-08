@@ -101,6 +101,14 @@ router.beforeEach(async (to, _, next) => {
     }
   }
 
+  // Redirect authenticated users away from landing page to chat
+  if (to.path === '/') {
+    if (authProvider === 'none' || hasToken) {
+      next('/chat')
+      return
+    }
+  }
+
   next()
 })
 
