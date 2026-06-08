@@ -389,6 +389,15 @@ const handleToolEvent = (toolData: ToolEventData) => {
   }
 }
 
+// Sync a step's status into plan.value.steps so PlanPanel stays up-to-date
+const syncStepToPlan = (stepData: StepEventData) => {
+  if (!plan.value) return;
+  const planStep = plan.value.steps.find(s => s.id === stepData.id);
+  if (planStep) {
+    planStep.status = stepData.status;
+  }
+}
+
 // Handle step event
 const handleStepEvent = (stepData: StepEventData) => {
   const lastStep = getLastStep();
@@ -400,12 +409,15 @@ const handleStepEvent = (stepData: StepEventData) => {
         tools: []
       } as StepContent,
     });
+    syncStepToPlan(stepData);
   } else if (stepData.status === 'completed') {
     if (lastStep) {
       lastStep.status = stepData.status;
     }
+    syncStepToPlan(stepData);
   } else if (stepData.status === 'failed') {
     isLoading.value = false;
+    syncStepToPlan(stepData);
   }
 }
 
