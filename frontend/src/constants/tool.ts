@@ -130,6 +130,7 @@ import ConsoleToolView from '@/components/toolViews/ConsoleToolView.vue';
 import McpToolView from '@/components/toolViews/McpToolView.vue';
 import ImageToolView from '@/components/toolViews/ImageToolView.vue';
 import ImageGenToolView from '@/components/toolViews/ImageGenToolView.vue';
+import ImageDownloadToolView from '@/components/toolViews/ImageDownloadToolView.vue';
 
 /**
  * Mapping from tool names to components (fallback)
@@ -150,4 +151,5 @@ export const TOOL_FUNCTION_COMPONENT_MAP: {[key: string]: any} = {
   "browser_console_exec": ConsoleToolView,
   "browser_console_view": ConsoleToolView,
   "image_generate": ImageGenToolView,
+  "image_download": ImageDownloadToolView,
 };

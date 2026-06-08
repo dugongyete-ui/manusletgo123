@@ -211,10 +211,15 @@ class ImageToolkit(BaseToolkit):
 
             result = await self.sandbox.file_upload(image_data, file_path)
             if result and result.success:
+                import base64
+                import mimetypes
+                ext = file_path.rsplit(".", 1)[-1].lower() if "." in file_path else ""
+                mime = mimetypes.types_map.get(f".{ext}", "image/jpeg")
+                data_url = f"data:{mime};base64,{base64.b64encode(image_data).decode()}"
                 return ToolResult(
                     success=True,
                     message=f"Image saved to {file_path} ({len(image_data)} bytes)",
-                    data={"file_path": file_path, "size": len(image_data)},
+                    data={"file_path": file_path, "size": len(image_data), "data_url": data_url, "source_url": url},
                 )
             return ToolResult(
                 success=False,
