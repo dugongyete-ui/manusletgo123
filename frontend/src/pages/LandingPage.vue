@@ -377,7 +377,7 @@ const handleSend = () => {
 
 .btn-primary {
   padding: 7px 16px; border-radius: 8px;
-  background: var(--Button-primary-black); color: #fff;
+  background: var(--Button-primary-black); color: var(--text-onblack);
   font-size: 14px; font-weight: 500;
   text-decoration: none; border: none; cursor: pointer;
 }
@@ -481,7 +481,7 @@ const handleSend = () => {
   display: flex; align-items: center; justify-content: center;
   width: 30px; height: 30px; border-radius: 8px;
   border: none; background: var(--Button-primary-black);
-  color: #fff; cursor: pointer; opacity: 0.3;
+  color: var(--text-onblack); cursor: pointer; opacity: 0.3;
   transition: opacity 0.15s;
 }
 .send-btn.active { opacity: 1; }

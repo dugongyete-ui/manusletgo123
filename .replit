@@ -135,6 +135,10 @@ exposeLocalhost = true
 localPort = 8080
 externalPort = 8080
 
+[[ports]]
+localPort = 8081
+externalPort = 8081
+
 [deployment]
 deploymentTarget = "autoscale"
 build = ["bash", "-c", "pip install supervisor websockify --quiet && cd frontend && pnpm install && pnpm build"]
