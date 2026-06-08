@@ -23,14 +23,29 @@
     <main class="main">
       <h1 class="headline">What can I do for you?</h1>
 
-      <!-- Fake input box — clicking redirects to login -->
-      <div class="input-box" @click="goToLogin">
-        <span class="input-placeholder">Assign a task or ask anything</span>
+      <!-- Interactive input box -->
+      <div class="input-box" :class="{ focused: isFocused }">
+        <textarea
+          ref="textareaRef"
+          v-model="message"
+          class="input-textarea"
+          placeholder="Assign a task or ask anything"
+          rows="1"
+          @focus="isFocused = true"
+          @blur="isFocused = false"
+          @input="autoResize"
+          @keydown.enter.exact.prevent="handleSend"
+        />
         <div class="input-actions">
-          <button class="attach-btn" @click.stop="goToLogin">
+          <button class="attach-btn" title="Attach file">
             <Plus :size="18" />
           </button>
-          <button class="send-btn" @click.stop="goToLogin">
+          <button
+            class="send-btn"
+            :class="{ active: message.trim().length > 0 }"
+            @click="handleSend"
+            title="Send"
+          >
             <ArrowUp :size="16" />
           </button>
         </div>
@@ -38,23 +53,23 @@
 
       <!-- Task suggestion pills -->
       <div class="suggestions">
-        <button class="suggestion-pill" @click="goToLogin">
+        <button class="suggestion-pill" @click="fillAndSend('Create slides')">
           <PresentationIcon :size="14" />
           Create slides
         </button>
-        <button class="suggestion-pill" @click="goToLogin">
+        <button class="suggestion-pill" @click="fillAndSend('Build website')">
           <Globe :size="14" />
           Build website
         </button>
-        <button class="suggestion-pill" @click="goToLogin">
+        <button class="suggestion-pill" @click="fillAndSend('Develop desktop apps')">
           <Monitor :size="14" />
           Develop desktop apps
         </button>
-        <button class="suggestion-pill" @click="goToLogin">
+        <button class="suggestion-pill" @click="fillAndSend('Design')">
           <Palette :size="14" />
           Design
         </button>
-        <button class="suggestion-pill" @click="goToLogin">
+        <button class="suggestion-pill" @click="fillAndSend('Run code')">
           <Terminal :size="14" />
           Run code
         </button>
@@ -69,6 +84,7 @@
 </template>
 
 <script setup lang="ts">
+import { ref, nextTick } from 'vue'
 import { useRouter } from 'vue-router'
 import {
   Bot, Sun, Moon, Plus, ArrowUp,
@@ -79,6 +95,29 @@ import { useTheme } from '@/composables/useTheme'
 
 const { theme, toggleTheme } = useTheme()
 const router = useRouter()
+
+const message = ref('')
+const isFocused = ref(false)
+const textareaRef = ref<HTMLTextAreaElement | null>(null)
+
+const autoResize = () => {
+  const el = textareaRef.value
+  if (!el) return
+  el.style.height = 'auto'
+  el.style.height = Math.min(el.scrollHeight, 200) + 'px'
+}
+
+const handleSend = () => {
+  if (!message.value.trim()) return
+  router.push('/login')
+}
+
+const fillAndSend = async (text: string) => {
+  message.value = text
+  await nextTick()
+  autoResize()
+  router.push('/login')
+}
 
 const goToLogin = () => router.push('/login')
 </script>
@@ -202,12 +241,27 @@ const goToLogin = () => router.push('/login')
   border-color: var(--border-dark);
   box-shadow: 0 4px 16px var(--shadow-S);
 }
-.input-placeholder {
-  display: block;
+.input-box.focused {
+  border-color: var(--border-input-active);
+  box-shadow: 0 0 0 3px var(--fill-blue), 0 4px 16px var(--shadow-S);
+}
+.input-textarea {
+  width: 100%;
+  min-height: 24px;
+  max-height: 200px;
+  background: transparent;
+  border: none;
+  outline: none;
+  resize: none;
   font-size: 15px;
+  line-height: 1.6;
+  color: var(--text-primary);
+  font-family: inherit;
+  margin-bottom: 12px;
+  overflow-y: auto;
+}
+.input-textarea::placeholder {
   color: var(--text-disable);
-  margin-bottom: 28px;
-  user-select: none;
 }
 .input-actions {
   display: flex;
@@ -239,7 +293,14 @@ const goToLogin = () => router.push('/login')
   background: var(--Button-primary-black);
   color: #fff;
   cursor: pointer;
-  opacity: 0.4;
+  opacity: 0.3;
+  transition: opacity 0.15s;
+}
+.send-btn.active {
+  opacity: 1;
+}
+.send-btn.active:hover {
+  opacity: 0.85;
 }
 
 /* ── Suggestions ── */
