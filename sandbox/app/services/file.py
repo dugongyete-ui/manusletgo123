@@ -16,6 +16,23 @@ from app.models.file import (
 from app.core.exceptions import AppException, ResourceNotFoundException, BadRequestException
 
 
+PROTECTED_PATHS = [
+    "/home/runner/workspace",
+]
+
+def _is_protected_path(path: str) -> bool:
+    """Return True if the resolved path is inside a protected directory."""
+    try:
+        resolved = os.path.realpath(os.path.abspath(path))
+    except Exception:
+        resolved = os.path.abspath(path)
+    for protected in PROTECTED_PATHS:
+        protected_resolved = os.path.realpath(os.path.abspath(protected))
+        if resolved == protected_resolved or resolved.startswith(protected_resolved + os.sep):
+            return True
+    return False
+
+
 class FileService:
     """File Operation Service"""
 
@@ -30,6 +47,8 @@ class FileService:
             end_line: Ending line (not included)
             sudo: Whether to use sudo privileges
         """
+        if _is_protected_path(file):
+            raise BadRequestException("Access denied: this path is protected and cannot be read.")
         # Check if file exists
         if not os.path.exists(file) and not sudo:
             raise ResourceNotFoundException(f"File does not exist: {file}")
@@ -96,6 +115,8 @@ class FileService:
             trailing_newline: Whether to add a trailing newline
             sudo: Whether to use sudo privileges
         """
+        if _is_protected_path(file):
+            raise BadRequestException("Access denied: this path is protected and cannot be written.")
         try:
             # Prepare content
             if leading_newline:
@@ -167,6 +188,8 @@ class FileService:
             new_str: New replacement string
             sudo: Whether to use sudo privileges
         """
+        if _is_protected_path(file):
+            raise BadRequestException("Access denied: this path is protected and cannot be modified.")
         # First read file content
         file_result = await self.read_file(file, sudo=sudo)
         content = file_result.content
@@ -239,6 +262,8 @@ class FileService:
             path: Directory path to search
             glob_pattern: File name pattern (glob syntax)
         """
+        if _is_protected_path(path):
+            raise BadRequestException("Access denied: this path is protected and cannot be searched.")
         # Check if path exists
         if not os.path.exists(path):
             raise ResourceNotFoundException(f"Directory does not exist: {path}")

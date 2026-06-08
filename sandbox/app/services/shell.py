@@ -19,6 +19,35 @@ from app.core.exceptions import AppException, ResourceNotFoundException, BadRequ
 # Set up logger
 logger = logging.getLogger(__name__)
 
+PROTECTED_PATHS = [
+    "/home/runner/workspace",
+]
+
+def _is_protected_exec_dir(path: str) -> bool:
+    """Return True if exec_dir is inside a protected directory."""
+    try:
+        resolved = os.path.realpath(os.path.abspath(path))
+    except Exception:
+        resolved = os.path.abspath(path)
+    for protected in PROTECTED_PATHS:
+        protected_resolved = os.path.realpath(os.path.abspath(protected))
+        if resolved == protected_resolved or resolved.startswith(protected_resolved + os.sep):
+            return True
+    return False
+
+def _command_targets_protected_path(command: str) -> bool:
+    """Return True if the command references a protected path."""
+    import re
+    patterns = [
+        r'/home/runner/workspace',
+        r'~/workspace(?:/|$)',
+    ]
+    for pattern in patterns:
+        if re.search(pattern, command):
+            return True
+    return False
+
+
 class ShellService:
     # Store active shell sessions
     active_shells: Dict[str, Dict[str, Any]] = {}
@@ -94,6 +123,17 @@ class ShellService:
         logger.info(f"Executing command in session {session_id}: {command}")
         if not exec_dir:
             exec_dir = os.path.expanduser("~")
+
+        # Block execution inside protected directories
+        if _is_protected_exec_dir(exec_dir):
+            logger.warning(f"Blocked attempt to execute in protected directory: {exec_dir}")
+            raise BadRequestException("Access denied: execution inside this directory is not permitted.")
+
+        # Block commands that reference protected paths
+        if _command_targets_protected_path(command):
+            logger.warning(f"Blocked command targeting protected path: {command}")
+            raise BadRequestException("Access denied: this command targets a protected path.")
+
         # Ensure directory exists
         if not os.path.exists(exec_dir):
             logger.error(f"Directory does not exist: {exec_dir}")
