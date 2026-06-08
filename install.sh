@@ -111,6 +111,12 @@ python3 -m pip install $PIP_FLAGS -q --no-deps "browser-use>=0.2.0" 2>/dev/null 
 python3 -m pip install $PIP_FLAGS -q "playwright>=1.42.0"
 python3 -m pip install $PIP_FLAGS -q "patchright>=1.42.0" 2>/dev/null || true
 
+# browser-use system deps — required by browser_use internals
+python3 -m pip install $PIP_FLAGS -q \
+  "psutil>=5.9.0" \
+  "bubus>=1.0.0" \
+  "cdp-use>=1.0.0"
+
 # 3e. E2B sandbox SDK
 python3 -m pip install $PIP_FLAGS -q "e2b>=1.0.0" 2>/dev/null || \
   echo "      INFO: e2b not available, skipping"
