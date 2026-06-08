@@ -389,12 +389,23 @@ const handleToolEvent = (toolData: ToolEventData) => {
   }
 }
 
-// Sync a step's status into plan.value.steps so PlanPanel stays up-to-date
-const syncStepToPlan = (stepData: StepEventData) => {
+// Sync a step's status into plan.value.steps so PlanPanel stays up-to-date.
+// Uses positional matching (first-pending / first-running) instead of ID matching
+// because the planner LLM may regenerate step IDs after each plan update.
+const syncStepToPlan = (status: string) => {
   if (!plan.value) return;
-  const planStep = plan.value.steps.find(s => s.id === stepData.id);
-  if (planStep) {
-    planStep.status = stepData.status;
+  if (status === 'running') {
+    // Mark the first pending step as running
+    const pendingStep = plan.value.steps.find(s => s.status === 'pending');
+    if (pendingStep) pendingStep.status = 'running';
+  } else if (status === 'completed') {
+    // Mark the first running step as completed
+    const runningStep = plan.value.steps.find(s => s.status === 'running');
+    if (runningStep) runningStep.status = 'completed';
+  } else if (status === 'failed') {
+    // Mark the first running step as failed
+    const runningStep = plan.value.steps.find(s => s.status === 'running');
+    if (runningStep) runningStep.status = 'failed';
   }
 }
 
@@ -409,15 +420,15 @@ const handleStepEvent = (stepData: StepEventData) => {
         tools: []
       } as StepContent,
     });
-    syncStepToPlan(stepData);
+    syncStepToPlan('running');
   } else if (stepData.status === 'completed') {
     if (lastStep) {
       lastStep.status = stepData.status;
     }
-    syncStepToPlan(stepData);
+    syncStepToPlan('completed');
   } else if (stepData.status === 'failed') {
     isLoading.value = false;
-    syncStepToPlan(stepData);
+    syncStepToPlan('failed');
   }
 }
 
