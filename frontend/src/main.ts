@@ -18,11 +18,16 @@ import MainLayout from './pages/MainLayout.vue'
 import ClawPage from './pages/ClawPage.vue'
 import SharePage from './pages/SharePage.vue'
 import ShareLayout from './pages/ShareLayout.vue'
+import LandingPage from './pages/LandingPage.vue'
 
 // Create router
 export const router = createRouter({
   history: createWebHistory(),
   routes: [
+    {
+      path: '/',
+      component: LandingPage
+    },
     { 
       path: '/chat', 
       component: MainLayout,
@@ -31,7 +36,7 @@ export const router = createRouter({
         { 
           path: '', 
           component: HomePage, 
-          alias: ['/', '/home'],
+          alias: ['/home'],
           meta: { requiresAuth: true }
         },
         {
@@ -87,11 +92,11 @@ router.beforeEach(async (to, _, next) => {
   
   if (to.path === '/login') {
     if (authProvider === 'none') {
-      next('/')
+      next('/chat')
       return
     }
     if (hasToken) {
-      next('/')
+      next('/chat')
       return
     }
   }
