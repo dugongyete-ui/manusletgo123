@@ -241,10 +241,26 @@ class PlaywrightBrowser:
         
         # First update the interactive elements cache
         interactive_elements = await self._extract_interactive_elements()
-        
+
+        # Build tab summary so the agent always knows which tabs are open
+        # and can use browser_switch_tab instead of browser_navigate
+        tabs_info = []
+        try:
+            if self.browser and self.browser.contexts:
+                pages = self.browser.contexts[0].pages
+                for i, p in enumerate(pages):
+                    tabs_info.append({
+                        "tab": i + 1,
+                        "url": p.url,
+                        "active": p == self.page,
+                    })
+        except Exception:
+            pass
+
         return ToolResult(
             success=True,
             data={
+                "open_tabs": tabs_info,
                 "interactive_elements": interactive_elements,
                 "content": await self._extract_content(),
             }

@@ -259,9 +259,29 @@ class BrowserUseBrowser:
                 selector_map = state.dom_state.selector_map or {}
                 interactive_elements = self._format_selector_map(selector_map)
 
+            # Build tab summary so the agent always knows which tabs are open
+            # and can use browser_switch_tab instead of browser_navigate
+            tabs_info = []
+            try:
+                pages = await session.get_pages()
+                current_page = await session.get_current_page()
+                for i, page in enumerate(pages):
+                    try:
+                        url = await page.get_url()
+                    except Exception:
+                        url = "unknown"
+                    tabs_info.append({
+                        "tab": i + 1,
+                        "url": url,
+                        "active": page == current_page,
+                    })
+            except Exception:
+                pass
+
             return ToolResult(
                 success=True,
                 data={
+                    "open_tabs": tabs_info,
                     "interactive_elements": interactive_elements,
                     "content": content,
                 },

@@ -7,6 +7,13 @@ You are a task execution agent, and you need to complete the following steps:
 3. Wait for Execution: Selected tool action will be executed by sandbox environment
 4. Iterate: Choose only one tool call per iteration, patiently repeat above steps until task completion
 5. Submit Results: Send the result to user, result must be detailed and specific
+
+Browser tab rules (strictly follow these):
+- browser_view() always returns an "open_tabs" list showing every open tab, its URL, and which one is active (active: true). Read this list before deciding how to navigate.
+- If the URL you need is already open in another tab (visible in open_tabs), ALWAYS use browser_switch_tab(tab_index) to go there — NEVER use browser_navigate to a URL that is already open.
+- Use browser_navigate only when the URL is NOT in any open tab.
+- Use browser_open_tab(url) when you need to open a new site WITHOUT replacing the current tab's content.
+- When in doubt about which tab index to use, call browser_list_tabs() first.
 """
 
 EXECUTION_PROMPT = """
