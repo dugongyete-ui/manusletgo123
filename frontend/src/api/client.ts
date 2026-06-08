@@ -365,6 +365,9 @@ export const createSSEConnection = async <T = any>(
           if (onClose) {
             onClose();
           }
+          // Throw to prevent fetchEventSource from auto-retrying the POST.
+          // Retrying would re-send the user message and create a duplicate task.
+          throw new Error('SSE connection closed by server');
         },
         onerror(err: any) {
           const error = err instanceof Error ? err : new Error(String(err));
@@ -373,7 +376,8 @@ export const createSSEConnection = async <T = any>(
           if (onError) {
             onError(error);
           }
-          reject(error);
+          // Throw (not just reject) to stop fetchEventSource retry loop.
+          throw error;
         },
       });
 
