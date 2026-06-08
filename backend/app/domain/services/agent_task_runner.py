@@ -264,9 +264,15 @@ class AgentTaskRunner(TaskRunner):
                         downloaded = None
                         if image_result and image_result.success and image_result.data:
                             downloaded = image_result.data.get("file_path") if isinstance(image_result.data, dict) else None
-                        event.tool_content = ImageToolContent(downloaded_file=downloaded or file_path)
+                        downloaded_file_id = None
                         if downloaded:
                             synced_file = await self._sync_file_to_storage(downloaded)
+                            if synced_file and synced_file.file_id:
+                                downloaded_file_id = synced_file.file_id
+                        event.tool_content = ImageToolContent(
+                            downloaded_file=downloaded or file_path,
+                            downloaded_file_id=downloaded_file_id,
+                        )
                 elif event.tool_name == "message":
                     # message_notify_user / message_ask_user — no special content needed,
                     # the text is streamed directly by the execution agent.

@@ -4,7 +4,7 @@ from datetime import datetime
 from dataclasses import dataclass
 from app.domain.models.plan import ExecutionStatus, Step
 from app.interfaces.schemas.file import FileInfoResponse
-from app.domain.models.event import ToolStatus, ToolContent, BrowserToolContent
+from app.domain.models.event import ToolStatus, ToolContent, BrowserToolContent, ImageToolContent
 from app.domain.models.event import (
     AgentEvent,
     ErrorEvent,
@@ -120,6 +120,21 @@ class ToolSSEEvent(BaseSSEEvent):
                 screenshot=signed,
                 js_code=content.js_code,
                 js_result=content.js_result,
+            )
+        elif isinstance(content, ImageToolContent) and content.downloaded_file_id:
+            from app.interfaces.dependencies import get_file_service
+            try:
+                signed_url = await get_file_service().create_signed_url(content.downloaded_file_id)
+            except Exception:
+                signed_url = None
+            content = ImageToolContent(
+                results=content.results,
+                downloaded_file=content.downloaded_file,
+                downloaded_file_id=content.downloaded_file_id,
+                downloaded_signed_url=signed_url,
+                generated_url=content.generated_url,
+                generated_prompt=content.generated_prompt,
+                generated_model=content.generated_model,
             )
         return cls(
             data=ToolEventData(
