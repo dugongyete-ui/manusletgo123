@@ -15,8 +15,6 @@ async def get_frontend_config() -> APIResponse[ClientConfigResponse]:
     return APIResponse.success(
         ClientConfigResponse(
             auth_provider=settings.auth_provider,
-            show_github_button=settings.show_github_button,
-            github_repository_url=settings.github_repository_url,
             google_analytics_id=settings.google_analytics_id,
             claw_enabled=settings.claw_enabled,
         )
