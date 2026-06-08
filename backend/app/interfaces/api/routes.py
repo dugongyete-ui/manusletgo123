@@ -5,7 +5,7 @@ def create_api_router() -> APIRouter:
     """Create and configure the main API router"""
     api_router = APIRouter()
 
-    @api_router.get("/health", tags=["health"])
+    @api_router.api_route("/health", methods=["GET", "HEAD"], tags=["health"])
     async def health_check():
         """Lightweight health endpoint for uptime monitoring (e.g., UptimeRobot)."""
         return {"status": "ok"}
