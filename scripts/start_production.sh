@@ -21,23 +21,8 @@ if [ -f /tmp/supervisord.pid ]; then
     rm -f /tmp/supervisord.pid
 fi
 
-echo "Starting sandbox services (Xvfb, Chrome, VNC, sandbox API)..."
-"$PYTHONLIBS/supervisord" -c /home/runner/workspace/sandbox/replit_supervisord.conf
-
-echo "Waiting for sandbox API to be ready..."
-READY=0
-for i in $(seq 1 40); do
-    if curl -sf http://localhost:8080/api/v1/supervisor/status >/dev/null 2>&1; then
-        echo "Sandbox API ready after ${i}s"
-        READY=1
-        break
-    fi
-    sleep 1
-done
-
-if [ "$READY" -eq 0 ]; then
-    echo "WARNING: Sandbox API not ready after 40s — starting backend anyway"
-fi
+echo "Starting sandbox services in background (Xvfb, Chrome, VNC, sandbox API)..."
+"$PYTHONLIBS/supervisord" -c /home/runner/workspace/sandbox/replit_supervisord.conf &
 
 echo "Starting backend API on port 5000..."
 cd /home/runner/workspace/backend

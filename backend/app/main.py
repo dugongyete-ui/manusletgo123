@@ -33,17 +33,21 @@ async def lifespan(app: FastAPI):
     logger.info("Application startup - Dzeck AI Agent initializing")
     
     # Initialize MongoDB and Beanie
-    await get_mongodb().initialize()
+    try:
+        await get_mongodb().initialize()
+        await init_beanie(
+            database=get_mongodb().client[settings.mongodb_database],
+            document_models=[AgentDocument, SessionDocument, UserDocument, ClawDocument]
+        )
+        logger.info("Successfully initialized Beanie")
+    except Exception as e:
+        logger.error(f"MongoDB/Beanie initialization failed: {e} — continuing without DB")
 
-    # Initialize Beanie
-    await init_beanie(
-        database=get_mongodb().client[settings.mongodb_database],
-        document_models=[AgentDocument, SessionDocument, UserDocument, ClawDocument]
-    )
-    logger.info("Successfully initialized Beanie")
-    
     # Initialize Redis
-    await get_redis().initialize()
+    try:
+        await get_redis().initialize()
+    except Exception as e:
+        logger.error(f"Redis initialization failed: {e} — continuing without Redis")
     
     try:
         yield
@@ -102,3 +106,9 @@ if os.path.exists(_frontend_dist):
         if full_path and os.path.isfile(target):
             return FileResponse(target)
         return FileResponse(os.path.join(_frontend_dist, "index.html"))
+else:
+    from fastapi.responses import JSONResponse
+
+    @app.get("/", include_in_schema=False)
+    async def health_root():
+        return JSONResponse({"status": "ok", "msg": "Dzeck backend running — frontend not built yet"})
