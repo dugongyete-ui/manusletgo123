@@ -5,12 +5,15 @@
             <ChatBoxFiles ref="chatBoxFileListRef" :attachments="attachments" />
             <div class="overflow-y-auto pl-4 pr-2">
                 <textarea
-                    class="flex rounded-md border-input focus-visible:outline-none focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50 overflow-hidden flex-1 bg-transparent p-0 pt-[1px] border-0 focus-visible:ring-0 focus-visible:ring-offset-0 w-full placeholder:text-[var(--text-disable)] text-[15px] shadow-none resize-none min-h-[40px]"
+                    ref="textareaRef"
+                    class="flex rounded-md border-input focus-visible:outline-none focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50 flex-1 bg-transparent p-0 pt-[1px] border-0 focus-visible:ring-0 focus-visible:ring-offset-0 w-full placeholder:text-[var(--text-disable)] text-[15px] shadow-none resize-none"
                     :rows="rows" :value="modelValue"
-                    @input="$emit('update:modelValue', ($event.target as HTMLTextAreaElement).value)"
+                    @input="onInput"
                     @compositionstart="isComposing = true" @compositionend="isComposing = false"
-                    @keydown.enter.exact="handleEnterKeydown" :placeholder="t('Give Dzeck a task to work on...')"
-                    :style="{ height: '46px' }"></textarea>
+                    @keydown.enter.exact.prevent="handleEnterKeydown"
+                    @keydown.enter.shift.exact.prevent="handleShiftEnter"
+                    :placeholder="t('Give Dzeck a task to work on...')"
+                    :style="{ minHeight: '46px', height: textareaHeight }"></textarea>
             </div>
             <footer class="flex flex-row justify-between w-full px-3">
                 <div class="flex gap-2 pr-2 items-center">
@@ -39,7 +42,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, watch, computed } from 'vue';
+import { ref, watch, computed, nextTick } from 'vue';
 import SendIcon from './icons/SendIcon.vue';
 import { useI18n } from 'vue-i18n';
 import ChatBoxFiles from './ChatBoxFiles.vue';
@@ -50,6 +53,16 @@ const { t } = useI18n();
 const hasTextInput = ref(false);
 const isComposing = ref(false);
 const chatBoxFileListRef = ref();
+const textareaRef = ref<HTMLTextAreaElement>();
+const textareaHeight = ref('46px');
+
+const autoResize = () => {
+    const el = textareaRef.value;
+    if (!el) return;
+    el.style.height = '46px';
+    const scrollH = el.scrollHeight;
+    textareaHeight.value = Math.min(scrollH, 240) + 'px';
+};
 
 const props = defineProps<{
     modelValue: string;
@@ -75,15 +88,28 @@ const emit = defineEmits<{
     (e: 'stop'): void;
 }>();
 
-const handleEnterKeydown = (event: KeyboardEvent) => {
-    if (isComposing.value) {
-        // If in input method composition state, do nothing and allow default behavior
-        return;
-    }
+const onInput = (event: Event) => {
+    emit('update:modelValue', (event.target as HTMLTextAreaElement).value);
+    autoResize();
+};
 
-    // Not in input method composition state and has text input, prevent default behavior and submit
+const handleShiftEnter = () => {
+    if (isComposing.value) return;
+    const el = textareaRef.value;
+    if (!el) return;
+    const start = el.selectionStart;
+    const end = el.selectionEnd;
+    const newValue = props.modelValue.substring(0, start) + '\n' + props.modelValue.substring(end);
+    emit('update:modelValue', newValue);
+    nextTick(() => {
+        el.selectionStart = el.selectionEnd = start + 1;
+        autoResize();
+    });
+};
+
+const handleEnterKeydown = () => {
+    if (isComposing.value) return;
     if (sendEnabled.value) {
-        event.preventDefault();
         handleSubmit();
     }
 };
@@ -103,5 +129,8 @@ const uploadFile = () => {
 
 watch(() => props.modelValue, (value) => {
     hasTextInput.value = value.trim() !== '';
+    if (value === '') {
+        textareaHeight.value = '46px';
+    }
 });
 </script>
