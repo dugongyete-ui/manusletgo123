@@ -6,17 +6,21 @@
 
 ## Project Overview
 
-AI Dzeck × Claw is a general-purpose AI Agent system with an integrated [OpenClaw](https://github.com/anthropics/openclaw) AI assistant, comprising five services:
+AI Dzeck × Claw is a general-purpose AI Agent system with an integrated [OpenClaw](https://github.com/anthropics/openclaw) AI assistant, running on **Replit**. It comprises three active services:
 
 | Service | Stack | Port (dev) | Entry Point |
 |---|---|---|---|
-| **Frontend** | Vue 3 + TypeScript, Vite 4, Tailwind CSS | 5173 | `frontend/src/main.ts` |
+| **Frontend** | Vue 3 + TypeScript, Vite 4, Tailwind CSS | 5000 | `frontend/src/main.ts` |
 | **Backend** | Python 3.12, FastAPI, LangChain, Beanie/Motor | 8000 | `backend/app/main.py` |
-| **Sandbox** | Python 3.10, FastAPI, Xvfb/Chrome/VNC | 8080 (API), 5900 (VNC) | `sandbox/app/main.py` |
+| **Sandbox** | Python 3.10, FastAPI, Xvfb/Chrome/VNC | 8080 (API), 5901 (VNC WS) | `sandbox/app/main.py` |
+
+Infrastructure: **MongoDB Atlas** (cloud), **Redis Cloud** (Asia Southeast). No local Docker required.
+
+Additional (inactive/dev-only):
+| Service | Stack | Port (dev) | Entry Point |
+|---|---|---|---|
 | **Claw** | Node.js, OpenClaw Gateway, dzeck-claw plugin | 18788 | `claw/entrypoint.sh` |
 | **Mockserver** | Python, FastAPI | 8090 | `mockserver/main.py` |
-
-Infrastructure: **MongoDB 7.0**, **Redis 7.0**, **Docker** (sandbox & Claw orchestration).
 
 ---
 
@@ -37,74 +41,46 @@ dzeck/
 ├── claw/              # Claw service (OpenClaw Gateway + dzeck-claw plugin)
 │   └── dzeck-claw/   # Node.js plugin bridging OpenClaw with Dzeck backend
 ├── mockserver/        # Mock LLM server for dev/testing
-├── docs/              # Docsify documentation site
 ├── .cursor/skills/    # Cursor agent skills
-├── dev.sh             # Shortcut: docker compose -f docker-compose-development.yml ...
-├── run.sh             # Shortcut: docker compose -f docker-compose.yml ...
-├── build.sh           # docker buildx bake
 ├── .env.example       # Environment variable template
-├── docker-compose.yml                # Production compose
-└── docker-compose-development.yml    # Development compose (hot-reload)
+└── replit.md          # Replit project overview and user preferences
 ```
 
 ---
 
-## Development Environment Setup
+## Development Environment (Replit)
 
-### Prerequisites
+### Running Services
 
-- **Docker 20.10+** and **Docker Compose**
-- **uv** (Python package manager) — for running backend/sandbox outside Docker
-- **Node.js / npm** — for running frontend outside Docker
-- **Python 3.12+** (backend), **Python 3.10+** (sandbox)
+All services are managed by **Replit Workflows**. They start automatically:
 
-### Quick Start (Docker Compose — Recommended)
-
-```bash
-cp .env.example .env
-# Edit .env — at minimum set API_KEY to any non-empty string
-./dev.sh up -d
-```
-
-This starts: frontend (5173), backend (8000), sandbox (8080), mockserver (8090), MongoDB (27017), Redis.
-
-### Key `.env` Values for Development
-
-| Variable | Recommended Value | Purpose |
+| Workflow | Command | Port |
 |---|---|---|
-| `AUTH_PROVIDER` | `none` | Skip authentication entirely |
-| `API_BASE` | `http://mockserver:8090/v1` | Use mock LLM server |
-| `API_KEY` | any non-empty string | Required — set to anything with mockserver |
-| `SEARCH_PROVIDER` | `bing_web` | No API key needed |
-| `SANDBOX_ADDRESS` | `sandbox` | Use single dev sandbox container |
-| `LOG_LEVEL` | `DEBUG` | Verbose logging |
+| **Start application** | `cd frontend && pnpm dev` | 5000 |
+| **Backend API** | `cd backend && python3 -m uvicorn app.main:app --host localhost --port 8000` | 8000 |
+| **Sandbox Services** | `cd sandbox && supervisord -n -c replit_supervisord.conf` | 8080/5901 |
 
-### Running Services Individually (Without Docker)
+To restart a workflow, use the Replit workflow UI or the `restart_workflow` agent tool.
 
-**Backend:**
-```bash
-cd backend
-uv sync
-uv run uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
-```
-Requires running MongoDB and Redis. Requires `API_KEY` env var (or `.env` in `backend/`).
+### Key Environment Variables (already configured in Replit)
 
-**Frontend:**
-```bash
-cd frontend
-npm install
-BACKEND_URL=http://localhost:8000 npm run dev
-```
-The Vite config creates a proxy for `/api` when `BACKEND_URL` is set.
+| Variable | Value / Purpose |
+|---|---|
+| `API_KEY` | LLM API key |
+| `API_BASE` | LLM API base URL |
+| `MODEL_NAME` | `qwen3.7-max` |
+| `VISION_MODEL_NAME` | `qwen2.5-vl-72b-instruct` |
+| `MONGODB_URI` | MongoDB Atlas connection string |
+| `REDIS_HOST` / `REDIS_PORT` / `REDIS_PASSWORD` | Redis Cloud credentials |
+| `TAVILY_API_KEY` | Web search |
+| `AUTH_PROVIDER` | `password` (JWT-based auth) |
+| `SANDBOX_BASE_URL` | `http://localhost:8080` |
+| `SANDBOX_VNC_URL` | `ws://localhost:5901` |
+| `SANDBOX_CDP_URL` | `http://localhost:8222` |
+| `SEARCH_PROVIDER` | `tavily` |
+| `BROWSER_ENGINE` | `browser_use` |
 
-**Sandbox:** Typically Docker-only (requires Xvfb, Chrome, VNC, supervisord).
-
-**Mockserver:**
-```bash
-cd mockserver
-pip install -r requirements.txt
-uvicorn main:app --host 0.0.0.0 --port 8090 --reload
-```
+For development without a real LLM, set `API_BASE=http://localhost:8090/v1` and start the mockserver manually.
 
 ---
 
@@ -115,13 +91,11 @@ uvicorn main:app --host 0.0.0.0 --port 8090 --reload
 Tests live in `backend/tests/` and hit a **running** backend at `http://localhost:8000`.
 
 ```bash
-# Ensure backend + MongoDB + Redis are running
-./dev.sh up -d mongodb redis backend
-
+# Ensure backend is running first (Backend API workflow)
 cd backend
-uv run pytest                               # all tests
-uv run pytest tests/test_auth_routes.py     # specific file
-uv run pytest -m file_api                   # by marker
+python3 -m pytest                               # all tests
+python3 -m pytest tests/test_auth_routes.py     # specific file
+python3 -m pytest -m file_api                   # by marker
 ```
 
 Key test files:
@@ -134,38 +108,26 @@ Config: `backend/pytest.ini` (`asyncio_mode = auto`, markers: `file_api`).
 ### Sandbox Tests (pytest)
 
 ```bash
-./dev.sh up -d sandbox
+# Ensure Sandbox Services workflow is running
 cd sandbox
-uv run pytest
+python3 -m pytest
 ```
 
 ### Frontend (No Automated Test Runner)
 
 ```bash
 cd frontend
-npm run type-check    # vue-tsc type checking
-npm run build         # production build (catches TS + template errors)
-```
-
-For manual UI testing: start full dev stack (`./dev.sh up -d`), open `http://localhost:5173`.
-
-### Mockserver
-
-No tests. Verify with:
-```bash
-curl -X POST http://localhost:8090/v1/chat/completions \
-  -H "Content-Type: application/json" \
-  -d '{"model":"mock","messages":[{"role":"user","content":"hi"}]}'
+pnpm type-check    # vue-tsc type checking
+pnpm build         # production build (catches TS + template errors)
 ```
 
 ### Full-Stack Integration Test
 
-1. `./dev.sh up -d` — start all services
-2. Open `http://localhost:5173`
-3. Login (or bypass with `AUTH_PROVIDER=none`)
-4. Create session, send message — mockserver returns canned tool calls
-5. Check logs: `./dev.sh logs -f backend`
-6. Check VNC at `localhost:5902` for sandbox desktop
+1. Ensure all 3 workflows are running
+2. Open the app preview (port 5000)
+3. Register/login (or set `AUTH_PROVIDER=none`)
+4. Create session, send message
+5. Check backend logs in the **Backend API** workflow console
 
 ---
 
@@ -188,59 +150,29 @@ curl -X POST http://localhost:8090/v1/chat/completions \
 - **Tailwind CSS** for styling, **reka-ui** component library
 - Path alias: `@/` → `src/`
 - **vue-i18n** for internationalization (Chinese + English)
-- Dependency management: **npm** + `package.json`
+- Dependency management: **pnpm** + `package.json`
 - No ESLint or Prettier configured
 
 ### Sandbox (Python)
 
 - **FastAPI** service exposing shell, file, and supervisor APIs
-- Runs inside Docker with **supervisord** managing Chrome, Xvfb, VNC, and the API
+- Runs via **supervisord** managing Chrome, Xvfb, VNC, and the API
 - Dependency management: **uv** + `pyproject.toml`
 
 ---
 
-## CI/CD
+## Debugging
 
-Single GitHub Actions workflow: `.github/workflows/docker-build-and-push.yml`
+### Backend Logs
+Check the **Backend API** workflow console in Replit, or read `/tmp/logs/Backend_API_*.log`.
 
-- **Triggers**: push/PR to `main` and `develop`; tags `v*`
-- **Builds**: matrix of `frontend`, `backend`, `sandbox` Docker images for `linux/amd64` and `linux/arm64`
-- **Pushes** to Docker Hub on non-PR events (requires `DOCKERHUB_USERNAME` and `DOCKERHUB_TOKEN` secrets)
-- **No** automated test or lint steps in CI
-
----
-
-## Cursor Cloud Specific Instructions
-
-### Environment Setup
-
-When running in a Cloud Agent environment:
-
-1. Docker may not be available. If Docker commands fail, focus on running individual services or testing code changes without the full stack.
-2. For backend work, install dependencies with `cd backend && uv sync`.
-3. For frontend work, install dependencies with `cd frontend && npm install`.
-4. Set `AUTH_PROVIDER=none` and `API_KEY=test` in `.env` to bypass auth and LLM requirements.
-
-### Testing Strategy by Change Type
-
-| Change Type | Testing Approach |
-|---|---|
-| Backend Python logic | `cd backend && uv run pytest` (needs running backend + MongoDB + Redis) |
-| Backend API routes | `cd backend && uv run pytest` against running server |
-| Frontend Vue/TS | `cd frontend && npm run type-check && npm run build` |
-| Frontend UI changes | Type-check + build + manual GUI testing via `computerUse` subagent |
-| Sandbox changes | `cd sandbox && uv run pytest` |
-| Config / env changes | Verify with `./dev.sh up -d` and check service logs |
-| Documentation / README | No testing needed |
-
-### Debugging the Backend
-
-The dev compose starts the backend with **debugpy** on port `5678`. Attach a remote Python debugger for step-through debugging.
+### Sandbox Logs
+Check the **Sandbox Services** workflow console, or read `/tmp/logs/Sandbox_Services_*.log`.
 
 ### Resetting State
 
-- MongoDB data persists in volume `dzeck-mongodb-data`. Wipe with `./dev.sh down -v`.
-- Mockserver tracks response index; restart to reset: `./dev.sh restart mockserver`.
+- MongoDB data is in Atlas cloud — wipe via Atlas console if needed.
+- Redis data is in Redis Cloud — flush via Redis Cloud console if needed.
 
 ---
 
@@ -249,3 +181,4 @@ The dev compose starts the backend with **debugpy** on port `5678`. Attach a rem
 | Skill File | When to Use |
 |---|---|
 | `.cursor/skills/starter.md` | Setting up, running, or testing any part of the codebase. Contains detailed API reference, env var tables, and testing workflows. |
+| `.cursor/skills/debug-claw/SKILL.md` | Debugging the Claw / OpenClaw integration. |
