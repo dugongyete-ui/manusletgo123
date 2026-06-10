@@ -1,14 +1,14 @@
 import en from './en'
-import zh from './zh'
+import id from './id'
 
 export default {
   en,
-  zh
+  id
 }
 
-export type Locale = 'en' | 'zh'
+export type Locale = 'en' | 'id'
 
 export const availableLocales: { label: string; value: Locale }[] = [
   { label: 'English', value: 'en' },
-  { label: '中文', value: 'zh' }
-] 
+  { label: 'Indonesia', value: 'id' }
+]

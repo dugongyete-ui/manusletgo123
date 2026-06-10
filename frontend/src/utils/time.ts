@@ -73,7 +73,7 @@ export const formatCustomTime = (timestamp: number, t?: (key: string) => string,
   const isToday = date.toDateString() === now.toDateString();
   if (isToday) {
     // Use locale-appropriate time format
-    const timeFormat = locale?.startsWith('zh') ? 'zh-CN' : 'en-US';
+    const timeFormat = locale?.startsWith('id') ? 'id-ID' : 'en-US';
     return date.toLocaleTimeString(timeFormat, {
       hour: '2-digit',
       minute: '2-digit',
@@ -102,13 +102,7 @@ export const formatCustomTime = (timestamp: number, t?: (key: string) => string,
   // Check if it's this year
   const isThisYear = date.getFullYear() === now.getFullYear();
   if (isThisYear) {
-    // Use locale-appropriate date format
-    if (locale?.startsWith('zh')) {
-      return `${String(date.getMonth() + 1).padStart(2, '0')}/${String(date.getDate()).padStart(2, '0')}`;
-    } else {
-      // For English and other locales, use MM/DD format
-      return `${String(date.getMonth() + 1).padStart(2, '0')}/${String(date.getDate()).padStart(2, '0')}`;
-    }
+    return `${String(date.getMonth() + 1).padStart(2, '0')}/${String(date.getDate()).padStart(2, '0')}`;
   }
   
   // Other years: show year/month

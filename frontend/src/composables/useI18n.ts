@@ -8,14 +8,13 @@ const STORAGE_KEY = 'dzeck-locale'
 // Get browser language and map to supported locale
 const getBrowserLocale = (): Locale => {
   const browserLang = navigator.language || navigator.languages?.[0]
-  // Check if browser language starts with any supported locale
-  if (browserLang?.startsWith('zh')) {
-    return 'zh'
+  if (browserLang?.startsWith('id')) {
+    return 'id'
   }
   if (browserLang?.startsWith('en')) {
     return 'en'
   }
-  // Default to Chinese if no match
+  // Default to English if no match
   return 'en'
 }
 

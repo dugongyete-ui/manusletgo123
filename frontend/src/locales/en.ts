@@ -159,7 +159,7 @@ export default {
   'Failed to send reset link. Please try again.': 'Failed to send reset link. Please try again.',
   // Language Selection
   'Select language': 'Select language',
-  'Simplified Chinese': 'Simplified Chinese',
+  'Indonesian': 'Indonesian',
   'English': 'English',
   // MCP Tool View
   'Tool': 'Tool',
