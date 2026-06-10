@@ -10,8 +10,7 @@
                     :rows="rows" :value="modelValue"
                     @input="onInput"
                     @compositionstart="isComposing = true" @compositionend="isComposing = false"
-                    @keydown.enter.exact.prevent="handleEnterKeydown"
-                    @keydown.enter.shift.exact.prevent="handleShiftEnter"
+                    @keydown="handleKeydown"
                     :placeholder="t('Give Dzeck a task to work on...')"
                     :style="{ minHeight: '46px', height: textareaHeight }"></textarea>
             </div>
@@ -42,7 +41,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, watch, computed, nextTick } from 'vue';
+import { ref, watch, computed } from 'vue';
 import SendIcon from './icons/SendIcon.vue';
 import { useI18n } from 'vue-i18n';
 import ChatBoxFiles from './ChatBoxFiles.vue';
@@ -60,8 +59,7 @@ const autoResize = () => {
     const el = textareaRef.value;
     if (!el) return;
     el.style.height = '46px';
-    const scrollH = el.scrollHeight;
-    textareaHeight.value = Math.min(scrollH, 240) + 'px';
+    textareaHeight.value = Math.min(el.scrollHeight, 240) + 'px';
 };
 
 const props = defineProps<{
@@ -93,25 +91,17 @@ const onInput = (event: Event) => {
     autoResize();
 };
 
-const handleShiftEnter = () => {
-    if (isComposing.value) return;
-    const el = textareaRef.value;
-    if (!el) return;
-    const start = el.selectionStart;
-    const end = el.selectionEnd;
-    const newValue = props.modelValue.substring(0, start) + '\n' + props.modelValue.substring(end);
-    emit('update:modelValue', newValue);
-    nextTick(() => {
-        el.selectionStart = el.selectionEnd = start + 1;
-        autoResize();
-    });
-};
-
-const handleEnterKeydown = () => {
-    if (isComposing.value) return;
-    if (sendEnabled.value) {
-        handleSubmit();
+const handleKeydown = (event: KeyboardEvent) => {
+    // Enter without any modifier → send
+    if (event.key === 'Enter' && !event.shiftKey && !event.ctrlKey && !event.altKey && !event.metaKey) {
+        if (isComposing.value) return;
+        event.preventDefault();
+        if (sendEnabled.value) {
+            handleSubmit();
+        }
+        return;
     }
+    // Shift+Enter → new line (let browser insert naturally, do nothing here)
 };
 
 const handleSubmit = () => {
