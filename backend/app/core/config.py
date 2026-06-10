@@ -92,7 +92,7 @@ class Settings(BaseSettings):
     email_from: str | None = None
     
     # JWT configuration
-    jwt_secret_key: str = "your-secret-key-here"  # Should be set in production
+    jwt_secret_key: str = "your-secret-key-here"
     jwt_algorithm: str = "HS256"
     jwt_access_token_expire_minutes: int = 30
     jwt_refresh_token_expire_days: int = 7
@@ -106,6 +106,9 @@ class Settings(BaseSettings):
     claw_address: str | None = None
     claw_api_key: str | None = None
     dzeck_api_base_url: str = "http://localhost:8000"
+
+    # SSL verification — set SSL_VERIFY=false only for custom gateways with self-signed certs
+    ssl_verify: bool = True
 
     # MCP configuration
     mcp_config_path: str = "/etc/mcp.json"
@@ -122,6 +125,11 @@ class Settings(BaseSettings):
         """Validate configuration settings"""
         if not self.api_key:
             raise ValueError("API key is required")
+        if self.jwt_secret_key == "your-secret-key-here":
+            logger.warning(
+                "JWT_SECRET_KEY is using the default insecure value. "
+                "Set the JWT_SECRET_KEY environment variable to a strong random secret."
+            )
 
 @lru_cache()
 def get_settings() -> Settings:

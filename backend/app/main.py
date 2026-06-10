@@ -32,16 +32,13 @@ async def lifespan(app: FastAPI):
     # Code executed on startup
     logger.info("Application startup - Dzeck AI Agent initializing")
     
-    # Initialize MongoDB and Beanie
-    try:
-        await get_mongodb().initialize()
-        await init_beanie(
-            database=get_mongodb().client[settings.mongodb_database],
-            document_models=[AgentDocument, SessionDocument, UserDocument, ClawDocument]
-        )
-        logger.info("Successfully initialized Beanie")
-    except Exception as e:
-        logger.error(f"MongoDB/Beanie initialization failed: {e} — continuing without DB")
+    # Initialize MongoDB and Beanie (critical — abort startup on failure)
+    await get_mongodb().initialize()
+    await init_beanie(
+        database=get_mongodb().client[settings.mongodb_database],
+        document_models=[AgentDocument, SessionDocument, UserDocument, ClawDocument]
+    )
+    logger.info("Successfully initialized Beanie")
 
     # Initialize Redis
     try:

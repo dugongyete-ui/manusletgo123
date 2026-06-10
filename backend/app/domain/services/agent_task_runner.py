@@ -3,7 +3,10 @@ import asyncio
 import base64
 import logging
 import os
-import debugpy
+try:
+    import debugpy
+except ImportError:
+    debugpy = None
 from pydantic import TypeAdapter
 from app.domain.models.message import Message, VisionImage, is_vision_capable
 from app.domain.services import file_extractor
@@ -435,11 +438,11 @@ class AgentTaskRunner(TaskRunner):
             
             # If debugger is attached, trigger breakpoint for debugging
             # You can also manually set ENABLE_DEBUG_BREAK=1 environment variable
-            if debugpy.is_client_connected() or os.getenv('ENABLE_DEBUG_BREAK'):
+            if debugpy and (debugpy.is_client_connected() or os.getenv('ENABLE_DEBUG_BREAK')):
                 logger.debug("Debugger detected, triggering breakpoint")
                 import traceback
                 traceback.print_exc()
-                debugpy.breakpoint()  # This will pause execution if a debugger is attached
+                debugpy.breakpoint()
             
             await self._put_and_add_event(task, ErrorEvent(error=f"Task error: {str(e)}"))
             await self._session_repository.update_status(self._session_id, SessionStatus.COMPLETED)

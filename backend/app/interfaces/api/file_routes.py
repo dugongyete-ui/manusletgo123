@@ -77,12 +77,12 @@ async def download_file_with_signature(
 async def download_file(
     file_id: str,
     file_service: FileService = Depends(get_file_service),
-    current_user: User = Depends(get_optional_current_user)
+    current_user: User = Depends(get_current_user)
 ):
-    """Download file with optional access token"""
+    """Download file (requires authentication)"""
     
     try:
-        file_data, file_info = await file_service.download_file(file_id, current_user.id if current_user else None)
+        file_data, file_info = await file_service.download_file(file_id, current_user.id)
     except FileNotFoundError:
         raise NotFoundError("File not found")
     except PermissionError:
