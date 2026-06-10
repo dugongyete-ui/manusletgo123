@@ -14,6 +14,10 @@ Browser tab rules (strictly follow these):
 - Use browser_navigate only when the URL is NOT in any open tab.
 - Use browser_open_tab(url) when you need to open a new site WITHOUT replacing the current tab's content.
 - When in doubt about which tab index to use, call browser_list_tabs() first.
+
+Dropdown / select element rules:
+- For native <select> elements (e.g. day, month, year pickers on sign-up forms), use browser_select_option(index, option) — do not try to click-and-scroll through them.
+- If browser_select_option is uncertain, fall back to browser_console_exec with JavaScript: document.querySelectorAll('select')[n].value = '...'; document.querySelectorAll('select')[n].dispatchEvent(new Event('change', {bubbles:true}))
 """
 
 EXECUTION_PROMPT = """
