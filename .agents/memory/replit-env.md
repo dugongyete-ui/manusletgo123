@@ -25,3 +25,11 @@ Docker is not available / not used. Sandbox runs directly in the Replit containe
 ## E2B removed
 
 E2B (`E2B_API_KEY`, `E2B_TEMPLATE_ID`) was removed from env vars on 2026-06-10. The sandbox is now exclusively the local Replit-hosted sandbox service.
+
+## SSL verification for LLM API gateway
+
+**`SSL_VERIFY=false`** must be set in shared env vars. The custom API gateway (`chat-gateway--tmi84kzh.replit.app`) uses a certificate that fails Python's CA verification, causing `SSL: CERTIFICATE_VERIFY_FAILED` and the agent not responding.
+
+**Why:** The hook is already wired in `backend/app/domain/services/agents/base.py` — it reads `settings.ssl_verify` and passes it to both `httpx.Client` and `httpx.AsyncClient`. Default is `True`, which breaks the connection.
+
+**How to apply:** If the agent stops responding with SSL errors, check that `SSL_VERIFY=false` is present in shared env vars and restart the Backend API workflow.
