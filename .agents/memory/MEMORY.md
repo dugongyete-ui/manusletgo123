@@ -1,1 +1,2 @@
 - [Replit environment setup](replit-env.md) — sandbox runs via Supervisord (no Docker); MongoDB Atlas + Redis Cloud already configured; frontend port is 5000 not 5173
+- [Payload Too Large fix](payload-too-large-fix.md) — Facebook/complex pages have 1500+ DOM elements; fix: cap interactive_elements at 300 + expand compact() + mid-step compaction every 10 iterations

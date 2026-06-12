@@ -246,6 +246,10 @@ class BrowserUseBrowser:
     # Browser Protocol implementation
     # ------------------------------------------------------------------
 
+    # Maximum interactive elements returned per browser_view / navigate call.
+    # Keeps LLM context payload manageable for complex pages (e.g. Facebook).
+    _MAX_INTERACTIVE_ELEMENTS = 300
+
     async def view_page(self) -> ToolResult:
         """Return the current page content and interactive elements."""
         try:
@@ -258,6 +262,11 @@ class BrowserUseBrowser:
                 content = state.dom_state.llm_representation()
                 selector_map = state.dom_state.selector_map or {}
                 interactive_elements = self._format_selector_map(selector_map)
+                if len(interactive_elements) > self._MAX_INTERACTIVE_ELEMENTS:
+                    interactive_elements = interactive_elements[:self._MAX_INTERACTIVE_ELEMENTS]
+                    interactive_elements.append(
+                        f"... (truncated, showing first {self._MAX_INTERACTIVE_ELEMENTS} of {len(selector_map)} elements — use coordinates or scroll to reach others)"
+                    )
 
             # Build tab summary so the agent always knows which tabs are open
             # and can use browser_switch_tab instead of browser_navigate
@@ -304,6 +313,11 @@ class BrowserUseBrowser:
             if state.dom_state is not None:
                 selector_map = state.dom_state.selector_map or {}
                 interactive_elements = self._format_selector_map(selector_map)
+                if len(interactive_elements) > self._MAX_INTERACTIVE_ELEMENTS:
+                    interactive_elements = interactive_elements[:self._MAX_INTERACTIVE_ELEMENTS]
+                    interactive_elements.append(
+                        f"... (truncated, showing first {self._MAX_INTERACTIVE_ELEMENTS} of {len(selector_map)} elements)"
+                    )
             return ToolResult(
                 success=True,
                 data={"interactive_elements": interactive_elements},

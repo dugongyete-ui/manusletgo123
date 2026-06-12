@@ -108,10 +108,14 @@ class BaseAgent(ABC):
 
         return ToolMessage(tool_call_id=tool_call["id"], name=tool.name, content=last_error)
     
+    # Compact browser tool results in memory every this many tool-call rounds
+    # within a single step to prevent "Payload Too Large" on complex pages.
+    _COMPACT_EVERY_N_ITERATIONS = 10
+
     async def execute(self, request: Union[str, list], format: Optional[str] = None) -> AsyncGenerator[BaseEvent, None]:
         format = format or self.format
         message = await self.ask(request, format)
-        for _ in range(self.max_iterations):
+        for iteration in range(self.max_iterations):
             if not message.tool_calls:
                 break
             tool_responses = []
@@ -147,6 +151,12 @@ class BaseAgent(ABC):
                 )
 
                 tool_responses.append(tool_result)
+
+            # Periodically compact browser tool results mid-step to prevent
+            # "Payload Too Large" errors on pages with hundreds of elements.
+            if (iteration + 1) % self._COMPACT_EVERY_N_ITERATIONS == 0:
+                logger.debug(f"Mid-step compact at iteration {iteration + 1}")
+                await self.compact_memory()
 
             message = await self.ask_with_messages(tool_responses)
         else:
