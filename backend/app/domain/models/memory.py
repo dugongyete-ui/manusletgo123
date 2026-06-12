@@ -52,10 +52,23 @@ class Memory(BaseModel):
     }
 
     def compact(self) -> None:
-        """Compact memory — strip large browser tool payloads from all but
-        the most recent call of each browser tool to keep context size small."""
-        # Find the index of the last occurrence of each browser tool so we can
-        # preserve it (the agent needs the most recent page state).
+        """Compact memory — two-pass cleanup to keep context size small:
+
+        Pass 1 — Browser ToolMessage payloads:
+            Strip large DOM/page-state results from all but the most recent
+            call of each browser tool.  The agent only needs the latest state.
+
+        Pass 2 — Vision image_url base64 in HumanMessages:
+            Vision images (user attachments, step-start screenshots) are
+            embedded as data-URI base64 strings (~150-300 KB each) inside
+            multimodal HumanMessage content lists.  Once the LLM has processed
+            them they are never needed again, but they accumulate across steps
+            and inflate every subsequent API request.  This pass strips all
+            image_url entries from every HumanMessage, preserving only the
+            text parts.  This is the primary cause of 500 "payload too large"
+            errors on long browser automation tasks.
+        """
+        # --- Pass 1: strip old browser ToolMessage payloads (existing logic) ---
         last_index: dict[str, int] = {}
         for i, message in enumerate(self.messages):
             if message.type == "tool" and message.name in self._BROWSER_TOOLS_TO_COMPACT:
@@ -63,11 +76,35 @@ class Memory(BaseModel):
 
         for i, message in enumerate(self.messages):
             if message.type == "tool" and message.name in self._BROWSER_TOOLS_TO_COMPACT:
-                # Keep the most recent result of each tool intact
                 if last_index.get(message.name) == i:
                     continue
                 message.content = ToolResult(success=True, data="(removed)").model_dump_json()
                 logger.debug(f"Compacted tool result from memory: {message.name} at index {i}")
+
+        # --- Pass 2: strip base64 image_url data from HumanMessages ---
+        for i, message in enumerate(self.messages):
+            if message.type != "human":
+                continue
+            if not isinstance(message.content, list):
+                continue
+            has_image = any(
+                isinstance(part, dict) and part.get("type") == "image_url"
+                for part in message.content
+            )
+            if not has_image:
+                continue
+            # Keep only text parts — drop all image_url (base64) entries.
+            text_parts = [
+                part for part in message.content
+                if isinstance(part, dict) and part.get("type") == "text"
+            ]
+            if text_parts:
+                message.content = (
+                    text_parts[0]["text"] if len(text_parts) == 1 else text_parts
+                )
+            else:
+                message.content = "(image removed)"
+            logger.debug(f"Stripped vision image(s) from HumanMessage at index {i}")
 
     @property
     def empty(self) -> bool:
