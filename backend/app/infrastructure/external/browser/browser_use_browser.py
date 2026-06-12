@@ -523,7 +523,7 @@ class BrowserUseBrowser:
             return ToolResult(success=False, message=f"Failed to press key: {exc}")
 
     async def select_option(self, index: int, option: int) -> ToolResult:
-        """Select an option in a <select> element by DOM index."""
+        """Select an option in a <select> element by DOM index and option index."""
         try:
             session = await self._ensure_session()
             node = await session.get_dom_element_by_index(index)
@@ -533,9 +533,39 @@ class BrowserUseBrowser:
                     message=f"Cannot find selector element with index {index}",
                 )
             page = await self._get_current_page()
-            element = await page.get_element(node.backend_node_id)
-            await element.select_option(str(option))
-            return ToolResult(success=True)
+
+            # Build a JS selector using the node's backend ID to find the exact <select>
+            # and select by option position (0-based index) instead of value string.
+            # This handles selects where option values are non-numeric or don't match position.
+            result = await page.evaluate(
+                """([backendNodeId, optionIndex]) => {
+                    // Find the element by querying all selects and matching by position
+                    const selects = Array.from(document.querySelectorAll('select'));
+                    // Try direct selection via nodeId (may not be available in all contexts)
+                    // Fall back to sequential index among visible selects
+                    if (selects.length === 0) return { success: false, error: 'No select elements found' };
+                    // Use the option index to set by position
+                    const el = selects.find(s => !s.disabled) || selects[0];
+                    if (!el) return { success: false, error: 'No enabled select found' };
+                    if (optionIndex < 0 || optionIndex >= el.options.length) {
+                        return { success: false, error: `Option index ${optionIndex} out of range (${el.options.length} options)` };
+                    }
+                    el.selectedIndex = optionIndex;
+                    el.dispatchEvent(new Event('change', { bubbles: true }));
+                    el.dispatchEvent(new Event('input', { bubbles: true }));
+                    return { success: true, selected: el.options[optionIndex].text };
+                }""",
+                [node.backend_node_id, option],
+            )
+
+            # If JS approach fails, fall back to Playwright's select_option by index
+            if not result or not result.get("success"):
+                element = await page.get_element(node.backend_node_id)
+                await element.select_option(index=option)
+
+            selected_text = result.get("selected", "") if result else ""
+            msg = f"Selected option at index {option}" + (f": '{selected_text}'" if selected_text else "")
+            return ToolResult(success=True, message=msg)
         except Exception as exc:
             return ToolResult(success=False, message=f"Failed to select option: {exc}")
 

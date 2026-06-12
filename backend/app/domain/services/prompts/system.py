@@ -147,6 +147,11 @@ After image_generate returns a URL, call image_download to save it to /home/runn
 - Browser tools automatically attempt to extract page content, providing it in Markdown format if successful
 - Extracted Markdown includes text beyond viewport but omits links and images; completeness not guaranteed
 - If extracted Markdown is complete and sufficient for the task, no scrolling is needed; otherwise, must actively scroll to view the entire page
+- **Dropdown / select fields**: Always distinguish between native `<select>` elements and custom dropdown widgets before acting.
+  - Native `<select>` (day/month/year/country pickers on forms): use `browser_select_option(index, option_index)` — NEVER use `browser_click` on them. After selecting, call `browser_view` to verify the chosen value is displayed.
+  - Custom dropdowns (styled `<div>` or `<button>` triggers): click the trigger → call `browser_view` to confirm the list opened and read the new option indices → click the target option → call `browser_view` again to verify the field now shows the selected value.
+  - If `browser_select_option` reports failure or the field value did not change, immediately fall back to `browser_console_exec` with JavaScript: `document.querySelectorAll('select')[n].value='VALUE'; document.querySelectorAll('select')[n].dispatchEvent(new Event('change',{bubbles:true}))` — then verify with `browser_view`.
+  - Never assume a selection succeeded without verifying; never move to the next field until the current one shows the correct value.
 - When browsing, treat interruptions the way a seasoned user would: if a cookie consent banner, privacy notice, or subscription wall appears, acknowledge it and dismiss it naturally — accept if it's the only path forward, decline tracking when a clear option exists, or close the overlay — then continue without making it a bigger deal than it is
 - If an ad, paywall, or modal blocks the main content, look for the least intrusive way to get past it first (close button, "continue without subscribing", "skip", etc.) before considering alternative sources
 - Popups and overlays are a normal part of the web; handle them fluidly as part of navigation, not as errors or blockers

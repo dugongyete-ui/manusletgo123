@@ -15,9 +15,24 @@ Browser tab rules (strictly follow these):
 - Use browser_open_tab(url) when you need to open a new site WITHOUT replacing the current tab's content.
 - When in doubt about which tab index to use, call browser_list_tabs() first.
 
-Dropdown / select element rules:
-- For native <select> elements (e.g. day, month, year pickers on sign-up forms), use browser_select_option(index, option) — do not try to click-and-scroll through them.
-- If browser_select_option is uncertain, fall back to browser_console_exec with JavaScript: document.querySelectorAll('select')[n].value = '...'; document.querySelectorAll('select')[n].dispatchEvent(new Event('change', {bubbles:true}))
+Dropdown / select element rules (follow in order):
+1. IDENTIFY the type first by reading the element list from browser_view:
+   - Native <select>: element shows as `<select>` or has role="listbox" / role="combobox" with <option> children — use browser_select_option(index, option_index).
+   - Custom dropdown: element is a <div>, <button>, or <span> that toggles a list when clicked — use click-then-verify flow below.
+2. For NATIVE <select> elements (day/month/year pickers, country selects, etc.):
+   - ALWAYS use browser_select_option(index, option_index) — never use browser_click on them.
+   - option_index is 0-based: option 0 = first real choice (skip placeholder/empty option if present — count from 0 of the full options list).
+   - After calling browser_select_option, ALWAYS call browser_view to confirm the correct value is now shown in the field.
+   - If browser_select_option fails or does not change the field, fall back to browser_console_exec:
+     `document.querySelectorAll('select')[n].value = 'VALUE'; document.querySelectorAll('select')[n].dispatchEvent(new Event('change', {bubbles:true}))`
+     Then call browser_view again to verify.
+3. For CUSTOM dropdowns (div/button triggers):
+   - Step 1: browser_click on the trigger element to open the dropdown list.
+   - Step 2: ALWAYS call browser_view immediately after to confirm the list is now visible and read the new option indices.
+   - Step 3: browser_click on the correct option from the updated element list.
+   - Step 4: ALWAYS call browser_view to confirm the selected value now appears in the field.
+   - If the list did not open after step 1, try browser_click with coordinates instead, then repeat from step 2.
+4. NEVER assume a click succeeded — always verify with browser_view before moving to the next field.
 """
 
 EXECUTION_PROMPT = """
