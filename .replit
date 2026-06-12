@@ -151,14 +151,14 @@ run = ["bash", "-c", "bash /home/runner/workspace/scripts/start_production.sh"]
 [userenv]
 
 [userenv.shared]
-API_BASE = "https://chat-gateway--tmi84kzh.replit.app/v1"
+API_BASE = "https://qwn-api--miok1qpgd.replit.app/v1"
 MODEL_NAME = "qwen3.7-max"
 MODEL_PROVIDER = "openai"
 TEMPERATURE = "0.7"
 MAX_TOKENS = "8000"
 VISION_MODEL_NAME = "qwen2.5-vl-72b-instruct"
 VISION_MODEL_PROVIDER = "openai"
-VISION_API_BASE = "https://chat-gateway--tmi84kzh.replit.app/v1"
+VISION_API_BASE = "https://qwn-api--miok1qpgd.replit.app/v1"
 MONGODB_DATABASE = "manus"
 REDIS_HOST = "redis-14320.c334.asia-southeast2-1.gce.cloud.redislabs.com"
 REDIS_PORT = "14320"
@@ -175,8 +175,8 @@ MONGODB_URI = "mongodb+srv://galerizaki_db_user:wTkfzrqewY5qCxYG@cluster0.vmiek8
 REDIS_PASSWORD = "dA82OZIdJg62zWqsPJ9sDNvgtpCKbAAs"
 JWT_SECRET_KEY = "ai-manus-jwt-secret-key-2025-super-secure"
 TAVILY_API_KEY = "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"
-VISION_API_KEY = "sk-dzcx_jptEfjgF4gPqKalkkiin4LEvUe5hCKGT4Ov9G4xzOOF"
-API_KEY = "sk-dzcx_jptEfjgF4gPqKalkkiin4LEvUe5hCKGT4Ov9G4xzOOF"
+VISION_API_KEY = "sk-dzeck-1ee392d1f9ff4d317c6a4c311e84efa0he"
+API_KEY = "sk-dzeck-1ee392d1f9ff4d317c6a4c311e84efa0he"
 SANDBOX_TTL_MINUTES = "30"
 BROWSER_ENGINE = "browser_use"
 PASSWORD_SALT = "manus-salt-2025"
