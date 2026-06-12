@@ -93,6 +93,10 @@ class Browser(Protocol):
         """Switch to a browser tab by 1-based index"""
         ...
 
+    async def get_select_options(self, index: int) -> ToolResult:
+        """Get all options from a <select> element by DOM index"""
+        ...
+
     async def console_view(self, max_lines: Optional[int] = None) -> ToolResult:
         """View console output"""
         ...

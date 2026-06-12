@@ -15,36 +15,8 @@ Browser tab rules (strictly follow these):
 - Use browser_open_tab(url) when you need to open a new site WITHOUT replacing the current tab's content.
 - When in doubt about which tab index to use, call browser_list_tabs() first.
 
-Dropdown / select element rules (follow in order):
-1. IDENTIFY the type first by reading the element list from browser_view:
-   - Native <select>: element shows as `<select>` or has role="listbox" / role="combobox" with <option> children — use browser_select_option(index, option_index).
-   - Custom dropdown: element is a <div>, <button>, or <span> that toggles a list when clicked — use click-then-verify flow below.
-2. For NATIVE <select> elements (any website — date pickers, country selects, dropdowns, etc.):
-   - ALWAYS use browser_select_option(index, option_index) — never use browser_click on them.
-   - NEVER assume option indices — always discover them dynamically before calling browser_select_option:
-     Step A: Call browser_console_exec to read what options actually exist in that specific select.
-       Use the DOM index from browser_view (e.g. element [42] is a <select>):
-       `JSON.stringify(Array.from(document.querySelectorAll('select')[N].options).map((o,i)=>i+':'+o.text))`
-       where N is the ordinal position of that select among all selects on the page (0-based).
-     Step B: Read the output and find the index whose text matches your target value.
-     Step C: Call browser_select_option(dom_index, option_index) using that found index.
-   - Each distinct <select> on the page has its OWN DOM index. Never reuse the same DOM index for different selects.
-   - Call browser_select_option ONCE per select — do NOT click it first.
-   - After calling browser_select_option, ALWAYS call browser_view to confirm the field now shows the correct value.
-   - If browser_select_option fails or the value did not change, fall back to browser_console_exec using the
-     element's name or id attribute to target it precisely:
-     `const s=document.querySelector('select[name="FIELD_NAME"]'); s.value='TARGET_VALUE'; s.dispatchEvent(new Event('change',{bubbles:true}));`
-     Inspect the element's name/id first via browser_console_exec:
-       `document.querySelectorAll('select')[N].name + ' / ' + document.querySelectorAll('select')[N].id`
-     Then verify the field changed with browser_view.
-3. For CUSTOM dropdowns (div/button triggers):
-   - Step 1: browser_click on the trigger element to open the dropdown list.
-   - Step 2: ALWAYS call browser_view immediately after to confirm the list is now visible and read the new option indices.
-   - Step 3: browser_click on the correct option from the updated element list.
-   - Step 4: ALWAYS call browser_view to confirm the selected value now appears in the field.
-   - If the list did not open after step 1, try browser_click with coordinates instead, then repeat from step 2.
-4. NEVER assume a click succeeded — always verify with browser_view before moving to the next field.
-5. LOOP PREVENTION: If you have called browser_select_option or browser_click on the same element more than 2 times without seeing the value change in browser_view, STOP clicking and use the browser_console_exec fallback instead. Repeating the same failed action causes an infinite loop.
+For native <select> elements: call browser_get_select_options(index) to see all available options and their indices, then call browser_select_option(index, option_index). If that still doesn't change the value, use browser_console_exec to set it via JavaScript.
+For custom dropdowns: click to open, read the updated element list from browser_view, then click the target option.
 """
 
 EXECUTION_PROMPT = """

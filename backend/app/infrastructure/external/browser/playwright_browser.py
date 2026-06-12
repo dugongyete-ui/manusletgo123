@@ -690,16 +690,42 @@ class PlaywrightBrowser:
         index: int,
         option: int
     ) -> ToolResult:
-        """Select dropdown option"""
+        """Select dropdown option — fires React-compatible input+change events."""
         await self._ensure_page()
         try:
             element = await self._get_element_by_index(index)
             if not element:
                 return ToolResult(success=False, message=f"Cannot find selector element with index {index}")
-            
-            # Try to select the option
-            await element.select_option(index=option)
-            return ToolResult(success=True)
+
+            # Use JS native setter so React/Vue synthetic event systems detect the
+            # change, then fire both 'input' and 'change' events.
+            js_code = """(el, optionIndex) => {
+                if (optionIndex < 0 || optionIndex >= el.options.length) {
+                    return JSON.stringify({success:false, error:'index '+optionIndex+' out of range ('+el.options.length+' options)'});
+                }
+                const opt = el.options[optionIndex];
+                const text = opt.text;
+                const value = opt.value;
+                try {
+                    const setter = Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype,'value').set;
+                    setter.call(el, value);
+                } catch(e) {
+                    el.selectedIndex = optionIndex;
+                }
+                el.dispatchEvent(new Event('input',  {bubbles:true}));
+                el.dispatchEvent(new Event('change', {bubbles:true}));
+                return JSON.stringify({success:true, text:text, value:value});
+            }"""
+            import json as _json
+            raw = await self.page.evaluate(js_code, element, option)
+            result = _json.loads(raw) if isinstance(raw, str) else raw
+            if result and result.get("success"):
+                selected_text = result.get("text", "")
+                msg = f"Selected option {option}" + (f" ('{selected_text}')" if selected_text else "")
+                return ToolResult(success=True, message=msg)
+            else:
+                err = result.get("error", str(result)) if result else "unknown"
+                return ToolResult(success=False, message=f"select_option JS failed: {err}")
         except Exception as e:
             return ToolResult(success=False, message=f"Failed to select option: {str(e)}")
     
@@ -750,6 +776,31 @@ class PlaywrightBrowser:
         # Return bytes data directly
         return await self.page.screenshot(**screenshot_options)
     
+    async def get_select_options(self, index: int) -> ToolResult:
+        """Return all options of a <select> element by DOM index.
+
+        Returns a list of {option_index, value, text} objects so the caller
+        knows exactly which option_index to pass to select_option().
+        """
+        await self._ensure_page()
+        try:
+            element = await self._get_element_by_index(index)
+            if not element:
+                return ToolResult(success=False, message=f"Cannot find element with index {index}")
+            import json as _json
+            raw = await self.page.evaluate(
+                "(el) => JSON.stringify(Array.from(el.options).map((o,i) => ({option_index:i, value:o.value, text:o.text.trim()})))",
+                element,
+            )
+            options = _json.loads(raw) if isinstance(raw, str) else raw
+            return ToolResult(
+                success=True,
+                message=f"Found {len(options)} options",
+                data={"options": options},
+            )
+        except Exception as e:
+            return ToolResult(success=False, message=f"Failed to get select options: {str(e)}")
+
     async def console_exec(self, javascript: str) -> ToolResult:
         """Execute JavaScript code"""
         await self._ensure_page()

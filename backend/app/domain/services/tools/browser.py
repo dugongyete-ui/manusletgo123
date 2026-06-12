@@ -179,6 +179,17 @@ class BrowserToolkit(BaseToolkit):
         return await self.browser.switch_tab(tab_index)
 
     @tool(parse_docstring=True)
+    async def browser_get_select_options(self, index: int) -> ToolResult:
+        """Get all available options from a <select> dropdown element. ALWAYS call this before browser_select_option to discover the correct option_index for your target value.
+
+        Returns a list of objects: [{option_index, value, text}] where option_index is the 0-based number to pass to browser_select_option.
+
+        Args:
+            index: DOM index of the <select> element (from browser_view interactive elements list).
+        """
+        return await self.browser.get_select_options(index)
+
+    @tool(parse_docstring=True)
     async def browser_console_view(
         self,
         max_lines: Optional[int] = None

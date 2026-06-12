@@ -637,6 +637,36 @@ class BrowserUseBrowser:
         session = await self._ensure_session()
         return await session.take_screenshot(full_page=bool(full_page))
 
+    async def get_select_options(self, index: int) -> ToolResult:
+        """Return all options of a <select> element by DOM index.
+
+        Returns a list of {option_index, value, text} objects so the caller
+        knows exactly which option_index to pass to select_option().
+        """
+        try:
+            session = await self._ensure_session()
+            node = await session.get_dom_element_by_index(index)
+            if node is None:
+                return ToolResult(
+                    success=False,
+                    message=f"Cannot find element with index {index}",
+                )
+            page = await self._get_current_page()
+            element = await page.get_element(node.backend_node_id)
+
+            import json as _json
+            raw = await element.evaluate(
+                "() => JSON.stringify(Array.from(this.options).map((o,i) => ({option_index:i, value:o.value, text:o.text.trim()})))"
+            )
+            options = _json.loads(raw) if isinstance(raw, str) else raw
+            return ToolResult(
+                success=True,
+                message=f"Found {len(options)} options",
+                data={"options": options},
+            )
+        except Exception as exc:
+            return ToolResult(success=False, message=f"Failed to get select options: {exc}")
+
     async def console_exec(self, javascript: str) -> ToolResult:
         """Execute arbitrary JavaScript in the current page context."""
         try:
