@@ -537,7 +537,11 @@ class BrowserUseBrowser:
             return ToolResult(success=False, message=f"Failed to press key: {exc}")
 
     async def select_option(self, index: int, option: int) -> ToolResult:
-        """Select an option in a <select> element by DOM index and option index."""
+        """Select an option in a <select> element by DOM index and option index (0-based).
+        
+        Correctly targets the specific <select> element identified by `index` —
+        critical when multiple selects exist on the same page (e.g. Day/Month/Year).
+        """
         try:
             session = await self._ensure_session()
             node = await session.get_dom_element_by_index(index)
@@ -548,37 +552,58 @@ class BrowserUseBrowser:
                 )
             page = await self._get_current_page()
 
-            # Build a JS selector using the node's backend ID to find the exact <select>
-            # and select by option position (0-based index) instead of value string.
-            # This handles selects where option values are non-numeric or don't match position.
-            result = await page.evaluate(
-                """([backendNodeId, optionIndex]) => {
-                    // Find the element by querying all selects and matching by position
-                    const selects = Array.from(document.querySelectorAll('select'));
-                    // Try direct selection via nodeId (may not be available in all contexts)
-                    // Fall back to sequential index among visible selects
-                    if (selects.length === 0) return { success: false, error: 'No select elements found' };
-                    // Use the option index to set by position
-                    const el = selects.find(s => !s.disabled) || selects[0];
-                    if (!el) return { success: false, error: 'No enabled select found' };
-                    if (optionIndex < 0 || optionIndex >= el.options.length) {
-                        return { success: false, error: `Option index ${optionIndex} out of range (${el.options.length} options)` };
-                    }
-                    el.selectedIndex = optionIndex;
-                    el.dispatchEvent(new Event('change', { bubbles: true }));
-                    el.dispatchEvent(new Event('input', { bubbles: true }));
-                    return { success: true, selected: el.options[optionIndex].text };
-                }""",
-                [node.backend_node_id, option],
+            # Resolve to the exact Element handle for this specific backend_node_id.
+            # This is critical — page.get_element() guarantees we act on the right <select>
+            # rather than scanning document.querySelectorAll('select')[0] (which caused
+            # Day/Month/Year selects to all modify the same first select element).
+            element = await page.get_element(node.backend_node_id)
+
+            # Use element.evaluate() where `this` is bound to the exact element.
+            # We use the native HTMLSelectElement setter so React/Vue synthetic event
+            # systems detect the change, then fire both 'input' and 'change' events.
+            js_code = (
+                "(optionIndex) => {"
+                "  if (optionIndex < 0 || optionIndex >= this.options.length) {"
+                "    return JSON.stringify({success:false, error:'index '+optionIndex+' out of range ('+this.options.length+' options)'});"
+                "  }"
+                "  const opt = this.options[optionIndex];"
+                "  const text = opt.text;"
+                "  const value = opt.value;"
+                "  try {"
+                "    const setter = Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype,'value').set;"
+                "    setter.call(this, value);"
+                "  } catch(e) {"
+                "    this.selectedIndex = optionIndex;"
+                "  }"
+                "  this.dispatchEvent(new Event('input',  {bubbles:true}));"
+                "  this.dispatchEvent(new Event('change', {bubbles:true}));"
+                "  return JSON.stringify({success:true, text:text, value:value});"
+                "}"
             )
 
-            # If JS approach fails, fall back to Playwright's select_option by index
-            if not result or not result.get("success"):
-                element = await page.get_element(node.backend_node_id)
-                await element.select_option(index=option)
+            import json as _json
+            selected_text = ""
+            try:
+                raw = await element.evaluate(js_code, option)
+                result = _json.loads(raw) if isinstance(raw, str) else raw
+                if result and result.get("success"):
+                    selected_text = result.get("text", "")
+                else:
+                    err = result.get("error", str(result)) if result else "unknown"
+                    return ToolResult(success=False, message=f"select_option JS failed: {err}")
+            except Exception as js_exc:
+                # Fallback: select by value string via element.select_option(values=[...])
+                try:
+                    # Get option value by iterating children via CDP
+                    await element.select_option(values=[str(option)])
+                    selected_text = str(option)
+                except Exception as fallback_exc:
+                    return ToolResult(
+                        success=False,
+                        message=f"select_option failed (JS: {js_exc}, fallback: {fallback_exc})",
+                    )
 
-            selected_text = result.get("selected", "") if result else ""
-            msg = f"Selected option at index {option}" + (f": '{selected_text}'" if selected_text else "")
+            msg = f"Selected option {option}" + (f" ('{selected_text}')" if selected_text else "")
             return ToolResult(success=True, message=msg)
         except Exception as exc:
             return ToolResult(success=False, message=f"Failed to select option: {exc}")

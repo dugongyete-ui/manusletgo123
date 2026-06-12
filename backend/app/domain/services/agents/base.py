@@ -35,8 +35,8 @@ class BaseAgent(ABC):
     system_prompt: str = ""
     format: Optional[str] = None
     max_iterations: int = 100
-    max_retries: int = 3
-    retry_interval: float = 1.0
+    max_retries: int = 6
+    retry_interval: float = 5.0
     tool_choice: Optional[str] = None
 
     _JSON_PARSE_PROMPT = PromptTemplate.from_template(

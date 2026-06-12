@@ -21,11 +21,19 @@ Dropdown / select element rules (follow in order):
    - Custom dropdown: element is a <div>, <button>, or <span> that toggles a list when clicked — use click-then-verify flow below.
 2. For NATIVE <select> elements (day/month/year pickers, country selects, etc.):
    - ALWAYS use browser_select_option(index, option_index) — never use browser_click on them.
-   - option_index is 0-based: option 0 = first real choice (skip placeholder/empty option if present — count from 0 of the full options list).
-   - After calling browser_select_option, ALWAYS call browser_view to confirm the correct value is now shown in the field.
-   - If browser_select_option fails or does not change the field, fall back to browser_console_exec:
-     `document.querySelectorAll('select')[n].value = 'VALUE'; document.querySelectorAll('select')[n].dispatchEvent(new Event('change', {bubbles:true}))`
-     Then call browser_view again to verify.
+   - option_index is 0-based counting ALL options including the placeholder:
+     * Facebook "Day" select:   option 0 = blank, option 1 = "1", option 2 = "2" … option 31 = "31".
+     * Facebook "Month" select: option 0 = blank, option 1 = "Jan", option 2 = "Feb" … option 12 = "Dec".
+     * Facebook "Year" select:  option 0 = blank, option 1 = most recent year (e.g. 2010), last option = 1905.
+       To pick birth year 1995: call browser_console_exec first to find index:
+         `Array.from(document.querySelectorAll('select')).find(s=>s.name==='reg_year' || s['aria-label']?.includes('Year'))?.options?.length`
+       Then compute: index = (most_recent_year - 1995) + 1.
+   - IMPORTANT: Each Day/Month/Year is a SEPARATE <select> with its OWN DOM index. Never reuse the same DOM index for different selects.
+   - Call browser_select_option ONCE per select — do NOT click the select first.
+   - After calling browser_select_option, ALWAYS call browser_view to confirm the correct value is now shown.
+   - If browser_select_option fails, use browser_console_exec with the element's name attribute:
+     `const s=document.querySelector('select[name="reg_day"]'); s.value='15'; s.dispatchEvent(new Event('change',{bubbles:true}));`
+     (replace reg_day/reg_month/reg_year and value as needed), then verify with browser_view.
 3. For CUSTOM dropdowns (div/button triggers):
    - Step 1: browser_click on the trigger element to open the dropdown list.
    - Step 2: ALWAYS call browser_view immediately after to confirm the list is now visible and read the new option indices.
@@ -33,6 +41,7 @@ Dropdown / select element rules (follow in order):
    - Step 4: ALWAYS call browser_view to confirm the selected value now appears in the field.
    - If the list did not open after step 1, try browser_click with coordinates instead, then repeat from step 2.
 4. NEVER assume a click succeeded — always verify with browser_view before moving to the next field.
+5. LOOP PREVENTION: If you have called browser_select_option or browser_click on the same element more than 2 times without seeing the value change in browser_view, STOP clicking and use the browser_console_exec fallback instead. Repeating the same failed action causes an infinite loop.
 """
 
 EXECUTION_PROMPT = """
