@@ -359,6 +359,34 @@ class BrowserUseBrowser:
                     )
                 page = await self._get_current_page()
                 element = await page.get_element(node.backend_node_id)
+
+                # Smart redirect: if clicking a native <select>, skip the click and
+                # return its options so the AI can call browser_select_by_text directly.
+                # This avoids the open-dropdown→view→click-option loop entirely.
+                try:
+                    import json as _json_click
+                    probe_js = (
+                        "() => {"
+                        "  if (this.tagName !== 'SELECT') return null;"
+                        "  return JSON.stringify(Array.from(this.options).map((o,i)=>({i,t:o.text.trim()})));"
+                        "}"
+                    )
+                    probe_raw = await element.evaluate(probe_js)
+                    if probe_raw is not None:
+                        opts = _json_click.loads(probe_raw) if isinstance(probe_raw, str) else probe_raw
+                        preview = ", ".join(f"{o['i']}:{o['t']}" for o in opts[:8])
+                        more = f" … +{len(opts)-8} more" if len(opts) > 8 else ""
+                        return ToolResult(
+                            success=False,
+                            message=(
+                                f"Element {index} is a native <select> — do NOT click it. "
+                                f"Use browser_select_by_text({index}, 'your value') to select directly. "
+                                f"Available options: [{preview}{more}]"
+                            ),
+                        )
+                except Exception:
+                    pass  # Not a select or probe failed — fall through to normal click
+
                 await element.click()
             return ToolResult(success=True)
         except Exception as exc:
@@ -642,6 +670,7 @@ class BrowserUseBrowser:
 
         Returns a list of {option_index, value, text} objects so the caller
         knows exactly which option_index to pass to select_option().
+        Returns success=False with a clear message when the element is not a native <select>.
         """
         try:
             session = await self._ensure_session()
@@ -655,17 +684,85 @@ class BrowserUseBrowser:
             element = await page.get_element(node.backend_node_id)
 
             import json as _json
-            raw = await element.evaluate(
-                "() => JSON.stringify(Array.from(this.options).map((o,i) => ({option_index:i, value:o.value, text:o.text.trim()})))"
+            js = (
+                "() => {"
+                "  if (this.tagName !== 'SELECT') {"
+                "    return JSON.stringify({is_select: false, tag: this.tagName});"
+                "  }"
+                "  const opts = Array.from(this.options).map((o,i) => ({option_index:i, value:o.value, text:o.text.trim()}));"
+                "  return JSON.stringify({is_select: true, options: opts});"
+                "}"
             )
-            options = _json.loads(raw) if isinstance(raw, str) else raw
+            raw = await element.evaluate(js)
+            result = _json.loads(raw) if isinstance(raw, str) else raw
+            if not result.get("is_select"):
+                tag = result.get("tag", "unknown")
+                return ToolResult(
+                    success=False,
+                    message=f"Element at index {index} is a <{tag}>, not a native <select>. Use click approach instead.",
+                )
+            options = result["options"]
             return ToolResult(
                 success=True,
-                message=f"Found {len(options)} options",
+                message=f"Native <select> found with {len(options)} options",
                 data={"options": options},
             )
         except Exception as exc:
-            return ToolResult(success=False, message=f"Failed to get select options: {exc}")
+            return ToolResult(success=False, message=f"Element at index {index} is not a native <select> (use click approach): {exc}")
+
+    async def select_by_text(self, index: int, text: str) -> ToolResult:
+        """Select a native <select> option whose visible text matches `text` (case-insensitive).
+
+        Works WITHOUT opening the dropdown first — sets the value directly via JS and fires
+        React-compatible input+change events. Returns success=False if element is not a native
+        <select> so caller knows to fall back to the click approach.
+        """
+        try:
+            session = await self._ensure_session()
+            node = await session.get_dom_element_by_index(index)
+            if node is None:
+                return ToolResult(success=False, message=f"Cannot find element with index {index}")
+            page = await self._get_current_page()
+            element = await page.get_element(node.backend_node_id)
+
+            import json as _json
+            js = (
+                "(searchText) => {"
+                "  if (this.tagName !== 'SELECT') {"
+                "    return JSON.stringify({success:false, reason:'not_select', tag:this.tagName});"
+                "  }"
+                "  const lower = searchText.trim().toLowerCase();"
+                "  let found = null;"
+                "  for (let i = 0; i < this.options.length; i++) {"
+                "    if (this.options[i].text.trim().toLowerCase() === lower) { found = i; break; }"
+                "  }"
+                "  if (found === null) {"
+                "    const opts = Array.from(this.options).map(o => o.text.trim()).join(', ');"
+                "    return JSON.stringify({success:false, reason:'not_found', available:opts});"
+                "  }"
+                "  const opt = this.options[found];"
+                "  try {"
+                "    const setter = Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype,'value').set;"
+                "    setter.call(this, opt.value);"
+                "  } catch(e) { this.selectedIndex = found; }"
+                "  this.dispatchEvent(new Event('input',  {bubbles:true}));"
+                "  this.dispatchEvent(new Event('change', {bubbles:true}));"
+                "  return JSON.stringify({success:true, selected_text:opt.text.trim(), option_index:found});"
+                "}"
+            )
+            raw = await element.evaluate(js, text)
+            result = _json.loads(raw) if isinstance(raw, str) else raw
+            if result.get("success"):
+                sel = result.get("selected_text", text)
+                return ToolResult(success=True, message=f"Selected '{sel}' in native <select>")
+            reason = result.get("reason", "")
+            if reason == "not_select":
+                tag = result.get("tag", "unknown")
+                return ToolResult(success=False, message=f"Element {index} is <{tag}>, not a native <select>. Use click approach.")
+            available = result.get("available", "")
+            return ToolResult(success=False, message=f"Option '{text}' not found. Available: {available[:200]}")
+        except Exception as exc:
+            return ToolResult(success=False, message=f"select_by_text failed: {exc}")
 
     async def console_exec(self, javascript: str) -> ToolResult:
         """Execute arbitrary JavaScript in the current page context."""

@@ -801,6 +801,49 @@ class PlaywrightBrowser:
         except Exception as e:
             return ToolResult(success=False, message=f"Failed to get select options: {str(e)}")
 
+    async def select_by_text(self, index: int, text: str) -> ToolResult:
+        """Select a native <select> option by visible text in one call."""
+        await self._ensure_page()
+        try:
+            element = await self._get_element_by_index(index)
+            if not element:
+                return ToolResult(success=False, message=f"Cannot find element with index {index}")
+            import json as _json
+            js = (
+                "(el, searchText) => {"
+                "  if (el.tagName !== 'SELECT') {"
+                "    return JSON.stringify({success:false, reason:'not_select', tag:el.tagName});"
+                "  }"
+                "  const lower = searchText.trim().toLowerCase();"
+                "  let found = null;"
+                "  for (let i = 0; i < el.options.length; i++) {"
+                "    if (el.options[i].text.trim().toLowerCase() === lower) { found = i; break; }"
+                "  }"
+                "  if (found === null) {"
+                "    const opts = Array.from(el.options).map(o => o.text.trim()).join(', ');"
+                "    return JSON.stringify({success:false, reason:'not_found', available:opts});"
+                "  }"
+                "  const opt = el.options[found];"
+                "  try {"
+                "    const setter = Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype,'value').set;"
+                "    setter.call(el, opt.value);"
+                "  } catch(e) { el.selectedIndex = found; }"
+                "  el.dispatchEvent(new Event('input',  {bubbles:true}));"
+                "  el.dispatchEvent(new Event('change', {bubbles:true}));"
+                "  return JSON.stringify({success:true, selected_text:opt.text.trim(), option_index:found});"
+                "}"
+            )
+            raw = await self.page.evaluate(js, element, text)
+            result = _json.loads(raw) if isinstance(raw, str) else raw
+            if result.get("success"):
+                return ToolResult(success=True, message=f"Selected '{result.get('selected_text', text)}'")
+            reason = result.get("reason", "")
+            if reason == "not_select":
+                return ToolResult(success=False, message=f"Element {index} is <{result.get('tag','?')}>, not a native <select>. Use click approach.")
+            return ToolResult(success=False, message=f"Option '{text}' not found. Available: {result.get('available','')[:200]}")
+        except Exception as e:
+            return ToolResult(success=False, message=f"select_by_text failed: {e}")
+
     async def console_exec(self, javascript: str) -> ToolResult:
         """Execute JavaScript code"""
         await self._ensure_page()

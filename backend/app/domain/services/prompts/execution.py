@@ -15,8 +15,10 @@ Browser tab rules (strictly follow these):
 - Use browser_open_tab(url) when you need to open a new site WITHOUT replacing the current tab's content.
 - When in doubt about which tab index to use, call browser_list_tabs() first.
 
-For native <select> elements: call browser_get_select_options(index) to see all available options and their indices, then call browser_select_option(index, option_index). If that still doesn't change the value, use browser_console_exec to set it via JavaScript.
-For custom dropdowns: click to open, read the updated element list from browser_view, then click the target option.
+Dropdown handling:
+- Try browser_select_by_text(index, "target text") first on any dropdown element. If it succeeds, the value is set — done.
+- If it returns "not a native <select>" error → custom dropdown: browser_click to open, browser_view, then click the option.
+- If it returns "not found" → the text didn't match; check the available options in the error message and retry.
 """
 
 EXECUTION_PROMPT = """

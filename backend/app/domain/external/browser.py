@@ -97,6 +97,10 @@ class Browser(Protocol):
         """Get all options from a <select> element by DOM index"""
         ...
 
+    async def select_by_text(self, index: int, text: str) -> ToolResult:
+        """Select a native <select> option by visible text in one call"""
+        ...
+
     async def console_view(self, max_lines: Optional[int] = None) -> ToolResult:
         """View console output"""
         ...

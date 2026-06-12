@@ -179,13 +179,34 @@ class BrowserToolkit(BaseToolkit):
         return await self.browser.switch_tab(tab_index)
 
     @tool(parse_docstring=True)
-    async def browser_get_select_options(self, index: int) -> ToolResult:
-        """Get all available options from a <select> dropdown element. ALWAYS call this before browser_select_option to discover the correct option_index for your target value.
+    async def browser_select_by_text(self, index: int, text: str) -> ToolResult:
+        """Select a dropdown option by its visible text in one call — no need to open the dropdown first.
 
-        Returns a list of objects: [{option_index, value, text}] where option_index is the 0-based number to pass to browser_select_option.
+        Works directly on native <select> elements by setting the value via JavaScript and firing
+        React-compatible events. Handles Day/Month/Year birthday pickers, country selects, etc.
+
+        - If it succeeds → the value is set. Done.
+        - If it returns an error saying "not a native <select>" → the element is a custom dropdown, use browser_click to open it then click the option.
+        - If it returns "not found" → check the available options listed in the message and retry with the correct text.
 
         Args:
-            index: DOM index of the <select> element (from browser_view interactive elements list).
+            index: DOM index of the dropdown element (from browser_view interactive elements list).
+            text: The visible option text to select (e.g. "5", "June", "1992", "Indonesia").
+        """
+        return await self.browser.select_by_text(index, text)
+
+    @tool(parse_docstring=True)
+    async def browser_get_select_options(self, index: int) -> ToolResult:
+        """Probe any dropdown element to check if it is a native <select> and retrieve its options.
+
+        Call this on EVERY dropdown-looking element BEFORE deciding how to interact with it.
+        - If it returns a list of options → it IS a native <select>. Use browser_select_option(index, option_index) to pick the value — do NOT click it.
+        - If it returns an error → it is a custom dropdown. Click to open, then browser_view, then click the target option.
+
+        Returns [{option_index, value, text}] — option_index is the 0-based number to pass to browser_select_option.
+
+        Args:
+            index: DOM index of the element to probe (from browser_view interactive elements list).
         """
         return await self.browser.get_select_options(index)
 
