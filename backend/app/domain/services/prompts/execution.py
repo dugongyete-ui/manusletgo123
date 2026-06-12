@@ -21,13 +21,12 @@ Dropdown / select element rules (follow in order):
    - Custom dropdown: element is a <div>, <button>, or <span> that toggles a list when clicked — use click-then-verify flow below.
 2. For NATIVE <select> elements (day/month/year pickers, country selects, etc.):
    - ALWAYS use browser_select_option(index, option_index) — never use browser_click on them.
-   - option_index is 0-based counting ALL options including the placeholder:
-     * Facebook "Day" select:   option 0 = blank, option 1 = "1", option 2 = "2" … option 31 = "31".
-     * Facebook "Month" select: option 0 = blank, option 1 = "Jan", option 2 = "Feb" … option 12 = "Dec".
-     * Facebook "Year" select:  option 0 = blank, option 1 = most recent year (e.g. 2010), last option = 1905.
-       To pick birth year 1995: call browser_console_exec first to find index:
-         `Array.from(document.querySelectorAll('select')).find(s=>s.name==='reg_year' || s['aria-label']?.includes('Year'))?.options?.length`
-       Then compute: index = (most_recent_year - 1995) + 1.
+   - option_index is 0-based counting ALL options including any placeholder. DO NOT assume which index maps to which value — always discover it first:
+     Step A: Call browser_console_exec to list the actual options of the target select:
+       `JSON.stringify(Array.from(document.querySelectorAll('select')[N].options).map((o,i)=>i+':'+o.text))`
+       (replace N with 0/1/2 for Day/Month/Year order on the page)
+     Step B: Read the output to find which index matches your target value (e.g. "15", "Mar", "1995").
+     Step C: Call browser_select_option(dom_index, option_index) using that exact index.
    - IMPORTANT: Each Day/Month/Year is a SEPARATE <select> with its OWN DOM index. Never reuse the same DOM index for different selects.
    - Call browser_select_option ONCE per select — do NOT click the select first.
    - After calling browser_select_option, ALWAYS call browser_view to confirm the correct value is now shown.
