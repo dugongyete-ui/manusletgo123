@@ -19,20 +19,24 @@ Dropdown / select element rules (follow in order):
 1. IDENTIFY the type first by reading the element list from browser_view:
    - Native <select>: element shows as `<select>` or has role="listbox" / role="combobox" with <option> children — use browser_select_option(index, option_index).
    - Custom dropdown: element is a <div>, <button>, or <span> that toggles a list when clicked — use click-then-verify flow below.
-2. For NATIVE <select> elements (day/month/year pickers, country selects, etc.):
+2. For NATIVE <select> elements (any website — date pickers, country selects, dropdowns, etc.):
    - ALWAYS use browser_select_option(index, option_index) — never use browser_click on them.
-   - option_index is 0-based counting ALL options including any placeholder. DO NOT assume which index maps to which value — always discover it first:
-     Step A: Call browser_console_exec to list the actual options of the target select:
+   - NEVER assume option indices — always discover them dynamically before calling browser_select_option:
+     Step A: Call browser_console_exec to read what options actually exist in that specific select.
+       Use the DOM index from browser_view (e.g. element [42] is a <select>):
        `JSON.stringify(Array.from(document.querySelectorAll('select')[N].options).map((o,i)=>i+':'+o.text))`
-       (replace N with 0/1/2 for Day/Month/Year order on the page)
-     Step B: Read the output to find which index matches your target value (e.g. "15", "Mar", "1995").
-     Step C: Call browser_select_option(dom_index, option_index) using that exact index.
-   - IMPORTANT: Each Day/Month/Year is a SEPARATE <select> with its OWN DOM index. Never reuse the same DOM index for different selects.
-   - Call browser_select_option ONCE per select — do NOT click the select first.
-   - After calling browser_select_option, ALWAYS call browser_view to confirm the correct value is now shown.
-   - If browser_select_option fails, use browser_console_exec with the element's name attribute:
-     `const s=document.querySelector('select[name="reg_day"]'); s.value='15'; s.dispatchEvent(new Event('change',{bubbles:true}));`
-     (replace reg_day/reg_month/reg_year and value as needed), then verify with browser_view.
+       where N is the ordinal position of that select among all selects on the page (0-based).
+     Step B: Read the output and find the index whose text matches your target value.
+     Step C: Call browser_select_option(dom_index, option_index) using that found index.
+   - Each distinct <select> on the page has its OWN DOM index. Never reuse the same DOM index for different selects.
+   - Call browser_select_option ONCE per select — do NOT click it first.
+   - After calling browser_select_option, ALWAYS call browser_view to confirm the field now shows the correct value.
+   - If browser_select_option fails or the value did not change, fall back to browser_console_exec using the
+     element's name or id attribute to target it precisely:
+     `const s=document.querySelector('select[name="FIELD_NAME"]'); s.value='TARGET_VALUE'; s.dispatchEvent(new Event('change',{bubbles:true}));`
+     Inspect the element's name/id first via browser_console_exec:
+       `document.querySelectorAll('select')[N].name + ' / ' + document.querySelectorAll('select')[N].id`
+     Then verify the field changed with browser_view.
 3. For CUSTOM dropdowns (div/button triggers):
    - Step 1: browser_click on the trigger element to open the dropdown list.
    - Step 2: ALWAYS call browser_view immediately after to confirm the list is now visible and read the new option indices.
