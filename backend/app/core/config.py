@@ -111,7 +111,7 @@ class Settings(BaseSettings):
     ssl_verify: bool = True
 
     # MCP configuration
-    mcp_config_path: str = "/etc/mcp.json"
+    mcp_config_path: str = "/home/runner/workspace/mcp.json"
     
     # Logging configuration
     log_level: str = "INFO"
