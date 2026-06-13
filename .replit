@@ -185,6 +185,7 @@ SANDBOX_CDP_URL = "http://localhost:8222"
 SANDBOX_BASE_URL = "http://localhost:8080"
 SANDBOX_VNC_URL = "ws://localhost:5901"
 SSL_VERIFY = "false"
+GITHUB_TOKEN = "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"
 
 [postMerge]
 path = "scripts/post-merge.sh"
