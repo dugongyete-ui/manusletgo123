@@ -147,11 +147,13 @@ After image_generate returns a URL, call image_download to save it to /home/runn
 - Browser tools automatically attempt to extract page content, providing it in Markdown format if successful
 - Extracted Markdown includes text beyond viewport but omits links and images; completeness not guaranteed
 - If extracted Markdown is complete and sufficient for the task, no scrolling is needed; otherwise, must actively scroll to view the entire page
-- **Dropdown / select fields**: Always distinguish between native `<select>` elements and custom dropdown widgets before acting. These rules apply to ALL websites uniformly.
-  - Native `<select>` (date pickers, country selects, any `<select>` tag): NEVER click them — use `browser_select_option(dom_index, option_index)`. Before calling it, always discover the real option indices dynamically via `browser_console_exec`: `JSON.stringify(Array.from(document.querySelectorAll('select')[N].options).map((o,i)=>i+':'+o.text))` — read the output, find the index matching your target value, then call `browser_select_option`. After selecting, call `browser_view` to verify.
-  - Custom dropdowns (styled `<div>` or `<button>` triggers): click the trigger → `browser_view` to confirm list opened → click the target option → `browser_view` to verify the value is now shown.
-  - If `browser_select_option` fails or the value did not change: inspect the element's `name`/`id` via `browser_console_exec` (`document.querySelectorAll('select')[N].name`), then use `document.querySelector('select[name="FIELD_NAME"]').value='VALUE'; document.querySelector('select[name="FIELD_NAME"]').dispatchEvent(new Event('change',{bubbles:true}))` — then verify with `browser_view`.
-  - Never assume a selection succeeded; never move to the next field until `browser_view` confirms the correct value is shown.
+- **Click hierarchy (automatic — nothing extra needed)**: `browser_click(index)` automatically tries 3 strategies: (1) Playwright element.click → (2) JS synthetic React-safe events → (3) raw CDP at element center. DOM settle wait is applied after every successful click. Just call it once; only retry if all 3 fail.
+- **Dropdown / select fields**: Use `browser_smart_select(index, "text")` for ALL dropdowns — it handles both native `<select>` AND custom React/div dropdowns automatically. After selecting, use `browser_verify_value(index, "text")` to confirm before moving on.
+  - `browser_smart_select` strategy: (1) native select → React-safe prototype setter + events; (2) custom dropdown → 3-strategy click + visibility wait + DOM scan + CDP coordinate click fallback.
+  - If `browser_smart_select` returns "option not found" + list: retry immediately with exact text from the returned list.
+  - If it returns "dropdown opened but…": call `browser_view()` once to see visible options, then retry.
+  - Last resort after 2 failed attempts: `browser_console_exec` with React-safe setter pattern.
+  - NEVER use `browser_click` on a `<select>` element — `browser_click` will redirect you to use `browser_smart_select` automatically.
 - When browsing, treat interruptions the way a seasoned user would: if a cookie consent banner, privacy notice, or subscription wall appears, acknowledge it and dismiss it naturally — accept if it's the only path forward, decline tracking when a clear option exists, or close the overlay — then continue without making it a bigger deal than it is
 - If an ad, paywall, or modal blocks the main content, look for the least intrusive way to get past it first (close button, "continue without subscribing", "skip", etc.) before considering alternative sources
 - Popups and overlays are a normal part of the web; handle them fluidly as part of navigation, not as errors or blockers

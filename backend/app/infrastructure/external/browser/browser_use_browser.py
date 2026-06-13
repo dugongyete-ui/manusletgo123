@@ -242,6 +242,108 @@ class BrowserUseBrowser:
             session_id=str(cdp_sess.session_id),
         )
 
+    async def _get_element_center(self, element) -> Optional[tuple]:
+        """Get the center (x, y) of an element via JS getBoundingClientRect.
+
+        Returns (cx, cy) or None if the element is not in the viewport.
+        Used as a fallback for CDP-direct click when Playwright click fails.
+        """
+        try:
+            raw = await element.evaluate("""() => {
+                const r = this.getBoundingClientRect();
+                if (r.width === 0 || r.height === 0) return null;
+                return JSON.stringify({x: r.left + r.width/2, y: r.top + r.height/2});
+            }""")
+            if raw is None:
+                return None
+            import json as _json
+            coords = _json.loads(raw) if isinstance(raw, str) else raw
+            return (coords["x"], coords["y"])
+        except Exception:
+            return None
+
+    async def _cdp_click_at(self, x: float, y: float) -> None:
+        """Fire a full mousemove → mousedown → mouseup CDP sequence at (x, y)."""
+        await self._dispatch_mouse_event("mouseMoved", x, y)
+        await asyncio.sleep(0.04)
+        await self._dispatch_mouse_event("mousePressed", x, y, "left", 1)
+        await asyncio.sleep(0.06)
+        await self._dispatch_mouse_event("mouseReleased", x, y, "left", 1)
+
+    async def _click_with_fallback(self, element, index: int) -> tuple[bool, str]:
+        """Manus-style 3-strategy click chain.
+
+        Strategy 1 — Playwright element.click() (standard, handles scroll-into-view)
+        Strategy 2 — JS synthetic click + React-safe mouse events dispatched via evaluate()
+        Strategy 3 — raw CDP Input.dispatchMouseEvent at element's bounding-box center
+
+        Returns (success, strategy_used_or_error_message).
+        """
+        # ── Strategy 1: Playwright click ──────────────────────────────────────
+        try:
+            await element.click(timeout=4000)
+            return True, "playwright"
+        except Exception as e1:
+            logger.debug("click S1 (playwright) failed for index %d: %s", index, e1)
+
+        # ── Strategy 2: JS synthetic click with React-safe events ─────────────
+        try:
+            result = await element.evaluate("""() => {
+                try {
+                    // Scroll into view first
+                    this.scrollIntoView({block: 'center', inline: 'nearest'});
+                    // Dispatch React-compatible mouse events
+                    const opts = {bubbles: true, cancelable: true, view: window};
+                    this.dispatchEvent(new MouseEvent('mouseover', opts));
+                    this.dispatchEvent(new MouseEvent('mouseenter', opts));
+                    this.dispatchEvent(new MouseEvent('mousedown', opts));
+                    this.dispatchEvent(new MouseEvent('mouseup',   opts));
+                    this.dispatchEvent(new MouseEvent('click',     opts));
+                    // Also trigger focus for inputs/buttons
+                    if (typeof this.focus === 'function') this.focus();
+                    return 'ok';
+                } catch(e) { return 'err:' + e.message; }
+            }""")
+            if result == "ok":
+                await asyncio.sleep(0.15)
+                return True, "js-synthetic"
+            logger.debug("click S2 (js-synthetic) returned: %s", result)
+        except Exception as e2:
+            logger.debug("click S2 (js-synthetic) failed for index %d: %s", index, e2)
+
+        # ── Strategy 3: raw CDP at element center coordinates ─────────────────
+        try:
+            coords = await self._get_element_center(element)
+            if coords:
+                cx, cy = coords
+                await self._cdp_click_at(cx, cy)
+                await asyncio.sleep(0.15)
+                return True, f"cdp-coords({cx:.0f},{cy:.0f})"
+        except Exception as e3:
+            logger.debug("click S3 (cdp-coords) failed for index %d: %s", index, e3)
+
+        return False, "all 3 click strategies failed (playwright, js-synthetic, cdp-coords)"
+
+    async def _wait_for_dom_settle(self, timeout: float = 0.6) -> None:
+        """Short wait for React/Vue state updates and lazy-loaded DOM changes to settle.
+
+        Mimics Manus.im behaviour of waiting after interactions before continuing.
+        Uses a MutationObserver race: resolves as soon as DOM stops mutating for
+        150 ms, or after `timeout` seconds whichever comes first.
+        """
+        try:
+            page = await self._get_current_page()
+            await page.evaluate(f"""() => new Promise(resolve => {{
+                let timer = null;
+                const reset = () => {{ clearTimeout(timer); timer = setTimeout(resolve, 150); }};
+                const obs = new MutationObserver(reset);
+                obs.observe(document.body, {{childList:true, subtree:true, attributes:true}});
+                reset();  // start immediately
+                setTimeout(() => {{ obs.disconnect(); resolve(); }}, {int(timeout*1000)});
+            }})""")
+        except Exception:
+            await asyncio.sleep(0.3)
+
     # ------------------------------------------------------------------
     # Browser Protocol implementation
     # ------------------------------------------------------------------
@@ -336,19 +438,23 @@ class BrowserUseBrowser:
         coordinate_x: Optional[float] = None,
         coordinate_y: Optional[float] = None,
     ) -> ToolResult:
-        """Click an element by DOM index or by screen coordinates."""
+        """Click an element by DOM index or by screen coordinates.
+
+        For index-based clicks uses Manus-style 3-strategy fallback chain:
+          1. Playwright element.click()  — standard, handles scroll-into-view
+          2. JS synthetic click          — React/Vue-safe mouse events via evaluate()
+          3. Raw CDP coordinates         — dispatchMouseEvent at bounding-box center
+
+        For coordinate clicks uses raw CDP directly (same as before).
+        DOM-settle wait is applied after every successful click so React state
+        and lazy-loaded DOM changes are stable before the next action.
+        """
         try:
             if coordinate_x is not None and coordinate_y is not None:
-                # Move mouse to target before pressing to trigger hover/focus events
-                await self._dispatch_mouse_event("mouseMoved", coordinate_x, coordinate_y)
-                await asyncio.sleep(0.05)
-                await self._dispatch_mouse_event(
-                    "mousePressed", coordinate_x, coordinate_y, "left", 1
-                )
-                await asyncio.sleep(0.08)
-                await self._dispatch_mouse_event(
-                    "mouseReleased", coordinate_x, coordinate_y, "left", 1
-                )
+                await self._cdp_click_at(coordinate_x, coordinate_y)
+                await self._wait_for_dom_settle()
+                return ToolResult(success=True)
+
             elif index is not None:
                 session = await self._ensure_session()
                 node = await session.get_dom_element_by_index(index)
@@ -360,9 +466,9 @@ class BrowserUseBrowser:
                 page = await self._get_current_page()
                 element = await page.get_element(node.backend_node_id)
 
-                # Smart redirect: if clicking a native <select>, skip the click and
-                # return its options so the AI can call browser_select_by_text directly.
-                # This avoids the open-dropdown→view→click-option loop entirely.
+                # Smart redirect: if clicking a native <select>, block the click and
+                # return options so the AI uses browser_select_by_text directly.
+                # This avoids the open-dropdown → view → click-option loop entirely.
                 try:
                     import json as _json_click
                     probe_js = (
@@ -385,9 +491,18 @@ class BrowserUseBrowser:
                             ),
                         )
                 except Exception:
-                    pass  # Not a select or probe failed — fall through to normal click
+                    pass  # Not a select or probe failed — fall through to click chain
 
-                await element.click()
+                # ── Manus-style 3-strategy fallback chain ────────────────────
+                ok, strategy = await self._click_with_fallback(element, index)
+                if ok:
+                    await self._wait_for_dom_settle()
+                    return ToolResult(
+                        success=True,
+                        message=f"Clicked element {index} via [{strategy}]",
+                    )
+                return ToolResult(success=False, message=f"Click failed for element {index}: {strategy}")
+
             return ToolResult(success=True)
         except Exception as exc:
             return ToolResult(success=False, message=f"Failed to click element: {exc}")
@@ -400,18 +515,19 @@ class BrowserUseBrowser:
         coordinate_x: Optional[float] = None,
         coordinate_y: Optional[float] = None,
     ) -> ToolResult:
-        """Type text into an element identified by DOM index or screen coordinates."""
+        """Type text into an element identified by DOM index or screen coordinates.
+
+        After filling, dispatches React-safe input+change events so the framework's
+        state management detects the change — same pattern used by Manus.im.
+        DOM-settle wait is applied so lazy-loaded suggestions/validation can render.
+        """
         try:
             page = await self._get_current_page()
 
             if coordinate_x is not None and coordinate_y is not None:
-                # Click first to focus, then insert text via CDP
-                await self._dispatch_mouse_event(
-                    "mousePressed", coordinate_x, coordinate_y, "left", 1
-                )
-                await self._dispatch_mouse_event(
-                    "mouseReleased", coordinate_x, coordinate_y, "left", 1
-                )
+                # CDP click-to-focus then insertText
+                await self._cdp_click_at(coordinate_x, coordinate_y)
+                await asyncio.sleep(0.05)
                 cdp_sess = await self._get_cdp_session()
                 await cdp_sess.cdp_client.send.Input.insertText(
                     params={"text": text},
@@ -427,10 +543,19 @@ class BrowserUseBrowser:
                     )
                 element = await page.get_element(node.backend_node_id)
                 await element.fill(text)
+                # Fire React-safe events so framework state picks up the value
+                try:
+                    await element.evaluate("""() => {
+                        this.dispatchEvent(new Event('input',  {bubbles:true}));
+                        this.dispatchEvent(new Event('change', {bubbles:true}));
+                    }""")
+                except Exception:
+                    pass
 
             if press_enter:
                 await page.press("Enter")
 
+            await self._wait_for_dom_settle()
             return ToolResult(success=True)
         except Exception as exc:
             return ToolResult(success=False, message=f"Failed to input text: {exc}")
@@ -632,6 +757,7 @@ class BrowserUseBrowser:
                     )
 
             msg = f"Selected option {option}" + (f" ('{selected_text}')" if selected_text else "")
+            await self._wait_for_dom_settle()
             return ToolResult(success=True, message=msg)
         except Exception as exc:
             return ToolResult(success=False, message=f"Failed to select option: {exc}")
@@ -775,9 +901,15 @@ class BrowserUseBrowser:
     async def smart_select(self, index: int, text: str) -> ToolResult:
         """Adaptive dropdown selector — 3-strategy chain (Manus.im style).
 
-        Strategy 1 (native <select>): React-safe text match + synthetic events.
-        Strategy 2 (custom dropdown):  click trigger → scan visible options → click option.
-        Strategy 3 (last resort):      partial text match across all visible list items.
+        Strategy 1 (native <select>): React-safe text match + prototype setter + synthetic events.
+        Strategy 2 (custom dropdown):  click trigger → verify list visible → scan DOM → click option.
+        Strategy 3 (text mismatch):    return available options list so agent retries with correct text.
+
+        Key Manus.im behaviours implemented here:
+        - Visibility check: after opening custom dropdown we wait and CONFIRM the list appeared
+          before scanning for options (avoids clicking stale/hidden nodes).
+        - DOM-settle wait after every successful pick so React/Vue state settles.
+        - Coordinate-based CDP fallback for option clicks when JS .click() is intercepted.
 
         Returns success + which strategy worked so the agent can log/debug easily.
         No looping needed — one call handles everything.
@@ -787,6 +919,7 @@ class BrowserUseBrowser:
         # ── Strategy 1: native <select> via React-safe JS ──────────────────────
         s1 = await self.select_by_text(index, text)
         if s1.success:
+            await self._wait_for_dom_settle()
             verified = await self._verify_element_value(index, text)
             return ToolResult(
                 success=True,
@@ -801,8 +934,9 @@ class BrowserUseBrowser:
             or "use click" in reason.lower()
         )
 
-        # ── Strategy 2: custom dropdown (click → scan DOM → click option) ──────
+        # ── Strategy 2: custom dropdown (click → visibility check → scan DOM → click option) ──
         if is_custom:
+            # Open the dropdown using the full 3-strategy click chain
             click_r = await self.click(index=index)
             if not click_r.success:
                 return ToolResult(
@@ -812,9 +946,34 @@ class BrowserUseBrowser:
                         f"{click_r.message}"
                     ),
                 )
-            await asyncio.sleep(0.35)
 
+            # ── Visibility check (Manus.im key step) ──────────────────────────
+            # Wait up to 800 ms for at least one option-like element to become visible.
+            # This prevents scanning the DOM before the dropdown animation completes.
             page = await self._get_current_page()
+            OPTION_SELECTORS = (
+                '[role="option"],[role="listitem"],[role="menuitem"],'
+                '[aria-selected],[data-value],[data-option],'
+                'li,ul>li,ol>li,.option,.dropdown-item'
+            )
+            visible_count = 0
+            for _ in range(8):  # 8 × 100 ms = 800 ms max
+                await asyncio.sleep(0.1)
+                try:
+                    visible_count = await page.evaluate(f"""() => {{
+                        const nodes = document.querySelectorAll('{OPTION_SELECTORS}');
+                        let n = 0;
+                        for (const el of nodes) {{
+                            const s = window.getComputedStyle(el);
+                            if (s.display !== 'none' && s.visibility !== 'hidden' && parseFloat(s.opacity) >= 0.1) n++;
+                        }}
+                        return n;
+                    }}""")
+                    if visible_count > 0:
+                        break
+                except Exception:
+                    break
+
             js_find_click = """(searchText) => {
                 const lower = searchText.trim().toLowerCase();
                 const SELECTORS = [
@@ -834,8 +993,9 @@ class BrowserUseBrowser:
                         if (s.display === 'none' || s.visibility === 'hidden' || parseFloat(s.opacity) < 0.1) continue;
                         const t = (n.innerText || n.textContent || '').trim();
                         if (t.toLowerCase() === lower) {
+                            const r = n.getBoundingClientRect();
                             n.click();
-                            return JSON.stringify({success:true, clicked:t, match:'exact'});
+                            return JSON.stringify({success:true, clicked:t, match:'exact', cx: r.left+r.width/2, cy: r.top+r.height/2});
                         }
                     }
                 }
@@ -853,8 +1013,9 @@ class BrowserUseBrowser:
                         const t = (n.innerText || n.textContent || '').trim();
                         if (!t) continue;
                         if (t.toLowerCase().includes(lower)) {
+                            const r = n.getBoundingClientRect();
                             n.click();
-                            return JSON.stringify({success:true, clicked:t, match:'partial'});
+                            return JSON.stringify({success:true, clicked:t, match:'partial', cx: r.left+r.width/2, cy: r.top+r.height/2});
                         }
                         if (visible.length < 20) visible.push(t.substring(0, 40));
                     }
@@ -869,7 +1030,15 @@ class BrowserUseBrowser:
                     clicked = res.get("clicked", text)
                     match_type = res.get("match", "")
                     note = " (partial match)" if match_type == "partial" else ""
-                    await asyncio.sleep(0.2)
+                    # CDP coordinate fallback: if JS .click() was intercepted, fire raw CDP event
+                    cx = res.get("cx")
+                    cy = res.get("cy")
+                    if cx is not None and cy is not None:
+                        try:
+                            await self._cdp_click_at(cx, cy)
+                        except Exception:
+                            pass
+                    await self._wait_for_dom_settle()
                     return ToolResult(
                         success=True,
                         message=f"[custom-dropdown] Clicked option '{clicked}'{note}",

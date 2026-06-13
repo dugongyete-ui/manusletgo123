@@ -16,6 +16,22 @@ Browser tab rules (strictly follow these):
 - When in doubt about which tab index to use, call browser_list_tabs() first.
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+CLICK HIERARCHY  (3-strategy automatic fallback — nothing extra needed from you)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+browser_click(index) automatically tries three strategies in order:
+  1. Playwright element.click()           — scrolls into view, standard path
+  2. JS synthetic click + React events   — React/Vue-safe mousedown/mouseup/click dispatch
+  3. Raw CDP at element center coords    — bypasses all overlays and interceptors
+
+You do NOT need to handle these yourself. Just call browser_click(index) once.
+- ✅ success → element was clicked, DOM already settled, continue
+- ❌ failure → "all 3 strategies failed": the element may be off-screen or hidden.
+  In that case: scroll the page first, call browser_view() to get fresh indices, then retry.
+
+browser_input(index, text) also fires React-safe input+change events automatically after fill.
+DOM settle wait is applied after every click/input/select — React lazy-loading is accounted for.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 DROPDOWN / SELECT FIELD RULES  (violations cause 20-step infinite loops)
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
