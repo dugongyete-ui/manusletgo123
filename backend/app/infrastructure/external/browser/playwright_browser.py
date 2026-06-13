@@ -453,6 +453,32 @@ class PlaywrightBrowser:
         await self.cleanup()
         return await self.navigate(url)
 
+    async def go_back(self) -> ToolResult:
+        """Navigate back in the browser history."""
+        try:
+            await self._ensure_page()
+            await self.page.go_back()
+            return ToolResult(
+                success=True,
+                message="Navigated back",
+                data={"interactive_elements": await self._extract_interactive_elements()},
+            )
+        except Exception as exc:
+            return ToolResult(success=False, message=f"Failed to go back: {exc}")
+
+    async def go_forward(self) -> ToolResult:
+        """Navigate forward in the browser history."""
+        try:
+            await self._ensure_page()
+            await self.page.go_forward()
+            return ToolResult(
+                success=True,
+                message="Navigated forward",
+                data={"interactive_elements": await self._extract_interactive_elements()},
+            )
+        except Exception as exc:
+            return ToolResult(success=False, message=f"Failed to go forward: {exc}")
+
     
     async def _get_element_by_index(self, index: int) -> Optional[Any]:
         """Get element by index using data-dzeck-id selector

@@ -119,6 +119,18 @@ class BrowserToolkit(BaseToolkit):
         return await self.browser.select_option(index, option)
     
     @tool(parse_docstring=True)
+    async def browser_back(self) -> ToolResult:
+        """Navigate back to the previous page in browser history. Use when you need to return to the page visited before the current one (equivalent to clicking the browser Back button).
+        """
+        return await self.browser.go_back()
+
+    @tool(parse_docstring=True)
+    async def browser_forward(self) -> ToolResult:
+        """Navigate forward to the next page in browser history. Use after browser_back when you want to return to the page you came from.
+        """
+        return await self.browser.go_forward()
+
+    @tool(parse_docstring=True)
     async def browser_scroll_up(
         self,
         to_top: Optional[bool] = None

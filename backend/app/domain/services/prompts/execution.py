@@ -15,6 +15,11 @@ Browser tab rules (strictly follow these):
 - Use browser_open_tab(url) when you need to open a new site WITHOUT replacing the current tab's content.
 - When in doubt about which tab index to use, call browser_list_tabs() first.
 
+Browser history navigation:
+- browser_back()    → go to the previous page (like clicking ← Back button). Use when you navigated away and need to return.
+- browser_forward() → go to the next page (like clicking → Forward button). Use after browser_back() to return forward.
+- Prefer browser_back() over browser_navigate() when returning to a page already in history — it's faster and preserves page state.
+
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 CLICK HIERARCHY  (3-strategy automatic fallback — nothing extra needed from you)
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━

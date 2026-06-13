@@ -56,6 +56,14 @@ class Browser(Protocol):
         """Select dropdown option"""
         ...
     
+    async def go_back(self) -> ToolResult:
+        """Navigate back in browser history"""
+        ...
+
+    async def go_forward(self) -> ToolResult:
+        """Navigate forward in browser history"""
+        ...
+
     async def scroll_up(
         self,
         to_top: Optional[bool] = None

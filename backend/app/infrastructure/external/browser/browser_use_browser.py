@@ -948,6 +948,28 @@ class BrowserUseBrowser:
         except Exception as exc:
             return ToolResult(success=False, message=f"Failed to select option: {exc}")
 
+    async def go_back(self) -> ToolResult:
+        """Navigate back in the browser history."""
+        try:
+            page = await self._get_current_page()
+            await page.go_back()
+            await self._wait_for_dom_settle()
+            logger.info("NAVIGATE ← back")
+            return ToolResult(success=True, message="Navigated back")
+        except Exception as exc:
+            return ToolResult(success=False, message=f"Failed to go back: {exc}")
+
+    async def go_forward(self) -> ToolResult:
+        """Navigate forward in the browser history."""
+        try:
+            page = await self._get_current_page()
+            await page.go_forward()
+            await self._wait_for_dom_settle()
+            logger.info("NAVIGATE → forward")
+            return ToolResult(success=True, message="Navigated forward")
+        except Exception as exc:
+            return ToolResult(success=False, message=f"Failed to go forward: {exc}")
+
     async def scroll_up(self, to_top: Optional[bool] = None) -> ToolResult:
         """Scroll the page upward (or to the very top when to_top is True)."""
         try:
