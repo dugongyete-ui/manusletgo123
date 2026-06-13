@@ -211,6 +211,42 @@ class BrowserToolkit(BaseToolkit):
         return await self.browser.get_select_options(index)
 
     @tool(parse_docstring=True)
+    async def browser_smart_select(self, index: int, text: str) -> ToolResult:
+        """Select a dropdown option by text — works on BOTH native <select> AND custom React/div dropdowns.
+
+        This is the PRIMARY tool for ALL dropdown interactions. Use this instead of
+        browser_click + browser_view loops. One call handles everything automatically:
+        - Native <select>: sets value via React-safe synthetic events (no click needed)
+        - Custom dropdown (div/ul/role="option"): clicks trigger → scans visible options → clicks match
+
+        Returns success + which strategy was used. If option not found, returns visible options list
+        so you can immediately retry with the correct text.
+
+        Args:
+            index: DOM index of the dropdown element (from browser_view interactive elements list).
+            text: The visible option text to select (e.g. "15", "June", "1992", "Male", "Indonesia").
+        """
+        return await self.browser.smart_select(index, text)
+
+    @tool(parse_docstring=True)
+    async def browser_verify_value(self, index: int, expected_text: str) -> ToolResult:
+        """Verify that an interactive element has the expected value after setting it.
+
+        Call this after browser_smart_select or browser_input to confirm the value was
+        actually accepted by the page (especially important for React-controlled forms).
+
+        Works for: native <select> (selected text), <input>/<textarea> (value),
+        custom elements (innerText / aria-label / data-value).
+
+        Returns success=True if current value matches expected_text (case-insensitive).
+
+        Args:
+            index: DOM index of the element to check (from browser_view interactive elements list).
+            expected_text: The value you expect the element to have (e.g. "June", "15", "1992").
+        """
+        return await self.browser.verify_value(index, expected_text)
+
+    @tool(parse_docstring=True)
     async def browser_console_view(
         self,
         max_lines: Optional[int] = None

@@ -844,6 +844,168 @@ class PlaywrightBrowser:
         except Exception as e:
             return ToolResult(success=False, message=f"select_by_text failed: {e}")
 
+    async def smart_select(self, index: int, text: str) -> ToolResult:
+        """Adaptive dropdown selector — 3-strategy chain (Manus.im style).
+
+        Strategy 1 (native <select>): React-safe text match + synthetic events.
+        Strategy 2 (custom dropdown):  click trigger → scan visible options → click option.
+        Strategy 3 (last resort):      partial text match across all visible list items.
+        """
+        import json as _json
+
+        # Strategy 1: native <select>
+        s1 = await self.select_by_text(index, text)
+        if s1.success:
+            verified = (await self.verify_value(index, text)).success
+            return ToolResult(
+                success=True,
+                message=f"[native-select] Selected '{text}'. Verified={verified}",
+                data={"strategy": "native_select", "verified": verified},
+            )
+
+        reason = s1.message or ""
+        is_custom = (
+            "not a native" in reason.lower()
+            or "not_select" in reason.lower()
+            or "use click" in reason.lower()
+        )
+
+        # Strategy 2: custom dropdown
+        if is_custom:
+            await self._ensure_page()
+            element = await self._get_element_by_index(index)
+            if element:
+                try:
+                    await element.click(timeout=3000)
+                except Exception:
+                    pass
+            await asyncio.sleep(0.35)
+
+            js_find_click = """(searchText) => {
+                const lower = searchText.trim().toLowerCase();
+                const SELECTORS = [
+                    '[role="option"]', '[role="listitem"]', '[role="menuitem"]',
+                    '[aria-selected]', '[data-value]', '[data-option]',
+                    'li', 'ul > li', 'ol > li', '.option', '.dropdown-item'
+                ];
+                const seen = new Set();
+                for (const sel of SELECTORS) {
+                    let nodes;
+                    try { nodes = Array.from(document.querySelectorAll(sel)); } catch(e) { continue; }
+                    for (const n of nodes) {
+                        if (seen.has(n)) continue;
+                        seen.add(n);
+                        const s = window.getComputedStyle(n);
+                        if (s.display === 'none' || s.visibility === 'hidden') continue;
+                        const t = (n.innerText || n.textContent || '').trim();
+                        if (t.toLowerCase() === lower) {
+                            n.click();
+                            return JSON.stringify({success:true, clicked:t, match:'exact'});
+                        }
+                    }
+                }
+                const seen2 = new Set();
+                const visible = [];
+                for (const sel of SELECTORS) {
+                    let nodes;
+                    try { nodes = Array.from(document.querySelectorAll(sel)); } catch(e) { continue; }
+                    for (const n of nodes) {
+                        if (seen2.has(n)) continue;
+                        seen2.add(n);
+                        const s = window.getComputedStyle(n);
+                        if (s.display === 'none' || s.visibility === 'hidden') continue;
+                        const t = (n.innerText || n.textContent || '').trim();
+                        if (!t) continue;
+                        if (t.toLowerCase().includes(lower)) {
+                            n.click();
+                            return JSON.stringify({success:true, clicked:t, match:'partial'});
+                        }
+                        if (visible.length < 20) visible.push(t.substring(0, 40));
+                    }
+                }
+                return JSON.stringify({success:false, visible_options:[...new Set(visible)]});
+            }"""
+
+            try:
+                raw = await self.page.evaluate(js_find_click, text)
+                res = _json.loads(raw) if isinstance(raw, str) else raw
+                if res.get("success"):
+                    clicked = res.get("clicked", text)
+                    note = " (partial match)" if res.get("match") == "partial" else ""
+                    await asyncio.sleep(0.2)
+                    return ToolResult(
+                        success=True,
+                        message=f"[custom-dropdown] Clicked option '{clicked}'{note}",
+                        data={"strategy": "custom_dropdown", "clicked": clicked},
+                    )
+                visible = res.get("visible_options", [])
+                visible_str = (
+                    ", ".join(f'"{v}"' for v in visible[:12])
+                    if visible
+                    else "none visible — dropdown may not have opened"
+                )
+                return ToolResult(
+                    success=False,
+                    message=(
+                        f"smart_select: dropdown opened but option '{text}' not found. "
+                        f"Visible options: [{visible_str}]. "
+                        f"Call browser_view() to inspect, then retry with exact text."
+                    ),
+                )
+            except Exception as exc:
+                return ToolResult(success=False, message=f"smart_select custom strategy failed: {exc}")
+
+        return ToolResult(success=False, message=f"smart_select: {reason}")
+
+    async def verify_value(self, index: int, expected_text: str) -> ToolResult:
+        """Verify that an interactive element has the expected value after interaction.
+
+        Works for native <select> (selected text), <input>/<textarea> (value),
+        and custom elements (innerText / aria-label / data-value).
+        """
+        await self._ensure_page()
+        try:
+            element = await self._get_element_by_index(index)
+            if not element:
+                return ToolResult(success=False, message=f"Cannot find element with index {index}")
+            import json as _json
+            js = """(el, expected) => {
+                const lower = expected.trim().toLowerCase();
+                const tag = el.tagName;
+                let actual = '';
+                if (tag === 'SELECT') {
+                    const sel = el.selectedOptions[0];
+                    actual = sel ? sel.text.trim() : '';
+                } else if (tag === 'INPUT' || tag === 'TEXTAREA') {
+                    actual = (el.value || '').trim();
+                } else {
+                    actual = (
+                        el.innerText ||
+                        el.getAttribute('aria-label') ||
+                        el.getAttribute('data-value') ||
+                        el.textContent || ''
+                    ).trim();
+                }
+                const aLower = actual.toLowerCase();
+                const match = aLower === lower || aLower.includes(lower) || lower.includes(aLower);
+                return JSON.stringify({match, actual, expected, tag});
+            }"""
+            raw = await self.page.evaluate(js, element, expected_text)
+            res = _json.loads(raw) if isinstance(raw, str) else raw
+            match = res.get("match", False)
+            actual = res.get("actual", "")
+            return ToolResult(
+                success=match,
+                message=(
+                    f"✅ Verified '{actual}' matches '{expected_text}'"
+                    if match
+                    else f"❌ Mismatch: expected='{expected_text}', actual='{actual}'"
+                ),
+                data=res,
+            )
+        except Exception as exc:
+            return ToolResult(success=False, message=f"verify_value failed: {exc}")
+
     async def console_exec(self, javascript: str) -> ToolResult:
         """Execute JavaScript code"""
         await self._ensure_page()

@@ -15,10 +15,36 @@ Browser tab rules (strictly follow these):
 - Use browser_open_tab(url) when you need to open a new site WITHOUT replacing the current tab's content.
 - When in doubt about which tab index to use, call browser_list_tabs() first.
 
-Dropdown handling:
-- Try browser_select_by_text(index, "target text") first on any dropdown element. If it succeeds, the value is set — done.
-- If it returns "not a native <select>" error → custom dropdown: browser_click to open, browser_view, then click the option.
-- If it returns "not found" → the text didn't match; check the available options in the error message and retry.
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+DROPDOWN / SELECT FIELD RULES  (violations cause 20-step infinite loops)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+STEP 1 — Use browser_smart_select(index, "text") for EVERY dropdown/select.
+  • One call handles BOTH native <select> AND custom React/div dropdowns.
+  • It auto-detects type, fires React-safe events, and returns which strategy worked.
+  • Do NOT use browser_click + browser_view loops to open/close dropdowns manually.
+
+STEP 2 — Read the result:
+  ✅ success                    → value set, move to next field
+  ❌ "option not found" + list  → retry immediately with exact text from the listed options
+  ❌ "dropdown opened but…"     → call browser_view() ONCE, then retry with visible option text
+  ❌ any other failure          → use browser_console_exec as last resort (see below)
+
+STEP 3 — After filling ALL form fields, call browser_verify_value(index, "expected") on
+  critical fields (e.g. birthday Day/Month/Year, Gender) to confirm values are set
+  before clicking Submit.
+
+HARD LIMITS (never exceed these):
+  ✗ NEVER call browser_click on a <select> or dropdown-like element — use browser_smart_select
+  ✗ NEVER repeat the same browser_click on the same element more than 2 times
+  ✗ NEVER loop browser_click → browser_view more than 3 times for the same dropdown
+  ✗ NEVER use browser_console_exec just to set a value when browser_smart_select is available
+
+Last-resort browser_console_exec pattern (only after 2 failed browser_smart_select attempts):
+  const sel = document.querySelector('select[name="X"]') || document.querySelectorAll('select')[N];
+  Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype,'value').set.call(sel,'VALUE');
+  sel.dispatchEvent(new Event('change',{bubbles:true}));
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 """
 
 EXECUTION_PROMPT = """

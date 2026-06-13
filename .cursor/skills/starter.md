@@ -226,4 +226,48 @@ When you discover a new testing trick, environment workaround, or operational ru
 3. **Keep it concrete** — exact commands, env var values, and file paths.
 4. **Date your addition**: `<!-- Added YYYY-MM-DD: brief reason -->`.
 
+---
+
+## 7 · Dropdown / Form Interaction Reference
+
+### Primary tool: `browser_smart_select(index, text)`
+
+Use this for **every** dropdown field. One call handles both native `<select>` and custom React/div dropdowns automatically.
+
+```
+# Birthday form (native <select>):
+browser_smart_select(5, "15")      # Day
+browser_smart_select(6, "June")    # Month
+browser_smart_select(7, "1992")    # Year
+
+# Custom React dropdown (e.g. Gender):
+browser_smart_select(8, "Male")    # clicks trigger → scans options → clicks match
+```
+
+**Decision tree on failure:**
+| Result | Action |
+|---|---|
+| ✅ success | Move to next field |
+| ❌ "option not found" + options listed | Retry with exact text from list |
+| ❌ "dropdown opened but not found" | `browser_view()` once, retry with visible text |
+| ❌ 2nd failure | `browser_console_exec` with React-safe setter (see prompt) |
+
+### Verification: `browser_verify_value(index, expected_text)`
+
+After filling critical fields, verify before submit:
+```
+browser_verify_value(5, "15")     # ✅ Verified '15' matches '15'
+browser_verify_value(8, "Male")   # ❌ Mismatch: expected='Male', actual=''
+```
+
+### NEVER do this (causes 20+ step loops):
+```
+# BAD — do not do this:
+browser_click(index=5)         # clicking a <select>
+browser_view()                 # just to check
+browser_click(index=5)         # same click again
+... (repeats 15 more times)
+```
+
 <!-- Updated 2026-06-10: migrated from Docker Compose to Replit; updated ports (5173→5000), removed docker-compose references, updated MongoDB/Redis to cloud-hosted, updated sandbox to supervisord-based Replit workflow -->
+<!-- Updated 2026-06-13: added browser_smart_select + browser_verify_value tools; Manus.im-style adaptive dropdown handling; strengthened execution prompt with hard limits -->

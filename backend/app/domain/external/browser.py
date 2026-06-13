@@ -101,6 +101,14 @@ class Browser(Protocol):
         """Select a native <select> option by visible text in one call"""
         ...
 
+    async def smart_select(self, index: int, text: str) -> ToolResult:
+        """Adaptive dropdown selector: handles native <select> AND custom React/div dropdowns"""
+        ...
+
+    async def verify_value(self, index: int, expected_text: str) -> ToolResult:
+        """Verify an element has the expected value after interaction"""
+        ...
+
     async def console_view(self, max_lines: Optional[int] = None) -> ToolResult:
         """View console output"""
         ...

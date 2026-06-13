@@ -764,6 +764,201 @@ class BrowserUseBrowser:
         except Exception as exc:
             return ToolResult(success=False, message=f"select_by_text failed: {exc}")
 
+    async def _verify_element_value(self, index: int, expected_text: str) -> bool:
+        """Internal helper: returns True if element value matches expected text."""
+        try:
+            result = await self.verify_value(index, expected_text)
+            return result.success
+        except Exception:
+            return False
+
+    async def smart_select(self, index: int, text: str) -> ToolResult:
+        """Adaptive dropdown selector — 3-strategy chain (Manus.im style).
+
+        Strategy 1 (native <select>): React-safe text match + synthetic events.
+        Strategy 2 (custom dropdown):  click trigger → scan visible options → click option.
+        Strategy 3 (last resort):      partial text match across all visible list items.
+
+        Returns success + which strategy worked so the agent can log/debug easily.
+        No looping needed — one call handles everything.
+        """
+        import json as _json
+
+        # ── Strategy 1: native <select> via React-safe JS ──────────────────────
+        s1 = await self.select_by_text(index, text)
+        if s1.success:
+            verified = await self._verify_element_value(index, text)
+            return ToolResult(
+                success=True,
+                message=f"[native-select] Selected '{text}'. Verified={verified}",
+                data={"strategy": "native_select", "verified": verified},
+            )
+
+        reason = s1.message or ""
+        is_custom = (
+            "not a native" in reason.lower()
+            or "not_select" in reason.lower()
+            or "use click" in reason.lower()
+        )
+
+        # ── Strategy 2: custom dropdown (click → scan DOM → click option) ──────
+        if is_custom:
+            click_r = await self.click(index=index)
+            if not click_r.success:
+                return ToolResult(
+                    success=False,
+                    message=(
+                        f"smart_select: cannot open custom dropdown at index {index}: "
+                        f"{click_r.message}"
+                    ),
+                )
+            await asyncio.sleep(0.35)
+
+            page = await self._get_current_page()
+            js_find_click = """(searchText) => {
+                const lower = searchText.trim().toLowerCase();
+                const SELECTORS = [
+                    '[role="option"]', '[role="listitem"]', '[role="menuitem"]',
+                    '[aria-selected]', '[data-value]', '[data-option]',
+                    'li', 'ul > li', 'ol > li', '.option', '.dropdown-item'
+                ];
+                const seen = new Set();
+                // Exact match first
+                for (const sel of SELECTORS) {
+                    let nodes;
+                    try { nodes = Array.from(document.querySelectorAll(sel)); } catch(e) { continue; }
+                    for (const n of nodes) {
+                        if (seen.has(n)) continue;
+                        seen.add(n);
+                        const s = window.getComputedStyle(n);
+                        if (s.display === 'none' || s.visibility === 'hidden' || parseFloat(s.opacity) < 0.1) continue;
+                        const t = (n.innerText || n.textContent || '').trim();
+                        if (t.toLowerCase() === lower) {
+                            n.click();
+                            return JSON.stringify({success:true, clicked:t, match:'exact'});
+                        }
+                    }
+                }
+                // Partial match fallback
+                const seen2 = new Set();
+                const visible = [];
+                for (const sel of SELECTORS) {
+                    let nodes;
+                    try { nodes = Array.from(document.querySelectorAll(sel)); } catch(e) { continue; }
+                    for (const n of nodes) {
+                        if (seen2.has(n)) continue;
+                        seen2.add(n);
+                        const s = window.getComputedStyle(n);
+                        if (s.display === 'none' || s.visibility === 'hidden' || parseFloat(s.opacity) < 0.1) continue;
+                        const t = (n.innerText || n.textContent || '').trim();
+                        if (!t) continue;
+                        if (t.toLowerCase().includes(lower)) {
+                            n.click();
+                            return JSON.stringify({success:true, clicked:t, match:'partial'});
+                        }
+                        if (visible.length < 20) visible.push(t.substring(0, 40));
+                    }
+                }
+                return JSON.stringify({success:false, visible_options:[...new Set(visible)]});
+            }"""
+
+            try:
+                raw = await page.evaluate(js_find_click, text)
+                res = _json.loads(raw) if isinstance(raw, str) else raw
+                if res.get("success"):
+                    clicked = res.get("clicked", text)
+                    match_type = res.get("match", "")
+                    note = " (partial match)" if match_type == "partial" else ""
+                    await asyncio.sleep(0.2)
+                    return ToolResult(
+                        success=True,
+                        message=f"[custom-dropdown] Clicked option '{clicked}'{note}",
+                        data={"strategy": "custom_dropdown", "clicked": clicked},
+                    )
+                visible = res.get("visible_options", [])
+                visible_str = (
+                    ", ".join(f'"{v}"' for v in visible[:12])
+                    if visible
+                    else "none visible — dropdown may not have opened"
+                )
+                return ToolResult(
+                    success=False,
+                    message=(
+                        f"smart_select: dropdown opened but option '{text}' not found. "
+                        f"Visible options: [{visible_str}]. "
+                        f"Call browser_view() to inspect, then retry with exact text from visible list."
+                    ),
+                )
+            except Exception as exc:
+                return ToolResult(
+                    success=False,
+                    message=f"smart_select custom-dropdown strategy failed: {exc}",
+                )
+
+        # Not custom — option text mismatch, pass back original message with available options
+        return ToolResult(success=False, message=f"smart_select: {reason}")
+
+    async def verify_value(self, index: int, expected_text: str) -> ToolResult:
+        """Verify that an interactive element has the expected value after interaction.
+
+        Works for:
+        - native <select>  → checks selectedOptions[0].text
+        - <input>/<textarea> → checks .value
+        - custom elements  → checks innerText / aria-label / data-value
+
+        Returns success=True if the element's current value matches expected_text
+        (case-insensitive, partial containment accepted).
+        """
+        try:
+            session = await self._ensure_session()
+            node = await session.get_dom_element_by_index(index)
+            if node is None:
+                return ToolResult(
+                    success=False,
+                    message=f"Cannot find element with index {index}",
+                )
+            page = await self._get_current_page()
+            element = await page.get_element(node.backend_node_id)
+
+            import json as _json
+            js = """(expected) => {
+                const lower = expected.trim().toLowerCase();
+                const tag = this.tagName;
+                let actual = '';
+                if (tag === 'SELECT') {
+                    const sel = this.selectedOptions[0];
+                    actual = sel ? sel.text.trim() : '';
+                } else if (tag === 'INPUT' || tag === 'TEXTAREA') {
+                    actual = (this.value || '').trim();
+                } else {
+                    actual = (
+                        this.innerText ||
+                        this.getAttribute('aria-label') ||
+                        this.getAttribute('data-value') ||
+                        this.textContent || ''
+                    ).trim();
+                }
+                const aLower = actual.toLowerCase();
+                const match = aLower === lower || aLower.includes(lower) || lower.includes(aLower);
+                return JSON.stringify({match, actual, expected, tag});
+            }"""
+            raw = await element.evaluate(js, expected_text)
+            import json as _json2
+            res = _json2.loads(raw) if isinstance(raw, str) else raw
+            match = res.get("match", False)
+            actual = res.get("actual", "")
+            return ToolResult(
+                success=match,
+                message=(
+                    f"✅ Verified '{actual}' matches '{expected_text}'"
+                    if match
+                    else f"❌ Mismatch: expected='{expected_text}', actual='{actual}'"
+                ),
+                data=res,
+            )
+        except Exception as exc:
+            return ToolResult(success=False, message=f"verify_value failed: {exc}")
+
     async def console_exec(self, javascript: str) -> ToolResult:
         """Execute arbitrary JavaScript in the current page context."""
         try:
