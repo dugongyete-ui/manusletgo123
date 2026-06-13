@@ -60,6 +60,47 @@ Last-resort browser_console_exec pattern (only after 2 failed browser_smart_sele
   const sel = document.querySelector('select[name="X"]') || document.querySelectorAll('select')[N];
   Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype,'value').set.call(sel,'VALUE');
   sel.dispatchEvent(new Event('change',{bubbles:true}));
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+SMART WAITING  (Manus.im Protocol — use these after interactions that load content)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+browser_click / browser_input / browser_smart_select already include DOM settle automatically.
+Add the following ONLY when you expect further async activity:
+
+browser_wait_for_network_idle(timeout=5)
+  → Use AFTER: Login button, Search button, form submit, navigation that loads API data.
+  → Detects when all fetch/XHR requests have completed. Do NOT overuse — only for known API actions.
+
+browser_wait_for_element(selector=None, text=None, timeout=10)
+  → Use AFTER: clicking a button that opens a modal/dialog, submitting a form (wait for confirmation),
+    navigating to a page before your first interaction, clicking "Load more".
+  → Provide selector (CSS, e.g. '.modal') OR text (visible string, e.g. "Welcome back") OR both.
+  → Returns the matched element's tag + text so you know what appeared.
+  → ✅ found → proceed with next interaction
+  → ❌ not found within timeout → call browser_view() to see current page state
+
+TYPICAL FLOW for actions that load content:
+  browser_click(submit_btn_index)
+  browser_wait_for_network_idle()          ← wait for API response
+  browser_wait_for_element(text="Success") ← wait for confirmation to render
+  browser_view()                           ← fresh DOM snapshot before continuing
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+FILE UPLOAD & FAST TEXT EXTRACTION
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+browser_upload_file(index, file_path)
+  → Upload a local sandbox file to an <input type="file"> form field.
+  → file_path must be an absolute path that exists in the sandbox (e.g. /home/runner/photo.jpg).
+  → Flow: browser_view() → find <input type="file"> index → browser_upload_file(index, path)
+          → browser_verify_value(index, filename) to confirm.
+
+browser_extract_text(url, timeout=15)
+  → Manus.im 'Fast Extraction Mode' — fetches page text via HTTP without launching full browser.
+  → Use for: reading articles, documentation, blog posts, static pages (no JavaScript rendering needed).
+  → Returns up to 8000 chars of readable text.
+  → Use browser_navigate instead if: page requires login, JavaScript rendering, or you need to interact.
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 """
 

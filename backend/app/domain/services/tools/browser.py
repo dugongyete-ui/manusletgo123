@@ -257,3 +257,172 @@ class BrowserToolkit(BaseToolkit):
             max_lines: (Optional) Maximum number of log lines to return.
         """
         return await self.browser.console_view(max_lines)
+
+    @tool(parse_docstring=True)
+    async def browser_wait_for_network_idle(
+        self,
+        timeout: Optional[float] = 5.0,
+    ) -> ToolResult:
+        """Wait for all in-flight network requests (fetch/XHR) to complete before continuing.
+
+        Use this after actions that trigger background API calls:
+        - After clicking a "Login" / "Submit" / "Search" button
+        - After a form submission that loads new data
+        - After any navigation where content streams in asynchronously
+
+        Do NOT use for simple DOM changes — browser_click and browser_input already
+        include DOM settle. Only add browser_wait_for_network_idle when you expect
+        the page to make API calls after your action.
+
+        Args:
+            timeout: Maximum seconds to wait (default 5). Use 10 for slow pages.
+        """
+        return await self.browser.wait_for_network_idle(timeout or 5.0)
+
+    @tool(parse_docstring=True)
+    async def browser_wait_for_element(
+        self,
+        selector: Optional[str] = None,
+        text: Optional[str] = None,
+        timeout: Optional[float] = 10.0,
+    ) -> ToolResult:
+        """Wait until a specific DOM element appears and becomes visible on the page.
+
+        Use this after actions that cause new content to load:
+        - After clicking a button that opens a modal or dialog
+        - After a navigation before the next interaction
+        - After submitting a form — wait for confirmation message
+        - After clicking "Load more" — wait for new items to appear
+
+        Provide at least one of selector or text (can provide both as extra confirmation).
+
+        Args:
+            selector: CSS selector (e.g. '.modal', '#success-msg', '[role="dialog"]', 'button.confirm').
+            text:     Visible text to wait for (e.g. "Welcome", "Order confirmed", "successfully created").
+            timeout:  Max wait in seconds (default 10). Use 20 for slow pages or file processing.
+        """
+        return await self.browser.wait_for_element(
+            selector=selector,
+            text=text,
+            timeout=timeout or 10.0,
+        )
+
+    @tool(parse_docstring=True)
+    async def browser_upload_file(
+        self,
+        index: int,
+        file_path: str,
+    ) -> ToolResult:
+        """Upload a local file to an <input type='file'> form field.
+
+        Use this when a web form requires a file attachment (profile photo, document, CSV, etc.).
+        The file must already exist in the sandbox filesystem.
+
+        Steps to use:
+        1. Call browser_view() to find the <input type="file"> element and note its index.
+        2. Call browser_upload_file(index, file_path) with the absolute sandbox path.
+        3. Call browser_verify_value(index, filename) to confirm upload was registered.
+
+        Args:
+            index:     DOM index of the <input type='file'> element from browser_view.
+            file_path: Absolute path to the file in the sandbox (e.g. /home/runner/photo.jpg).
+        """
+        return await self.browser.upload_file(index=index, file_path=file_path)
+
+    @tool(parse_docstring=True)
+    async def browser_extract_text(
+        self,
+        url: str,
+        timeout: Optional[int] = 15,
+    ) -> ToolResult:
+        """Fast text extraction from a URL without loading the full browser.
+
+        Manus.im 'Fast Extraction Mode' (webpage_extract) — fetches the raw HTML
+        over HTTP and extracts readable text. Much faster than browser_navigate for:
+        - Reading articles, blog posts, documentation
+        - Extracting structured data from pages that don't require JavaScript
+        - Getting page text for analysis without browser overhead
+
+        Use browser_navigate instead if:
+        - The page requires JavaScript to render (React SPA, login walls, dynamic content)
+        - You need to interact with the page (click, fill forms)
+        - You need the interactive element list
+
+        Args:
+            url:     Full URL to fetch (https://...).
+            timeout: HTTP request timeout in seconds (default 15).
+        """
+        import httpx
+        from html.parser import HTMLParser
+
+        class _TextExtractor(HTMLParser):
+            SKIP_TAGS = {"script", "style", "head", "noscript", "svg", "meta", "link"}
+            def __init__(self):
+                super().__init__()
+                self._skip = 0
+                self.chunks: list[str] = []
+            def handle_starttag(self, tag, attrs):
+                if tag.lower() in self.SKIP_TAGS:
+                    self._skip += 1
+            def handle_endtag(self, tag):
+                if tag.lower() in self.SKIP_TAGS:
+                    self._skip = max(0, self._skip - 1)
+            def handle_data(self, data):
+                if self._skip == 0:
+                    stripped = data.strip()
+                    if stripped:
+                        self.chunks.append(stripped)
+
+        try:
+            headers = {
+                "User-Agent": (
+                    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
+                    "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+                ),
+                "Accept-Language": "en-US,en;q=0.9",
+            }
+            async with httpx.AsyncClient(
+                follow_redirects=True,
+                timeout=float(timeout or 15),
+                headers=headers,
+            ) as client:
+                response = await client.get(url)
+                response.raise_for_status()
+
+            parser = _TextExtractor()
+            parser.feed(response.text)
+            text = "\n".join(parser.chunks)
+
+            # Collapse excessive blank lines
+            import re
+            text = re.sub(r"\n{3,}", "\n\n", text).strip()
+
+            # Cap at ~8000 chars to keep context manageable
+            truncated = False
+            if len(text) > 8000:
+                text = text[:8000]
+                truncated = True
+
+            return ToolResult(
+                success=True,
+                message=(
+                    f"Extracted {len(text)} chars from {url}"
+                    + (" (truncated)" if truncated else "")
+                ),
+                data={
+                    "url": url,
+                    "status_code": response.status_code,
+                    "text": text,
+                    "truncated": truncated,
+                },
+            )
+        except httpx.HTTPStatusError as exc:
+            return ToolResult(
+                success=False,
+                message=f"HTTP {exc.response.status_code} from {url}. Try browser_navigate for JS-heavy pages.",
+            )
+        except Exception as exc:
+            return ToolResult(
+                success=False,
+                message=f"browser_extract_text failed: {exc}. Try browser_navigate instead.",
+            )

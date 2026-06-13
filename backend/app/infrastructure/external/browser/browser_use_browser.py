@@ -344,6 +344,185 @@ class BrowserUseBrowser:
         except Exception:
             await asyncio.sleep(0.3)
 
+    async def _wait_for_network_idle(self, timeout: float = 2.0) -> None:
+        """Manus.im 'Network Idle Detection' — polls until no new resources for 300 ms.
+
+        Uses the browser's Resource Timing API to detect in-flight fetch/XHR requests.
+        Resolves when `performance.getEntriesByType('resource').length` stops growing
+        for a full 300 ms interval, or when `timeout` seconds elapses.
+        """
+        try:
+            page = await self._get_current_page()
+            await page.evaluate(f"""() => new Promise(resolve => {{
+                const deadline = Date.now() + {int(timeout * 1000)};
+                let lastCount = performance.getEntriesByType('resource').length;
+                const check = () => {{
+                    const count = performance.getEntriesByType('resource').length;
+                    if (count === lastCount || Date.now() >= deadline) {{
+                        resolve(); return;
+                    }}
+                    lastCount = count;
+                    setTimeout(check, 300);
+                }};
+                setTimeout(check, 300);
+            }})""")
+        except Exception:
+            await asyncio.sleep(0.5)
+
+    async def wait_for_network_idle(self, timeout: float = 5.0) -> ToolResult:
+        """Public wrapper around _wait_for_network_idle for use as a browser tool."""
+        try:
+            await self._wait_for_network_idle(timeout=timeout)
+            return ToolResult(success=True, message=f"Network idle confirmed (waited up to {timeout}s)")
+        except Exception as exc:
+            return ToolResult(success=False, message=f"wait_for_network_idle failed: {exc}")
+
+    async def wait_for_element(
+        self,
+        selector: Optional[str] = None,
+        text: Optional[str] = None,
+        timeout: float = 10.0,
+    ) -> ToolResult:
+        """Wait until a DOM element matching a CSS selector or containing specific text
+        becomes visible on the page.  Returns the first matching element's tag + text
+        so the agent knows what appeared.
+
+        Manus.im 'Element-Based Waiting' — ensures the agent doesn't act on stale DOM.
+        Use after: navigating, clicking a button that opens a modal, submitting a form,
+        or any action where you expect new content to appear before proceeding.
+
+        Args:
+            selector: CSS selector to wait for (e.g. '.modal', '#success-msg', '[role="dialog"]').
+            text:     Visible text to wait for (e.g. "Welcome", "Order confirmed").
+            timeout:  Maximum wait time in seconds (default 10).
+        """
+        try:
+            page = await self._get_current_page()
+            import json as _json
+            raw = await page.evaluate(f"""(args) => new Promise(resolve => {{
+                const [selector, text, timeout] = args;
+                const deadline = Date.now() + timeout * 1000;
+                const check = () => {{
+                    // CSS selector match
+                    if (selector) {{
+                        try {{
+                            const el = document.querySelector(selector);
+                            if (el) {{
+                                const r = el.getBoundingClientRect();
+                                const s = window.getComputedStyle(el);
+                                const visible = r.width > 0 && r.height > 0
+                                    && s.display !== 'none' && s.visibility !== 'hidden';
+                                if (visible) {{
+                                    resolve(JSON.stringify({{found:true, method:'selector',
+                                        tag:el.tagName.toLowerCase(),
+                                        text:(el.innerText||el.textContent||'').trim().substring(0,80)
+                                    }}));
+                                    return;
+                                }}
+                            }}
+                        }} catch(e) {{}}
+                    }}
+                    // Text content match (visible text nodes only)
+                    if (text) {{
+                        const lower = text.toLowerCase();
+                        const walker = document.createTreeWalker(
+                            document.body, NodeFilter.SHOW_TEXT, null, false
+                        );
+                        let node;
+                        while (node = walker.nextNode()) {{
+                            const t = (node.textContent || '').trim();
+                            if (!t) continue;
+                            const parent = node.parentElement;
+                            if (!parent) continue;
+                            const s = window.getComputedStyle(parent);
+                            if (s.display === 'none' || s.visibility === 'hidden') continue;
+                            if (t.toLowerCase().includes(lower)) {{
+                                resolve(JSON.stringify({{found:true, method:'text',
+                                    tag:parent.tagName.toLowerCase(),
+                                    text:t.substring(0,80)
+                                }}));
+                                return;
+                            }}
+                        }}
+                    }}
+                    if (Date.now() >= deadline) {{
+                        resolve(JSON.stringify({{found:false}}));
+                        return;
+                    }}
+                    setTimeout(check, 200);
+                }};
+                check();
+            }})""", [selector, text, timeout])
+            res = _json.loads(raw) if isinstance(raw, str) else raw
+            if res.get("found"):
+                tag = res.get("tag", "element")
+                found_text = res.get("text", "")
+                method = res.get("method", "")
+                return ToolResult(
+                    success=True,
+                    message=f"Element found [{method}]: <{tag}>{found_text[:60]}</{tag}>",
+                    data=res,
+                )
+            target = selector or f'text="{text}"'
+            return ToolResult(
+                success=False,
+                message=f"Element '{target}' did not appear within {timeout}s. Page may still be loading — try browser_view() to inspect current state.",
+            )
+        except Exception as exc:
+            return ToolResult(success=False, message=f"wait_for_element failed: {exc}")
+
+    async def upload_file(self, index: int, file_path: str) -> ToolResult:
+        """Upload a file to an <input type='file'> element via CDP setFileInputFiles.
+
+        Manus.im 'Integrated File Upload' — attaches a local sandbox file to any
+        file upload form field without opening a system file picker.
+
+        Args:
+            index:     DOM index of the <input type='file'> element.
+            file_path: Absolute path to the file inside the sandbox (e.g. /home/runner/photo.jpg).
+        """
+        import os
+        import json as _json
+        try:
+            if not os.path.isfile(file_path):
+                return ToolResult(
+                    success=False,
+                    message=f"File not found: {file_path}. List available files with shell_exec('ls /home/runner/').",
+                )
+            session = await self._ensure_session()
+            node = await session.get_dom_element_by_index(index)
+            if node is None:
+                return ToolResult(success=False, message=f"Cannot find element with index {index}")
+
+            page = await self._get_current_page()
+            element = await page.get_element(node.backend_node_id)
+
+            # Verify it is an <input type="file">
+            tag_check = await element.evaluate(
+                "() => JSON.stringify({tag:this.tagName, type:(this.type||'').toLowerCase()})"
+            )
+            info = _json.loads(tag_check) if isinstance(tag_check, str) else tag_check
+            if info.get("tag", "").upper() != "INPUT" or info.get("type") != "file":
+                return ToolResult(
+                    success=False,
+                    message=(
+                        f"Element {index} is <{info.get('tag','?')} type='{info.get('type','?')}'>, "
+                        f"not an <input type='file'>."
+                    ),
+                )
+
+            # Use Playwright's set_input_files for reliable upload
+            await element.set_input_files(file_path)
+            await self._wait_for_dom_settle()
+            file_name = os.path.basename(file_path)
+            return ToolResult(
+                success=True,
+                message=f"File '{file_name}' uploaded to element {index}.",
+                data={"file_path": file_path, "file_name": file_name},
+            )
+        except Exception as exc:
+            return ToolResult(success=False, message=f"upload_file failed: {exc}")
+
     # ------------------------------------------------------------------
     # Browser Protocol implementation
     # ------------------------------------------------------------------

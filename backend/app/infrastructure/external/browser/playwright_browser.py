@@ -1006,6 +1006,123 @@ class PlaywrightBrowser:
         except Exception as exc:
             return ToolResult(success=False, message=f"verify_value failed: {exc}")
 
+    async def wait_for_network_idle(self, timeout: float = 5.0) -> ToolResult:
+        """Manus.im Network Idle Detection — wait for in-flight requests to stop."""
+        await self._ensure_page()
+        try:
+            await self.page.evaluate(f"""() => new Promise(resolve => {{
+                const deadline = Date.now() + {int(timeout * 1000)};
+                let lastCount = performance.getEntriesByType('resource').length;
+                const check = () => {{
+                    const count = performance.getEntriesByType('resource').length;
+                    if (count === lastCount || Date.now() >= deadline) {{
+                        resolve(); return;
+                    }}
+                    lastCount = count;
+                    setTimeout(check, 300);
+                }};
+                setTimeout(check, 300);
+            }})""")
+            return ToolResult(success=True, message=f"Network idle confirmed (waited up to {timeout}s)")
+        except Exception as exc:
+            return ToolResult(success=False, message=f"wait_for_network_idle failed: {exc}")
+
+    async def wait_for_element(
+        self,
+        selector: Optional[str] = None,
+        text: Optional[str] = None,
+        timeout: float = 10.0,
+    ) -> ToolResult:
+        """Manus.im Element-Based Waiting — wait until a specific element appears or text is visible."""
+        await self._ensure_page()
+        import json as _json
+        try:
+            raw = await self.page.evaluate(f"""(args) => new Promise(resolve => {{
+                const [selector, text, timeout] = args;
+                const deadline = Date.now() + timeout * 1000;
+                const check = () => {{
+                    if (selector) {{
+                        try {{
+                            const el = document.querySelector(selector);
+                            if (el) {{
+                                const r = el.getBoundingClientRect();
+                                const s = window.getComputedStyle(el);
+                                if (r.width > 0 && r.height > 0 && s.display !== 'none' && s.visibility !== 'hidden') {{
+                                    resolve(JSON.stringify({{found:true, method:'selector',
+                                        tag:el.tagName.toLowerCase(),
+                                        text:(el.innerText||el.textContent||'').trim().substring(0,80)}}));
+                                    return;
+                                }}
+                            }}
+                        }} catch(e) {{}}
+                    }}
+                    if (text) {{
+                        const lower = text.toLowerCase();
+                        const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT, null, false);
+                        let node;
+                        while (node = walker.nextNode()) {{
+                            const t = (node.textContent || '').trim();
+                            if (!t) continue;
+                            const parent = node.parentElement;
+                            if (!parent) continue;
+                            const s = window.getComputedStyle(parent);
+                            if (s.display === 'none' || s.visibility === 'hidden') continue;
+                            if (t.toLowerCase().includes(lower)) {{
+                                resolve(JSON.stringify({{found:true, method:'text',
+                                    tag:parent.tagName.toLowerCase(), text:t.substring(0,80)}}));
+                                return;
+                            }}
+                        }}
+                    }}
+                    if (Date.now() >= deadline) {{
+                        resolve(JSON.stringify({{found:false}})); return;
+                    }}
+                    setTimeout(check, 200);
+                }};
+                check();
+            }})""", [selector, text, timeout])
+            res = _json.loads(raw) if isinstance(raw, str) else raw
+            if res.get("found"):
+                return ToolResult(
+                    success=True,
+                    message=f"Found [{res.get('method')}]: <{res.get('tag')}>{res.get('text','')[:60]}</{res.get('tag')}>",
+                    data=res,
+                )
+            target = selector or f'text="{text}"'
+            return ToolResult(success=False, message=f"Element '{target}' not found within {timeout}s.")
+        except Exception as exc:
+            return ToolResult(success=False, message=f"wait_for_element failed: {exc}")
+
+    async def upload_file(self, index: int, file_path: str) -> ToolResult:
+        """Upload a local file to an <input type='file'> element — Manus.im Integrated File Upload."""
+        import os
+        await self._ensure_page()
+        try:
+            if not os.path.isfile(file_path):
+                return ToolResult(success=False, message=f"File not found: {file_path}")
+            element = await self._get_element_by_index(index)
+            if not element:
+                return ToolResult(success=False, message=f"Cannot find element with index {index}")
+            import json as _json
+            tag_check = await self.page.evaluate(
+                "(el) => JSON.stringify({tag:el.tagName, type:(el.type||'').toLowerCase()})", element
+            )
+            info = _json.loads(tag_check) if isinstance(tag_check, str) else tag_check
+            if info.get("tag", "").upper() != "INPUT" or info.get("type") != "file":
+                return ToolResult(
+                    success=False,
+                    message=f"Element {index} is not <input type='file'>. Tag={info.get('tag')}, type={info.get('type')}.",
+                )
+            await element.set_input_files(file_path)
+            await asyncio.sleep(0.3)
+            return ToolResult(
+                success=True,
+                message=f"File '{os.path.basename(file_path)}' uploaded to element {index}.",
+                data={"file_path": file_path, "file_name": os.path.basename(file_path)},
+            )
+        except Exception as exc:
+            return ToolResult(success=False, message=f"upload_file failed: {exc}")
+
     async def console_exec(self, javascript: str) -> ToolResult:
         """Execute JavaScript code"""
         await self._ensure_page()

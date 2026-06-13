@@ -1,45 +1,44 @@
 ---
-name: Adaptive dropdown + click handling
-description: Full Manus.im-style browser interaction chain — 3-strategy click fallback + DOM settle wait + dropdown visibility check
+name: Manus.im full parity — browser interaction protocol
+description: All Manus.im browser capabilities implemented in BrowserUseBrowser + PlaywrightBrowser as of 2026-06-13
 ---
 
-## The Problem
-Agent was looping 20+ times on form interactions because:
-1. `browser_click` on native `<select>` → React ignores programmatic `.value` without synthetic events
-2. No strategy switching on click failure — same approach repeated
-3. No verification after set, no DOM settle wait for lazy-loaded content
+## Implemented: Manus.im Full Protocol
 
-## Full Manus.im Parity Fix
+### 1. 3-Strategy Click Fallback Chain (`_click_with_fallback`)
+S1: Playwright `element.click()` → S2: JS synthetic React-safe events → S3: Raw CDP at element center.
+`click()` auto-uses this. Coordinate-based click uses CDP directly.
 
-### 3-strategy click fallback chain (`_click_with_fallback`)
-`browser_use_browser.py` — `click()` now automatically tries:
-1. **Playwright element.click()** — standard scroll-into-view click
-2. **JS synthetic click** — `scrollIntoView` + `mouseover/mouseenter/mousedown/mouseup/click` dispatched via `element.evaluate()`, React/Vue-safe
-3. **Raw CDP at element center** — `_get_element_center()` reads `getBoundingClientRect`, then `_cdp_click_at(cx, cy)` fires full `mouseMoved → mousePressed → mouseReleased`
+### 2. DOM Settle Wait (`_wait_for_dom_settle`)
+MutationObserver race: 150ms idle or 600ms max. Applied after every click/input/select.
 
-Coordinate-based `click(x, y)` uses `_cdp_click_at` directly.
+### 3. Network Idle Detection (`_wait_for_network_idle` + `browser_wait_for_network_idle` tool)
+Resource Timing API polls: waits until `performance.getEntriesByType('resource').length` stops growing for 300ms. Public tool exposed to agent. Use AFTER login/submit/search buttons.
 
-### DOM settle wait (`_wait_for_dom_settle`)
-MutationObserver race: resolves when DOM stops mutating for 150ms, or after 600ms timeout.
-Applied after every: click, input, select_option, smart_select. Handles React lazy-loading.
+### 4. Element-Based Waiting (`wait_for_element` + `browser_wait_for_element` tool)
+Polls DOM every 200ms until CSS selector match OR visible text found. Both BrowserUseBrowser and PlaywrightBrowser. Use AFTER modal triggers, form submissions, navigations.
 
-### Input — React-safe events
-After `element.fill(text)`, fires `new Event('input', {bubbles:true})` + `new Event('change', {bubbles:true})` via evaluate so framework state detects the change.
+### 5. File Upload (`upload_file` + `browser_upload_file` tool)
+Uses `element.set_input_files(file_path)` (Playwright) or CDP for `<input type="file">`. Validates file exists and element is correct type.
 
-### smart_select — visibility check (Manus.im key step)
-After opening a custom dropdown, polls up to 800ms (8×100ms) for any option-like element to become visible BEFORE scanning DOM — prevents clicking stale/hidden nodes.
-JS scan returns `cx`/`cy` coordinates; after JS `.click()` also fires a CDP coordinate click (belt-and-suspenders for intercepted clicks).
+### 6. Fast Text Extraction (`browser_extract_text` tool — standalone)
+httpx async GET + HTMLParser (skips script/style/head). Returns ≤8000 chars. Does NOT use browser engine. For articles, docs, static pages. Falls back to `browser_navigate` for JS-heavy/login pages.
 
-### Dropdown tool chain (registered in BrowserToolkit + Protocol)
-- `browser_smart_select(index, text)` — primary, 3-strategy: native select → custom dropdown → text mismatch
-- `browser_verify_value(index, expected_text)` — confirms value after interaction
-- `browser_select_by_text(index, text)` — native-only select by text
-- `browser_get_select_options(index)` — probe element + return option list
+### 7. Input React-safe events
+After `element.fill(text)`: fires `new Event('input', {bubbles:true})` + `new Event('change', {bubbles:true})`.
+
+### 8. Dropdown 3-strategy chain (`smart_select`)
+S1: native `<select>` React-safe setter + synthetic events → S2: custom div/ul dropdown (click trigger + DOM scan + coordinate backup click) → S3: partial text match. Includes 800ms visibility polling.
 
 ### Prompts updated
-- `execution.py`: CLICK HIERARCHY section + DROPDOWN rules with hard limits
-- `system.py`: browser_rules reflect click hierarchy + smart_select as primary tool
+- `execution.py`: CLICK HIERARCHY + DROPDOWN RULES + SMART WAITING section + FILE UPLOAD / FAST EXTRACTION section
+- `system.py`: browser_rules reflect full chain
 
-**Why:** Manus.im parity requires click→JS→CDP fallback so elements blocked by overlays, React synthetic event systems, or CSS interceptors are still reliably interacted with.
+**Why:** Matches Manus.im full protocol verbatim — 3-strategy click, network idle, element wait, file upload, fast extract.
 
-**How to apply:** `click()` is automatic — just call once. For dropdowns: `smart_select`. For verification: `verify_value`. Last resort: `browser_console_exec` with React-safe setter from execution prompt.
+**How to apply:**
+- `click()` → fully automatic 3-strategy
+- After login/submit: add `browser_wait_for_network_idle()`
+- After modal/dialog triggers: add `browser_wait_for_element(selector='.modal')`
+- File upload forms: `browser_upload_file(index, '/home/runner/file.jpg')`
+- Read-only page content: `browser_extract_text(url)` (faster than navigate)

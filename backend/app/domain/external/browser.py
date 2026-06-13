@@ -109,6 +109,23 @@ class Browser(Protocol):
         """Verify an element has the expected value after interaction"""
         ...
 
+    async def wait_for_network_idle(self, timeout: float = 5.0) -> ToolResult:
+        """Wait for all in-flight network requests to complete (Network Idle Detection)"""
+        ...
+
+    async def wait_for_element(
+        self,
+        selector: Optional[str] = None,
+        text: Optional[str] = None,
+        timeout: float = 10.0,
+    ) -> ToolResult:
+        """Wait until a DOM element matching a CSS selector or visible text appears"""
+        ...
+
+    async def upload_file(self, index: int, file_path: str) -> ToolResult:
+        """Upload a local file to an <input type='file'> element"""
+        ...
+
     async def console_view(self, max_lines: Optional[int] = None) -> ToolResult:
         """View console output"""
         ...
