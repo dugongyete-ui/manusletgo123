@@ -149,6 +149,30 @@ class Sandbox(Protocol):
             Delete operation result
         """
         ...
+
+    async def file_move(self, source: str, destination: str) -> ToolResult:
+        """Move or rename a file/directory
+
+        Args:
+            source: Source path
+            destination: Destination path
+
+        Returns:
+            Move operation result
+        """
+        ...
+
+    async def file_copy(self, source: str, destination: str) -> ToolResult:
+        """Copy a file or directory
+
+        Args:
+            source: Source path
+            destination: Destination path
+
+        Returns:
+            Copy operation result
+        """
+        ...
     
     async def file_list(self, path: str) -> ToolResult:
         """List directory contents

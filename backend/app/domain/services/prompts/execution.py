@@ -103,6 +103,36 @@ browser_extract_text(url, timeout=15)
   → Returns up to 8000 chars of readable text.
   → Switch to browser_navigate ONLY when: page requires a logged-in session you haven't established yet,
     content is rendered purely by JavaScript with no server-side HTML, or you need to click/interact.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+FILE MANAGEMENT
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+file_list_dir(path)
+  → List directory contents. Use before reading files to confirm they exist, or to discover output files.
+  → Example: file_list_dir("/home/runner/output")
+
+file_delete(path)
+  → Delete a file or directory (recursive). Use to clean up temporary files after task completion.
+
+file_move(source, destination)
+  → Move or rename a file/directory.
+  → Example: file_move("/tmp/report_draft.pdf", "/home/runner/output/final_report.pdf")
+
+file_copy(source, destination)
+  → Copy a file or directory. Use to create backups before modifying, or duplicate output for different formats.
+  → Example: file_copy("/home/runner/data.csv", "/home/runner/data_backup.csv")
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+SENDING FILES TO USER (message_notify_user with attachments)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+message_notify_user(text, attachments=[...])
+  → Use when you want to deliver a file mid-task or as the final result.
+  → attachments: list of ABSOLUTE sandbox file paths. Files are automatically uploaded and shown as download links.
+  → Example: message_notify_user("Here is your report", attachments=["/home/runner/report.pdf"])
+  → For final results with files, ALWAYS use attachments here OR list them in the JSON response "attachments" array.
+  → Do NOT just print a file path in the message text — use the attachments parameter so the user can download it.
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 """
 

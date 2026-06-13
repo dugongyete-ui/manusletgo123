@@ -38,7 +38,6 @@ class FileToolkit(BaseToolkit):
             end_line: (Optional) Ending line number (exclusive)
             sudo: (Optional) Whether to use sudo privileges
         """
-        # Directly call sandbox's file_read method
         return await self.sandbox.file_read(
             file=file,
             start_line=start_line,
@@ -66,17 +65,14 @@ class FileToolkit(BaseToolkit):
             trailing_newline: (Optional) Whether to add a trailing newline
             sudo: (Optional) Whether to use sudo privileges
         """
-        # Strip LLM citation tags (e.g. <co>, </co: 1:[0],2:[7]>) before writing
         content = _CITATION_TAG_RE.sub('', content)
 
-        # Prepare content
         final_content = content
         if leading_newline:
             final_content = "\n" + final_content
         if trailing_newline:
             final_content = final_content + "\n"
             
-        # Directly call sandbox's file_write method, pass all parameters
         return await self.sandbox.file_write(
             file=file, 
             content=final_content,
@@ -102,7 +98,6 @@ class FileToolkit(BaseToolkit):
             new_str: New string to replace with
             sudo: (Optional) Whether to use sudo privileges
         """
-        # Directly call sandbox's file_replace method
         return await self.sandbox.file_replace(
             file=file,
             old_str=old_str,
@@ -124,7 +119,6 @@ class FileToolkit(BaseToolkit):
             regex: Regular expression pattern to match
             sudo: (Optional) Whether to use sudo privileges
         """
-        # Directly call sandbox's file_search method
         return await self.sandbox.file_search(
             file=file,
             regex=regex,
@@ -143,8 +137,59 @@ class FileToolkit(BaseToolkit):
             path: Absolute path of directory to search
             glob: Filename pattern using glob syntax wildcards
         """
-        # Directly call sandbox's file_find method
         return await self.sandbox.file_find(
             path=path,
             glob_pattern=glob
-        ) 
+        )
+
+    @tool(parse_docstring=True)
+    async def file_list_dir(
+        self,
+        path: str
+    ) -> ToolResult:
+        """List the contents of a directory. Use to explore folder structure, verify files exist, or find output files.
+
+        Args:
+            path: Absolute path of the directory to list
+        """
+        return await self.sandbox.file_list(path=path)
+
+    @tool(parse_docstring=True)
+    async def file_delete(
+        self,
+        path: str
+    ) -> ToolResult:
+        """Delete a file or directory (recursive). Use for cleaning up temporary files or removing unwanted output.
+
+        Args:
+            path: Absolute path of the file or directory to delete
+        """
+        return await self.sandbox.file_delete(path=path)
+
+    @tool(parse_docstring=True)
+    async def file_move(
+        self,
+        source: str,
+        destination: str
+    ) -> ToolResult:
+        """Move or rename a file or directory. Use for reorganizing files or renaming output files.
+
+        Args:
+            source: Absolute path of the source file or directory
+            destination: Absolute path of the destination (new location or new name)
+        """
+        return await self.sandbox.file_move(source=source, destination=destination)
+
+    @tool(parse_docstring=True)
+    async def file_copy(
+        self,
+        source: str,
+        destination: str
+    ) -> ToolResult:
+        """Copy a file or directory. Use for duplicating files or creating backups before modifying.
+
+        Args:
+            source: Absolute path of the source file or directory
+            destination: Absolute path of the destination copy
+        """
+        return await self.sandbox.file_copy(source=source, destination=destination)

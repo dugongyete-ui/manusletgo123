@@ -341,6 +341,22 @@ class ReplitSandbox(Sandbox):
             data={"path": path},
         )
 
+    async def file_move(self, source: str, destination: str) -> ToolResult:
+        await self._run_admin_cmd(f"mv '{source}' '{destination}'")
+        return ToolResult(
+            success=True,
+            message=f"Moved: {source} → {destination}",
+            data={"source": source, "destination": destination},
+        )
+
+    async def file_copy(self, source: str, destination: str) -> ToolResult:
+        await self._run_admin_cmd(f"cp -rp '{source}' '{destination}'")
+        return ToolResult(
+            success=True,
+            message=f"Copied: {source} → {destination}",
+            data={"source": source, "destination": destination},
+        )
+
     async def file_list(self, path: str) -> ToolResult:
         output = await self._run_admin_cmd(f"ls -la '{path}'")
         return ToolResult(

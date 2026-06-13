@@ -79,6 +79,17 @@ class ExecutionAgent(BaseAgent):
                         yield WaitEvent()
                         return
                     continue
+                elif event.function_name == "message_notify_user" and event.status == ToolStatus.CALLING:
+                    raw_att = event.function_args.get("attachments")
+                    if raw_att:
+                        att_list = [raw_att] if isinstance(raw_att, str) else list(raw_att)
+                        att_list = [p for p in att_list if p]
+                        if att_list:
+                            yield MessageEvent(
+                                message=event.function_args.get("text", ""),
+                                attachments=[FileInfo(file_path=p) for p in att_list],
+                            )
+                            continue
             yield event
 
     async def execute_step(self, plan: Plan, step: Step, message: Message) -> AsyncGenerator[BaseEvent, None]:
