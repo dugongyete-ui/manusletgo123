@@ -97,10 +97,12 @@ browser_upload_file(index, file_path)
           → browser_verify_value(index, filename) to confirm.
 
 browser_extract_text(url, timeout=15)
-  → Manus.im 'Fast Extraction Mode' — fetches page text via HTTP without launching full browser.
-  → Use for: reading articles, documentation, blog posts, static pages (no JavaScript rendering needed).
+  → Manus.im 'Fast Extraction Mode' — fetches page text via HTTP without launching full browser (~100ms vs ~3s for browser_view).
+  → DEFAULT CHOICE whenever your goal is only to READ text from any URL — articles, emails, search results,
+    confirmation pages, OTP codes, API responses, dashboards, any website.
   → Returns up to 8000 chars of readable text.
-  → Use browser_navigate instead if: page requires login, JavaScript rendering, or you need to interact.
+  → Switch to browser_navigate ONLY when: page requires a logged-in session you haven't established yet,
+    content is rendered purely by JavaScript with no server-side HTML, or you need to click/interact.
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 """
 
