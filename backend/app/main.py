@@ -25,37 +25,50 @@ logger = logging.getLogger(__name__)
 # Load configuration
 settings = get_settings()
 
+# Startup readiness flag — True once MongoDB + Redis are fully initialized
+_app_ready = False
 
-# Create lifespan context manager
-@asynccontextmanager
-async def lifespan(app: FastAPI):
-    # Code executed on startup
-    logger.info("Application startup - Dzeck AI Agent initializing")
-    
-    # Initialize MongoDB and Beanie (critical — abort startup on failure)
-    await get_mongodb().initialize()
-    await init_beanie(
-        database=get_mongodb().client[settings.mongodb_database],
-        document_models=[AgentDocument, SessionDocument, UserDocument, ClawDocument]
-    )
-    logger.info("Successfully initialized Beanie")
 
-    # Initialize Redis
+async def _init_databases() -> None:
+    """Initialize MongoDB/Beanie and Redis in the background so uvicorn
+    starts accepting requests (and healthchecks) immediately."""
+    global _app_ready
+    try:
+        logger.info("Background DB init — connecting to MongoDB…")
+        await get_mongodb().initialize()
+        await init_beanie(
+            database=get_mongodb().client[settings.mongodb_database],
+            document_models=[AgentDocument, SessionDocument, UserDocument, ClawDocument],
+        )
+        logger.info("Successfully initialized Beanie")
+    except Exception as exc:
+        logger.error(f"MongoDB/Beanie initialization failed: {exc}")
+        return
+
     try:
         await get_redis().initialize()
-    except Exception as e:
-        logger.error(f"Redis initialization failed: {e} — continuing without Redis")
-    
+        logger.info("Successfully initialized Redis")
+    except Exception as exc:
+        logger.error(f"Redis initialization failed: {exc} — continuing without Redis")
+
+    _app_ready = True
+    logger.info("Application fully ready — all services initialized")
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    logger.info("Application startup - Dzeck AI Agent initializing")
+
+    # Kick off DB init as a background task so the server starts immediately
+    # and Replit's healthcheck can reach /health right away.
+    asyncio.create_task(_init_databases())
+
     try:
         yield
     finally:
-        # Code executed on shutdown
         logger.info("Application shutdown - Dzeck AI Agent terminating")
-        # Disconnect from MongoDB
         await get_mongodb().shutdown()
-        # Disconnect from Redis
         await get_redis().shutdown()
-
 
         logger.info("Cleaning up AgentService instance")
         try:
@@ -63,14 +76,13 @@ async def lifespan(app: FastAPI):
             logger.info("AgentService shutdown completed successfully")
         except asyncio.TimeoutError:
             logger.warning("AgentService shutdown timed out after 30 seconds")
-        except Exception as e:
-            logger.error(f"Error during AgentService cleanup: {str(e)}")
+        except Exception as exc:
+            logger.error(f"Error during AgentService cleanup: {str(exc)}")
+
 
 app = FastAPI(title="Dzeck AI Agent", lifespan=lifespan)
 
 # Configure CORS
-# allow_credentials=True is incompatible with allow_origins=["*"] per the CORS spec.
-# This app uses Bearer tokens (not cookies), so credentials flag is not needed.
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -84,14 +96,15 @@ register_exception_handlers(app)
 
 # Register routes
 app.include_router(router, prefix="/api/v1")
-# OpenAI-compatible proxy (used by OpenClaw containers for LLM requests)
 app.include_router(openai_router)
 
-# Health check — must be BEFORE the catch-all frontend route
+
+# Health check — returns 200 immediately; reports readiness in body
 @app.get("/health")
 async def health_check():
-    """Lightweight health endpoint for uptime monitoring (e.g., UptimeRobot)."""
-    return {"status": "ok"}
+    """Lightweight health endpoint — always 200 so deployment healthchecks pass."""
+    return {"status": "ok", "ready": _app_ready}
+
 
 # Serve compiled Vue frontend in production (when frontend/dist exists)
 _frontend_dist = os.path.normpath(
@@ -114,4 +127,4 @@ else:
 
     @app.get("/", include_in_schema=False)
     async def health_root():
-        return JSONResponse({"status": "ok", "msg": "Dzeck backend running — frontend not built yet"})
+        return JSONResponse({"status": "ok", "ready": _app_ready, "msg": "Dzeck backend running — frontend not built yet"})
