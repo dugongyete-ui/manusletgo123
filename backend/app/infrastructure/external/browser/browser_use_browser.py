@@ -284,7 +284,7 @@ class BrowserUseBrowser:
             await element.click(timeout=4000)
             return True, "playwright"
         except Exception as e1:
-            logger.debug("click S1 (playwright) failed for index %d: %s", index, e1)
+            logger.info("CLICK[%d] S1-playwright failed → trying S2-js-synthetic (%s)", index, type(e1).__name__)
 
         # ── Strategy 2: JS synthetic click with React-safe events ─────────────
         try:
@@ -307,9 +307,9 @@ class BrowserUseBrowser:
             if result == "ok":
                 await asyncio.sleep(0.15)
                 return True, "js-synthetic"
-            logger.debug("click S2 (js-synthetic) returned: %s", result)
+            logger.info("CLICK[%d] S2-js-synthetic returned '%s' → trying S3-cdp-coords", index, result)
         except Exception as e2:
-            logger.debug("click S2 (js-synthetic) failed for index %d: %s", index, e2)
+            logger.info("CLICK[%d] S2-js-synthetic failed → trying S3-cdp-coords (%s)", index, type(e2).__name__)
 
         # ── Strategy 3: raw CDP at element center coordinates ─────────────────
         try:
@@ -320,8 +320,9 @@ class BrowserUseBrowser:
                 await asyncio.sleep(0.15)
                 return True, f"cdp-coords({cx:.0f},{cy:.0f})"
         except Exception as e3:
-            logger.debug("click S3 (cdp-coords) failed for index %d: %s", index, e3)
+            logger.info("CLICK[%d] S3-cdp-coords failed (%s)", index, type(e3).__name__)
 
+        logger.warning("CLICK[%d] ALL 3 strategies failed — element may be hidden/off-screen", index)
         return False, "all 3 click strategies failed (playwright, js-synthetic, cdp-coords)"
 
     async def _wait_for_dom_settle(self, timeout: float = 0.6) -> None:
@@ -583,6 +584,7 @@ class BrowserUseBrowser:
     async def navigate(self, url: str) -> ToolResult:
         """Navigate to the given URL."""
         try:
+            logger.info("NAVIGATE → %s", url)
             session = await self._ensure_session()
             await session.navigate_to(url)
             # navigate_to() completes before the DOM watchdog has serialised the new page,
@@ -675,11 +677,13 @@ class BrowserUseBrowser:
                 # ── Manus-style 3-strategy fallback chain ────────────────────
                 ok, strategy = await self._click_with_fallback(element, index)
                 if ok:
+                    logger.info("CLICK[%d] ✓ via [%s]", index, strategy)
                     await self._wait_for_dom_settle()
                     return ToolResult(
                         success=True,
                         message=f"Clicked element {index} via [{strategy}]",
                     )
+                logger.warning("CLICK[%d] ✗ all strategies exhausted", index)
                 return ToolResult(success=False, message=f"Click failed for element {index}: {strategy}")
 
             return ToolResult(success=True)
@@ -730,13 +734,16 @@ class BrowserUseBrowser:
                     }""")
                 except Exception:
                     pass
+                logger.info("INPUT[%d] ✓ text=%r%s", index, text[:40], "…" if len(text) > 40 else "")
 
             if press_enter:
                 await page.press("Enter")
+                logger.info("INPUT press_enter=True")
 
             await self._wait_for_dom_settle()
             return ToolResult(success=True)
         except Exception as exc:
+            logger.warning("INPUT[%s] ✗ %s", index, exc)
             return ToolResult(success=False, message=f"Failed to input text: {exc}")
 
     async def move_mouse(
@@ -1095,11 +1102,13 @@ class BrowserUseBrowser:
         """
         import json as _json
 
+        logger.info("SMART_SELECT[%d] text=%r — trying S1-native-select", index, text)
         # ── Strategy 1: native <select> via React-safe JS ──────────────────────
         s1 = await self.select_by_text(index, text)
         if s1.success:
             await self._wait_for_dom_settle()
             verified = await self._verify_element_value(index, text)
+            logger.info("SMART_SELECT[%d] ✓ S1-native-select verified=%s", index, verified)
             return ToolResult(
                 success=True,
                 message=f"[native-select] Selected '{text}'. Verified={verified}",
@@ -1112,6 +1121,10 @@ class BrowserUseBrowser:
             or "not_select" in reason.lower()
             or "use click" in reason.lower()
         )
+        if is_custom:
+            logger.info("SMART_SELECT[%d] S1 found custom dropdown → trying S2-custom-dropdown", index)
+        else:
+            logger.info("SMART_SELECT[%d] S1 failed (%s)", index, reason[:80])
 
         # ── Strategy 2: custom dropdown (click → visibility check → scan DOM → click option) ──
         if is_custom:
@@ -1218,6 +1231,7 @@ class BrowserUseBrowser:
                         except Exception:
                             pass
                     await self._wait_for_dom_settle()
+                    logger.info("SMART_SELECT[%d] ✓ S2-custom-dropdown clicked=%r match=%s", index, clicked, match_type)
                     return ToolResult(
                         success=True,
                         message=f"[custom-dropdown] Clicked option '{clicked}'{note}",
@@ -1229,6 +1243,7 @@ class BrowserUseBrowser:
                     if visible
                     else "none visible — dropdown may not have opened"
                 )
+                logger.warning("SMART_SELECT[%d] ✗ S2 option %r not found. visible=[%s]", index, text, visible_str[:120])
                 return ToolResult(
                     success=False,
                     message=(
@@ -1238,12 +1253,14 @@ class BrowserUseBrowser:
                     ),
                 )
             except Exception as exc:
+                logger.warning("SMART_SELECT[%d] ✗ S2 exception: %s", index, exc)
                 return ToolResult(
                     success=False,
                     message=f"smart_select custom-dropdown strategy failed: {exc}",
                 )
 
         # Not custom — option text mismatch, pass back original message with available options
+        logger.warning("SMART_SELECT[%d] ✗ no matching strategy for text=%r", index, text)
         return ToolResult(success=False, message=f"smart_select: {reason}")
 
     async def verify_value(self, index: int, expected_text: str) -> ToolResult:
