@@ -100,13 +100,6 @@ class Settings(BaseSettings):
     # Extra headers for LLM requests (parsed from EXTRA_HEADERS env var, JSON)
     extra_headers: dict | None = None
     
-    # Claw (OpenClaw) configuration
-    claw_enabled: bool = False
-    claw_ready_timeout: int = 300
-    claw_address: str | None = None
-    claw_api_key: str | None = None
-    dzeck_api_base_url: str = "http://localhost:8000"
-
     # SSL verification — set SSL_VERIFY=false only for custom gateways with self-signed certs
     ssl_verify: bool = True
 

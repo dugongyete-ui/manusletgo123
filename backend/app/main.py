@@ -12,10 +12,9 @@ from app.infrastructure.storage.mongodb import get_mongodb
 from app.infrastructure.storage.redis import get_redis
 from app.interfaces.dependencies import get_agent_service
 from app.interfaces.api.routes import router
-from app.interfaces.api.openai_routes import router as openai_router
 from app.infrastructure.logging import setup_logging
 from app.interfaces.errors.exception_handlers import register_exception_handlers
-from app.infrastructure.models.documents import AgentDocument, SessionDocument, UserDocument, ClawDocument
+from app.infrastructure.models.documents import AgentDocument, SessionDocument, UserDocument
 from beanie import init_beanie
 
 # Initialize logging system
@@ -38,7 +37,7 @@ async def _init_databases() -> None:
         await get_mongodb().initialize()
         await init_beanie(
             database=get_mongodb().client[settings.mongodb_database],
-            document_models=[AgentDocument, SessionDocument, UserDocument, ClawDocument],
+            document_models=[AgentDocument, SessionDocument, UserDocument],
         )
         logger.info("Successfully initialized Beanie")
     except Exception as exc:
@@ -96,7 +95,6 @@ register_exception_handlers(app)
 
 # Register routes
 app.include_router(router, prefix="/api/v1")
-app.include_router(openai_router)
 
 
 # Health check — returns 200 immediately; reports readiness in body

@@ -16,6 +16,5 @@ async def get_frontend_config() -> APIResponse[ClientConfigResponse]:
         ClientConfigResponse(
             auth_provider=settings.auth_provider,
             google_analytics_id=settings.google_analytics_id,
-            claw_enabled=settings.claw_enabled,
         )
     )
