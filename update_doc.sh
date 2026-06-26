@@ -12,15 +12,13 @@
 
 # Files to sync (format: "filename:code_type")
 FILES_TO_SYNC=(
-    "docker-compose-example.yml:yaml"
     ".env.example:ini"
+    "install.sh:bash"
     # Add more files, uncomment and modify the following examples:
     # "package.json:json"
     # "requirements.txt:text"
-    # "Dockerfile:dockerfile"
     # "nginx.conf:nginx"
     # "config.yaml:yaml"
-    # "startup.sh:bash"
 )
 
 # ===============================
@@ -145,11 +143,12 @@ done
 echo ""
 echo "Starting file replacement process..."
 
-# Process each md file (exclude .venv, .git, node_modules directories)
+# Process each md file (exclude .venv, .git, node_modules, .pythonlibs directories)
 find . -name "*.md" -type f \
     -not -path "./.venv/*" \
     -not -path "./.git/*" \
     -not -path "./node_modules/*" \
+    -not -path "./.pythonlibs/*" \
     -not -path "./*/.venv/*" \
     -not -path "./*/.git/*" \
     -not -path "./*/node_modules/*" \
@@ -196,4 +195,4 @@ echo "Supported code types:"
 echo "  yaml, json, javascript, typescript, python, bash, css, html, xml, sql, markdown, env, dockerfile, nginx, text"
 echo ""
 echo "Ignored directories:"
-echo "  .venv, .git, node_modules (and their subdirectories)"
+echo "  .venv, .git, node_modules, .pythonlibs (and their subdirectories)"

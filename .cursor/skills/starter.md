@@ -1,6 +1,6 @@
-# AI Dzeck × Claw – Replit Starter Skill
+# AI Dzeck – Replit Starter Skill
 
-> Use this skill when setting up, running, or testing any part of the AI Dzeck × Claw codebase on Replit.
+> Use this skill when setting up, running, or testing any part of the AI Dzeck codebase on Replit.
 
 ---
 

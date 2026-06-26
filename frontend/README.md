@@ -1,8 +1,8 @@
-# AI Dzeck × Claw Frontend
+# AI Dzeck Frontend
 
 English | [中文](README_zh.md)
 
-Frontend for AI Dzeck × Claw, built with Vue 3 + TypeScript + Vite + Tailwind CSS.
+Frontend for AI Dzeck, built with Vue 3 + TypeScript + Vite + Tailwind CSS.
 
 ## Features
 
@@ -10,7 +10,6 @@ Frontend for AI Dzeck × Claw, built with Vue 3 + TypeScript + Vite + Tailwind C
 - Tool panels (Search, Files, Terminal, Browser)
 - VNC viewer for real-time sandbox desktop visualization
 - Plan panel showing agent step-by-step execution
-- **Claw page** — integrated [OpenClaw](https://github.com/anthropics/openclaw) chat experience with real-time WebSocket messaging, auto-expiry countdown, and file upload/download
 
 ## Running on Replit
 
@@ -54,7 +53,6 @@ src/
 ├── pages/           # Page components
 │   ├── ChatPage.vue         # Main chat interface
 │   ├── HomePage.vue         # Session list / landing
-│   ├── ClawPage.vue         # OpenClaw assistant page
 │   ├── LoginPage.vue        # Login / Register
 │   ├── LandingPage.vue      # Public landing page
 │   └── SharePage.vue        # Shared session view

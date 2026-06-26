@@ -1,4 +1,4 @@
-# AI Dzeck × Claw
+# AI Dzeck
 
 Intelligent AI Agent platform built with FastAPI + Vue 3. Users can chat with an AI agent that autonomously browses the web, executes shell commands, reads/writes files, and performs web searches — all streamed in real-time.
 
@@ -24,6 +24,7 @@ Three workflows run in parallel:
 All configured in Replit env vars (shared):
 - `API_KEY` / `API_BASE` — LLM provider credentials
 - `MODEL_NAME` — currently `qwen3.7-max`
+- `VISION_MODEL_NAME` — currently `qwen2.5-vl-72b-instruct`
 - `MONGODB_URI` — MongoDB Atlas connection string
 - `REDIS_HOST` / `REDIS_PORT` / `REDIS_PASSWORD` — Redis Cloud
 - `TAVILY_API_KEY` — web search

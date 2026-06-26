@@ -9,7 +9,7 @@ description: >-
 
 # Update Documentation
 
-This project uses `update_doc.sh` to keep markdown documentation in sync with source files (e.g. `docker-compose-example.yml`, `.env.example`).
+This project uses `update_doc.sh` to keep markdown documentation in sync with source files (e.g. `.env.example`, `install.sh`).
 
 ## How It Works
 
@@ -30,19 +30,14 @@ Running `./update_doc.sh` scans all `.md` files, finds matching tag pairs, and r
 | File | Purpose |
 |------|---------|
 | `update_doc.sh` | Sync script — `FILES_TO_SYNC` array at the top controls which files are synced |
-| `docker-compose-example.yml` | Minimal compose example shown in quick start docs |
 | `.env.example` | Full environment variable reference |
-| `docs/quick_start.md` | Chinese quick start guide |
-| `docs/en/quick_start.md` | English quick start guide |
-| `docs/configuration.md` | Chinese configuration reference |
-| `docs/en/configuration.md` | English configuration reference |
-| `README.md` / `README_zh.md` | Project READMEs (also contain sync tags) |
+| `install.sh` | Installation script |
 
 ## Workflow
 
 ### 1. Edit the Source File
 
-Edit the source file directly (e.g. `docker-compose-example.yml` or `.env.example`).
+Edit the source file directly (e.g. `.env.example` or `install.sh`).
 
 ### 2. Ensure the File Is Registered in `update_doc.sh`
 
@@ -50,8 +45,8 @@ Open `update_doc.sh` and check the `FILES_TO_SYNC` array:
 
 ```bash
 FILES_TO_SYNC=(
-    "docker-compose-example.yml:yaml"
     ".env.example:ini"
+    "install.sh:bash"
 )
 ```
 
@@ -62,10 +57,10 @@ Format: `"filename:code_type"`. Supported code types: `yaml`, `json`, `javascrip
 In each `.md` file that should include the content, add a pair of HTML comment tags with an empty fenced code block between them:
 
 ```markdown
-<!-- myfile.yml -->
-```yaml
+<!-- myfile.sh -->
+```bash
 ```
-<!-- /myfile.yml -->
+<!-- /myfile.sh -->
 ```
 
 The tag name must match the filename in `FILES_TO_SYNC` exactly.
@@ -76,7 +71,7 @@ The tag name must match the filename in `FILES_TO_SYNC` exactly.
 ./update_doc.sh
 ```
 
-The script will replace the content between every matching tag pair across all `.md` files in the repo (excluding `.venv`, `.git`, `node_modules`).
+The script will replace the content between every matching tag pair across all `.md` files in the repo (excluding `.venv`, `.git`, `node_modules`, `.pythonlibs`).
 
 ### 5. Verify the Result
 
@@ -91,14 +86,7 @@ Read the updated `.md` files to confirm the synced content is correct.
 
 ## Important: Always Update Both Languages
 
-This project maintains **Chinese and English** versions of all documentation. When making any doc change, always update both:
-
-| Chinese | English |
-|---------|---------|
-| `README_zh.md` | `README.md` |
-| `docs/quick_start.md` | `docs/en/quick_start.md` |
-| `docs/configuration.md` | `docs/en/configuration.md` |
-| `docs/*.md` | `docs/en/*.md` |
+This project maintains **Chinese and English** versions of all documentation. When making any doc change, always update both language versions.
 
 ## Common Pitfalls
 

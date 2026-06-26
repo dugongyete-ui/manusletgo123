@@ -1,12 +1,12 @@
 # AGENTS.md
 
-> Canonical guide for AI coding agents working on the **AI Dzeck × Claw** codebase.
+> Canonical guide for AI coding agents working on the **AI Dzeck** codebase.
 
 ---
 
 ## Project Overview
 
-AI Dzeck × Claw is a general-purpose AI Agent system with an integrated [OpenClaw](https://github.com/anthropics/openclaw) AI assistant, running on **Replit**. It comprises three active services:
+AI Dzeck is a general-purpose AI Agent platform running on **Replit**. It comprises three active services:
 
 | Service | Stack | Port (dev) | Entry Point |
 |---|---|---|---|
@@ -16,10 +16,9 @@ AI Dzeck × Claw is a general-purpose AI Agent system with an integrated [OpenCl
 
 Infrastructure: **MongoDB Atlas** (cloud), **Redis Cloud** (Asia Southeast). No local Docker required.
 
-Additional (inactive/dev-only):
+Additional (dev-only):
 | Service | Stack | Port (dev) | Entry Point |
 |---|---|---|---|
-| **Claw** | Node.js, OpenClaw Gateway, dzeck-claw plugin | 18788 | `claw/entrypoint.sh` |
 | **Mockserver** | Python, FastAPI | 8090 | `mockserver/main.py` |
 
 ---
@@ -32,14 +31,12 @@ dzeck/
 ├── backend/           # FastAPI backend (DDD layout)
 │   └── app/
 │       ├── domain/           # Models, services, tools, agents, repositories
-│       ├── application/      # Application services (auth, agent, file, token, email, claw)
-│       ├── infrastructure/   # External integrations (search, browser, sandbox, claw, DB, cache)
+│       ├── application/      # Application services (auth, agent, file, token, email)
+│       ├── infrastructure/   # External integrations (search, browser, sandbox, DB, cache)
 │       ├── interfaces/       # API routes, schemas, error handlers, dependencies
 │       ├── core/             # Config (config.py)
 │       └── main.py
 ├── sandbox/           # Sandbox service (shell, file, supervisor APIs)
-├── claw/              # Claw service (OpenClaw Gateway + dzeck-claw plugin)
-│   └── dzeck-claw/   # Node.js plugin bridging OpenClaw with Dzeck backend
 ├── mockserver/        # Mock LLM server for dev/testing
 ├── .cursor/skills/    # Cursor agent skills
 ├── .env.example       # Environment variable template
@@ -181,4 +178,3 @@ Check the **Sandbox Services** workflow console, or read `/tmp/logs/Sandbox_Serv
 | Skill File | When to Use |
 |---|---|
 | `.cursor/skills/starter.md` | Setting up, running, or testing any part of the codebase. Contains detailed API reference, env var tables, and testing workflows. |
-| `.cursor/skills/debug-claw/SKILL.md` | Debugging the Claw / OpenClaw integration. |

@@ -2,7 +2,7 @@
 set -e
 
 echo "========================================"
-echo "  AI Dzeck × Claw — Install Script"
+echo "  AI Dzeck — Install Script"
 echo "========================================"
 
 # ── 0. Prerequisites check ────────────────────────────────────────────────────
@@ -77,49 +77,24 @@ echo "      Core dependencies installed"
 # ── 3. AI / LLM dependencies ─────────────────────────────────────────────────
 #
 #  Install order matters to avoid version conflicts:
-#  1. Pin openai + anthropic to ranges accepted by BOTH langchain and browser-use
-#  2. Install langchain stack
-#  3. Install browser-use with --no-deps to avoid re-pinning old client versions
+#  1. Pin openai to a range accepted by BOTH langchain and browser-use
+#  2. Install langchain stack (openai provider only)
+#  3. Install browser-use (will pull compatible openai transitively)
 #
 echo ""
 echo "[3/5] Installing AI/LLM dependencies..."
 
-# 3a. Shared LLM clients — versions compatible with langchain ≥0.3 AND browser-use ≥0.2
+# 3a. LangChain ecosystem — openai provider only
 python3 -m pip install $PIP_FLAGS -q \
-  "openai>=1.58.1,<3.0.0" \
-  "anthropic>=0.40.0,<2.0.0"
+  "openai>=2.8.0" \
+  "langchain>=1.0.7" \
+  "langchain-classic>=1.0.7" \
+  "langchain-openai>=1.0.3"
 
-# 3b. LangChain ecosystem
-python3 -m pip install $PIP_FLAGS -q \
-  "langchain>=0.3.0" \
-  "langchain-core>=0.3.0" \
-  "langchain-openai>=0.3.0" \
-  "langchain-anthropic>=0.3.0" \
-  "langchain-ollama>=0.2.0" \
-  "langchain-community>=0.3.0"
-
-# 3c. DeepSeek (may not exist on all registries)
-python3 -m pip install $PIP_FLAGS -q "langchain-deepseek>=0.1.0" 2>/dev/null || \
-  echo "      INFO: langchain-deepseek not available, skipping"
-
-# 3d. browser-use — install without deps to keep the openai/anthropic versions above
-python3 -m pip install $PIP_FLAGS -q --no-deps "browser-use>=0.2.0" 2>/dev/null || \
-  python3 -m pip install $PIP_FLAGS -q --no-deps "browser-use>=0.1.0" 2>/dev/null || \
-  echo "      WARNING: browser-use install failed — browser automation unavailable"
-
-# browser-use remaining runtime deps (openai/anthropic already installed above)
+# 3b. browser-use + Playwright (cdp-use, bubus, rich are transitive deps — installed automatically)
+python3 -m pip install $PIP_FLAGS -q "browser-use>=0.12.1"
 python3 -m pip install $PIP_FLAGS -q "playwright>=1.42.0"
 python3 -m pip install $PIP_FLAGS -q "patchright>=1.42.0" 2>/dev/null || true
-
-# browser-use system deps — required by browser_use internals
-python3 -m pip install $PIP_FLAGS -q \
-  "psutil>=5.9.0" \
-  "bubus>=1.0.0" \
-  "cdp-use>=1.0.0"
-
-# 3e. E2B sandbox SDK
-python3 -m pip install $PIP_FLAGS -q "e2b>=1.0.0" 2>/dev/null || \
-  echo "      INFO: e2b not available, skipping"
 
 echo "      AI/LLM dependencies installed"
 
@@ -133,12 +108,10 @@ python3 -m pip install $PIP_FLAGS -q \
   "markdownify>=1.2.0" \
   "tavily-python>=0.5.0" \
   "mcp>=1.9.0" \
-  "rich>=14.2.0" \
-  "async-lru>=2.0.0" \
+  "psutil>=5.9.0" \
   "debugpy>=1.8.17" \
   "supervisor>=4.2.0" \
-  "websockify>=0.11.0" \
-  "duckduckgo-search>=6.0.0"
+  "websockify>=0.11.0"
 
 # ── 4b. File extraction dependencies ─────────────────────────────────────────
 echo "      Installing file-extraction dependencies..."
@@ -165,7 +138,7 @@ echo ""
 echo "      Installing Playwright Chromium browser binary..."
 python3 -m playwright install chromium 2>/dev/null || \
   python3 -m playwright install chromium --with-deps 2>/dev/null || \
-  echo "      WARNING: Playwright browser install failed — will use E2B sandbox browser"
+  echo "      WARNING: Playwright browser install failed — sandbox browser will be used"
 
 # ── 5. Environment configuration ─────────────────────────────────────────────
 echo ""
@@ -185,8 +158,8 @@ if [ ! -f backend/.env ]; then
     echo "      Edit backend/.env and fill in your API keys before starting"
   else
     echo "      WARNING: No .env.example found — create backend/.env with your config"
-    echo "      Required keys: MONGODB_URI, REDIS_URL, E2B_API_KEY, E2B_TEMPLATE_ID"
-    echo "      Optional:  OPENAI_API_KEY, ANTHROPIC_API_KEY, DEEPSEEK_API_KEY"
+    echo "      Required keys: MONGODB_URI, REDIS_HOST, REDIS_PORT, API_KEY, API_BASE"
+    echo "      Optional:  TAVILY_API_KEY, VISION_MODEL_NAME"
   fi
 else
   echo "      backend/.env already exists"

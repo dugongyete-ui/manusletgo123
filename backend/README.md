@@ -1,8 +1,8 @@
-# AI Dzeck × Claw Backend Service
+# AI Dzeck Backend Service
 
 English | [中文](README_zh.md)
 
-AI Dzeck × Claw is an intelligent conversation agent system based on FastAPI and LangChain chat models. The backend adopts Domain-Driven Design (DDD) architecture, supporting intelligent dialogue, file operations, Shell command execution, browser automation, and integrated [OpenClaw](https://github.com/anthropics/openclaw) AI assistant management (Claw).
+AI Dzeck is an intelligent conversation agent system built with FastAPI and LangChain. The backend adopts Domain-Driven Design (DDD) architecture, supporting intelligent dialogue, file operations, shell command execution, browser automation, and web search.
 
 ## Project Architecture
 
@@ -24,7 +24,6 @@ backend/
 │   │       └── routes.py # API route definitions
 │   ├── infrastructure/  # Infrastructure layer: provides technical implementation
 │   └── main.py          # Application entry
-├── Dockerfile           # Docker configuration file
 ├── pyproject.toml       # Project dependencies and metadata
 └── README.md            # Project documentation
 ```
@@ -34,87 +33,82 @@ backend/
 1. **Session Management**: Create and manage conversation session instances
 2. **Real-time Conversation**: Implement real-time conversation through Server-Sent Events (SSE)
 3. **Tool Invocation**: Support for various tool calls, including:
-   - Browser automation operations (using Playwright)
+   - Browser automation operations (using `browser_use` + Playwright via CDP)
    - Shell command execution and viewing
    - File read/write operations
-   - Web search integration
-4. **Sandbox Environment**: Use Docker containers to provide isolated execution environments
+   - Web search integration (Tavily, Bing, Baidu, DuckDuckGo)
+4. **Sandbox Environment**: Replit-hosted sandbox service (Xvfb + Chrome + VNC) at `http://localhost:8080`
 5. **VNC Visualization**: Support remote viewing of the sandbox environment via WebSocket connection
-6. **Claw (Dzeck × Claw)**: Per-user OpenClaw container lifecycle management, chat history merge (MongoDB + OpenClaw `.jsonl` sessions), WebSocket real-time messaging, file upload/resolve, and OpenAI-compatible LLM proxy for Claw containers
 
 ## Requirements
 
 - Python 3.12+
-- Docker 20.10+
-- MongoDB 4.4+
-- Redis 6.0+
+- MongoDB Atlas (cloud) or local MongoDB 4.4+
+- Redis Cloud (cloud) or local Redis 6.0+
 
 ## Installation and Configuration
 
-1. **Install uv**:
+### On Replit (recommended)
+
+Run `install.sh` from the project root — it installs all Python and frontend dependencies automatically.
+
+### Manual Installation
+
+1. **Install dependencies**:
 ```bash
-pip install uv
+pip install -e .
 ```
 
-2. **Install dependencies**:
+Or using uv:
 ```bash
 uv sync
 ```
 
-3. **Environment variable configuration**:
-Create a `.env` file and set the following environment variables:
+2. **Environment variable configuration**:
+Copy `.env.example` to `backend/.env` and fill in the values:
 ```
-# Model provider configuration
-API_KEY=your_api_key_here                # API key for model providers
-API_BASE=https://api.openai.com/v1       # Base URL for model API (optional for some providers)
+# LLM provider
+API_KEY=your_api_key_here
+API_BASE=https://your-llm-gateway/v1
+MODEL_NAME=qwen3.7-max
+VISION_MODEL_NAME=qwen2.5-vl-72b-instruct
 
-# Model configuration
-MODEL_NAME=gpt-4o                        # Model name to use
-MODEL_PROVIDER=openai                    # Model provider for LangChain
-TEMPERATURE=0.7                          # Model temperature parameter
-MAX_TOKENS=2000                          # Maximum output tokens per model request
+# Database
+MONGODB_URI=mongodb+srv://...
+REDIS_HOST=your-redis-host
+REDIS_PORT=6379
+REDIS_PASSWORD=your-redis-password
 
-# Google search configuration
-GOOGLE_SEARCH_API_KEY=                   # Google Search API key for web search functionality (optional)
-GOOGLE_SEARCH_ENGINE_ID=                 # Google custom search engine ID (optional)
+# Search
+SEARCH_PROVIDER=tavily
+TAVILY_API_KEY=your_tavily_key
 
-# Sandbox configuration
-SANDBOX_IMAGE=simpleyyt/dzeck-sandbox          # Sandbox environment Docker image
-SANDBOX_NAME_PREFIX=sandbox              # Sandbox container name prefix
-SANDBOX_TTL_MINUTES=30                   # Sandbox container time-to-live (minutes)
-SANDBOX_NETWORK=dzeck-network            # Docker network name for communication between sandbox containers
+# Sandbox
+SANDBOX_BASE_URL=http://localhost:8080
+SANDBOX_VNC_URL=ws://localhost:5901
+SANDBOX_CDP_URL=http://localhost:8222
 
-# Database configuration
-MONGODB_URI=mongodb://localhost:27017    # MongoDB connection URL
-MONGODB_DATABASE=dzeck                   # MongoDB database name
-REDIS_HOST=localhost                     # Redis host
-REDIS_PORT=6379                          # Redis port
-REDIS_DB=0                               # Redis DB index
-
-# Log configuration
-LOG_LEVEL=INFO                           # Log level, options: DEBUG, INFO, WARNING, ERROR, CRITICAL
+# Auth
+AUTH_PROVIDER=password
+JWT_SECRET_KEY=your-secret-key-here
 ```
 
 ## Running the Service
 
-### Development Environment
+### Development Environment (Replit)
+
+The **Backend API** workflow starts the server automatically:
 ```bash
-# Start the development server (with hot reload)
-uv run uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+cd backend && python3 -m uvicorn app.main:app --host localhost --port 8000
+```
+
+### Manual Start
+```bash
+cd backend
+python3 -m uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
 ```
 
 The service will start at http://localhost:8000.
-
-### Docker Deployment
-```bash
-# Build Docker image
-docker build -t dzeck-ai-agent .
-
-# Run container
-docker run -p 8000:8000 --env-file .env -v /var/run/docker.sock:/var/run/docker.sock dzeck-ai-agent
-```
-
-> Note: If using Docker deployment, you need to mount the Docker socket so the backend can create sandbox containers.
 
 ## API Documentation
 
@@ -319,4 +313,4 @@ Common error codes:
 
 1. Define the tool interface in the `domain/external` directory
 2. Implement the tool functionality in the `infrastructure` layer
-3. Integrate the tool in `application/services` 
+3. Integrate the tool in `application/services`
