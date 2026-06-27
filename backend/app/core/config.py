@@ -100,8 +100,9 @@ class Settings(BaseSettings):
     # Extra headers for LLM requests (parsed from EXTRA_HEADERS env var, JSON)
     extra_headers: dict | None = None
     
-    # SSL verification — set SSL_VERIFY=false only for custom gateways with self-signed certs
-    ssl_verify: bool = True
+    # SSL verification — False by default for custom/self-signed gateway compatibility
+    # Set SSL_VERIFY=true only if your gateway has a valid public certificate
+    ssl_verify: bool = False
 
     # MCP configuration
     mcp_config_path: str = "/home/runner/workspace/mcp.json"
