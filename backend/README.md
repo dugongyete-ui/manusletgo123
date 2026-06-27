@@ -70,8 +70,8 @@ Copy `.env.example` to `backend/.env` and fill in the values:
 # LLM provider
 API_KEY=your_api_key_here
 API_BASE=https://your-llm-gateway/v1
-MODEL_NAME=qwen3.7-max
-VISION_MODEL_NAME=qwen2.5-vl-72b-instruct
+MODEL_NAME=kimi-k2
+VISION_MODEL_NAME=kimi-k2
 
 # Database
 MONGODB_URI=mongodb+srv://...

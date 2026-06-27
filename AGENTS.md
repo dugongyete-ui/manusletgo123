@@ -65,8 +65,8 @@ To restart a workflow, use the Replit workflow UI or the `restart_workflow` agen
 |---|---|
 | `API_KEY` | LLM API key |
 | `API_BASE` | LLM API base URL |
-| `MODEL_NAME` | `qwen3.7-max` |
-| `VISION_MODEL_NAME` | `qwen2.5-vl-72b-instruct` |
+| `MODEL_NAME` | `kimi-k2` |
+| `VISION_MODEL_NAME` | `kimi-k2` |
 | `MONGODB_URI` | MongoDB Atlas connection string |
 | `REDIS_HOST` / `REDIS_PORT` / `REDIS_PASSWORD` | Redis Cloud credentials |
 | `TAVILY_API_KEY` | Web search |

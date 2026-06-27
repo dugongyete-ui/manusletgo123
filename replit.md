@@ -23,8 +23,8 @@ Three workflows run in parallel:
 
 All configured in Replit env vars (shared):
 - `API_KEY` / `API_BASE` — LLM provider credentials
-- `MODEL_NAME` — currently `qwen3.7-max`
-- `VISION_MODEL_NAME` — currently `qwen2.5-vl-72b-instruct`
+- `MODEL_NAME` — currently `kimi-k2`
+- `VISION_MODEL_NAME` — currently `kimi-k2`
 - `MONGODB_URI` — MongoDB Atlas connection string
 - `REDIS_HOST` / `REDIS_PORT` / `REDIS_PASSWORD` — Redis Cloud
 - `TAVILY_API_KEY` — web search

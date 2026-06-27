@@ -36,8 +36,8 @@ To restart a service: use the Replit workflow panel or the agent `restart_workfl
 | `AUTH_PROVIDER` | `password` | JWT-based auth; set to `none` to skip login entirely |
 | `API_BASE` | `https://chat-gateway--tmi84kzh.replit.app/v1` | LLM provider gateway |
 | `API_KEY` | set | LLM API key |
-| `MODEL_NAME` | `qwen3.7-max` | Main chat model |
-| `VISION_MODEL_NAME` | `qwen2.5-vl-72b-instruct` | Browser screenshot analysis |
+| `MODEL_NAME` | `kimi-k2` | Main chat model |
+| `VISION_MODEL_NAME` | `kimi-k2` | Browser screenshot analysis |
 | `SEARCH_PROVIDER` | `tavily` | Web search engine |
 | `BROWSER_ENGINE` | `browser_use` | `playwright` or `browser_use` |
 | `SANDBOX_BASE_URL` | `http://localhost:8080` | Sandbox API |
