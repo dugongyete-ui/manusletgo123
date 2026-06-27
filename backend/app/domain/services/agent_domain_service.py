@@ -15,6 +15,7 @@ from typing import Type
 from app.domain.external.file import FileStorage
 from app.domain.models.file import FileInfo
 from app.domain.repositories.mcp_repository import MCPRepository
+from app.infrastructure.external.sandbox.user_sandbox import UserScopedSandbox
 
 # Setup logging
 logger = logging.getLogger(__name__)
@@ -79,6 +80,9 @@ class AgentDomainService:
                 logger.info("[Warmup] Sandbox %s created for session %s — running ensure_sandbox…", sandbox.id, session_id)
                 await sandbox.ensure_sandbox()
                 logger.info("[Warmup] Sandbox %s fully ready for session %s", sandbox.id, session_id)
+                # Create user-scoped home directory for this user
+                user_sandbox = UserScopedSandbox(sandbox, session.user_id)
+                await user_sandbox.setup_user_home()
                 # Pre-install all common packages in the background so the
                 # agent never wastes task time on pip/apt installs.
                 if hasattr(sandbox, "warmup_packages"):
@@ -108,6 +112,13 @@ class AgentDomainService:
                 session.sandbox_id = sandbox.id
                 await self._session_repository.save(session)
                 await sandbox.ensure_sandbox()
+
+            # Wrap the shared singleton with per-user filesystem isolation.
+            # Each user operates in /home/runner/users/{user_id}/ so their
+            # files, scripts, and uploads never overlap with other users.
+            user_sandbox = UserScopedSandbox(sandbox, session.user_id)
+            await user_sandbox.setup_user_home()
+
             browser = await sandbox.get_browser()
             if not browser:
                 logger.error(f"Failed to get browser for Sandbox {sandbox_id}")
@@ -119,7 +130,7 @@ class AgentDomainService:
                 session_id=session.id,
                 agent_id=session.agent_id,
                 user_id=session.user_id,
-                sandbox=sandbox,
+                sandbox=user_sandbox,
                 browser=browser,
                 file_storage=self._file_storage,
                 search_engine=self._search_engine,

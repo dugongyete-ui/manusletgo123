@@ -145,7 +145,8 @@ class AgentTaskRunner(TaskRunner):
         # Step 2: Upload to sandbox filesystem — non-fatal; vision/extractable
         # files don't need the sandbox path so we proceed regardless.
         safe_name = f"{file_id[:8]}_{file_info.filename}" if file_info.filename else file_id
-        file_path = "/home/runner/upload/" + safe_name
+        upload_dir = getattr(self._sandbox, 'upload_dir', '/home/runner/upload')
+        file_path = f"{upload_dir}/{safe_name}"
         try:
             result = await self._sandbox.file_upload(file_data, file_path)
             if result.success:

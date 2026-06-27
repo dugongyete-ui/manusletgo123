@@ -28,6 +28,9 @@ from app.domain.services.tools.file import FileToolkit
 from app.domain.services.tools.message import MessageToolkit
 from app.domain.services.tools.search import SearchToolkit
 from app.domain.services.tools.image import ImageToolkit
+from app.domain.services.prompts.system import get_system_prompt
+from app.domain.services.prompts.planner import PLANNER_SYSTEM_PROMPT
+from app.domain.services.prompts.execution import EXECUTION_SYSTEM_PROMPT
 
 logger = logging.getLogger(__name__)
 
@@ -71,20 +74,29 @@ class PlanActFlow(BaseFlow):
         if search_engine:
             tools.append(SearchToolkit(search_engine))
 
+        # Build a user-specific system prompt so the agent works inside
+        # the correct isolated home directory (UserScopedSandbox provides
+        # user_home / upload_dir; fall back to shared defaults otherwise).
+        user_home = getattr(sandbox, 'user_home', '/home/runner')
+        upload_dir = getattr(sandbox, 'upload_dir', '/home/runner/upload')
+        base_prompt = get_system_prompt(user_home=user_home, upload_dir=upload_dir)
+
         # Create planner and execution agents
         self.planner = PlannerAgent(
             agent_id=self._agent_id,
             agent_repository=self._repository,
             tools=tools,
         )
-        logger.debug(f"Created planner agent for Agent {self._agent_id}")
+        self.planner.system_prompt = base_prompt + PLANNER_SYSTEM_PROMPT
+        logger.debug(f"Created planner agent for Agent {self._agent_id} (home={user_home})")
             
         self.executor = ExecutionAgent(
             agent_id=self._agent_id,
             agent_repository=self._repository,
             tools=tools,
         )
-        logger.debug(f"Created execution agent for Agent {self._agent_id}")
+        self.executor.system_prompt = base_prompt + EXECUTION_SYSTEM_PROMPT
+        logger.debug(f"Created execution agent for Agent {self._agent_id} (home={user_home})")
 
     async def _preprocess_images(self, message: Message) -> Message:
         """Analyze vision images once using the dedicated vision model (if configured).
