@@ -34,13 +34,13 @@ class Settings(BaseSettings):
     max_tokens: int = 2000
     
     # MongoDB configuration
-    mongodb_uri: str = "mongodb://mongodb:27017"
+    mongodb_uri: str = "mongodb://localhost:27017"
     mongodb_database: str = "dzeck"
     mongodb_username: str | None = None
     mongodb_password: str | None = None
     
     # Redis configuration
-    redis_host: str = "redis"
+    redis_host: str = "localhost"
     redis_port: int = 6379
     redis_db: int = 0
     redis_password: str | None = None

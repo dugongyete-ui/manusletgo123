@@ -30,19 +30,37 @@ _app_ready = False
 
 async def _init_databases() -> None:
     """Initialize MongoDB/Beanie and Redis in the background so uvicorn
-    starts accepting requests (and healthchecks) immediately."""
+    starts accepting requests (and healthchecks) immediately.
+
+    Retries MongoDB up to MAX_RETRIES times before giving up so that
+    transient Atlas connection delays at startup don't permanently break
+    the service.
+    """
     global _app_ready
-    try:
-        logger.info("Background DB init — connecting to MongoDB…")
-        await get_mongodb().initialize()
-        await init_beanie(
-            database=get_mongodb().client[settings.mongodb_database],
-            document_models=[AgentDocument, SessionDocument, UserDocument],
-        )
-        logger.info("Successfully initialized Beanie")
-    except Exception as exc:
-        logger.error(f"MongoDB/Beanie initialization failed: {exc}")
-        return
+    MAX_RETRIES = 5
+    RETRY_DELAY = 3.0  # seconds between attempts
+
+    for attempt in range(1, MAX_RETRIES + 1):
+        try:
+            logger.info(f"DB init attempt {attempt}/{MAX_RETRIES} — connecting to MongoDB…")
+            await get_mongodb().initialize()
+            await init_beanie(
+                database=get_mongodb().client[settings.mongodb_database],
+                document_models=[AgentDocument, SessionDocument, UserDocument],
+            )
+            logger.info("Successfully initialized Beanie")
+            break
+        except Exception as exc:
+            logger.error(f"MongoDB/Beanie initialization failed (attempt {attempt}/{MAX_RETRIES}): {exc}")
+            if attempt < MAX_RETRIES:
+                logger.info(f"Retrying in {RETRY_DELAY}s…")
+                await asyncio.sleep(RETRY_DELAY)
+            else:
+                logger.critical(
+                    "MongoDB initialization failed after all retries — "
+                    "API endpoints requiring the database will return 503."
+                )
+                return
 
     try:
         await get_redis().initialize()

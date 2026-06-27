@@ -83,8 +83,9 @@ class PlannerAgent(BaseAgent):
                     kwargs["default_headers"] = settings.extra_headers
                 vision_base = settings.vision_api_base or settings.api_base
                 if vision_base:
-                    kwargs["http_client"] = httpx.Client(verify=False)
-                    kwargs["http_async_client"] = httpx.AsyncClient(verify=False)
+                    verify = settings.ssl_verify
+                    kwargs["http_client"] = httpx.Client(verify=verify)
+                    kwargs["http_async_client"] = httpx.AsyncClient(verify=verify)
                 self._vision_model = init_chat_model(**kwargs)
                 logger.info(
                     f"Vision model initialised: {settings.vision_model_name} "

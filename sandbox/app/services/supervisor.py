@@ -86,7 +86,7 @@ class SupervisorService:
         if self.shutdown_task:
             try:
                 self.shutdown_task.cancel()
-            except:
+            except Exception:
                 pass
             
         # Create scheduled task function
@@ -217,7 +217,7 @@ class SupervisorService:
             try:
                 self.shutdown_task.cancel()
                 self.shutdown_task = None
-            except:
+            except Exception:
                 pass
         
         # Also check thread timer (for compatibility)
