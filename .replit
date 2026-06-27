@@ -1,4 +1,4 @@
-modules = ["python-3.12", "vue-node-20", "nodejs-20", "bash"]
+modules = ["python-3.12", "vue-node-20", "nodejs-20", "bash", "web"]
 [agent]
 expertMode = true
 stack = "BEST_EFFORT_FALLBACK"
