@@ -118,18 +118,12 @@ TYPICAL FLOW for actions that load content:
   browser_view()                           ← fresh DOM snapshot before continuing
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-FILE UPLOAD & FAST TEXT EXTRACTION
+FILE UPLOAD
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 browser_upload_file(index, file_path)
   → Upload a local sandbox file to an <input type="file"> form field.
   → file_path must be an absolute path that exists in the sandbox.
-
-browser_extract_text(url, timeout=15)
-  → Fetches page text via HTTP without launching full browser (~100ms vs ~3s for browser_view).
-  → DEFAULT CHOICE whenever your goal is only to READ text from any URL.
-  → Returns up to 8000 chars of readable text.
-  → Switch to browser_navigate ONLY when: page requires login, content is purely JS-rendered, or you need to interact.
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 FILE MANAGEMENT
