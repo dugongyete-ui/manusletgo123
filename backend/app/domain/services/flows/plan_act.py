@@ -12,6 +12,7 @@ from app.domain.models.event import (
     TitleEvent,
 )
 from app.domain.models.plan import ExecutionStatus
+from app.core.config import get_settings
 from app.domain.services.agents.planner import PlannerAgent
 from app.domain.services.agents.execution import ExecutionAgent
 from app.domain.external.sandbox import Sandbox
@@ -143,6 +144,12 @@ class PlanActFlow(BaseFlow):
         await self._session_repository.update_status(self._session_id, SessionStatus.RUNNING)  
         self.plan = session.get_last_plan()
 
+        settings = get_settings()
+        _max_steps = settings.max_steps
+        _max_consecutive_failures = settings.max_consecutive_failures
+        _steps_executed = 0
+        _consecutive_failures = 0
+
         logger.info(f"Agent {self._agent_id} started processing message: {message.message[:50]}...")
         step = None
         while True:
@@ -229,14 +236,58 @@ class PlanActFlow(BaseFlow):
                 self.plan.status = ExecutionStatus.RUNNING
                 step = self.plan.get_next_step()
                 if not step:
-                    logger.info(f"Agent {self._agent_id} has no more steps, state changed from {AgentStatus.EXECUTING} to {AgentStatus.COMPLETED}")
+                    logger.info(f"Agent {self._agent_id} has no more steps, moving to SUMMARIZING")
                     self.status = AgentStatus.SUMMARIZING
                     continue
+
+                # Guard: max total steps executed
+                if _steps_executed >= _max_steps:
+                    logger.warning(
+                        f"Agent {self._agent_id} reached max_steps={_max_steps}, "
+                        "force-moving to SUMMARIZING"
+                    )
+                    yield MessageEvent(
+                        role="assistant",
+                        message=(
+                            f"⚠️ Reached the maximum step limit ({_max_steps}). "
+                            "Summarising with the data collected so far."
+                        ),
+                    )
+                    self.status = AgentStatus.SUMMARIZING
+                    continue
+
+                # Guard: consecutive failures
+                if _consecutive_failures >= _max_consecutive_failures:
+                    logger.warning(
+                        f"Agent {self._agent_id} reached {_consecutive_failures} consecutive "
+                        f"failures (limit={_max_consecutive_failures}), force-moving to SUMMARIZING"
+                    )
+                    yield MessageEvent(
+                        role="assistant",
+                        message=(
+                            f"⚠️ {_consecutive_failures} steps failed consecutively. "
+                            "Summarising with the data collected so far."
+                        ),
+                    )
+                    self.status = AgentStatus.SUMMARIZING
+                    continue
+
                 # Execute step
                 logger.info(f"Agent {self._agent_id} started executing step {step.id}: {step.description[:50]}...")
                 async for event in self.executor.execute_step(self.plan, step, message):
                     yield event
-                logger.info(f"Agent {self._agent_id} completed step {step.id}, state changed from {AgentStatus.EXECUTING} to {AgentStatus.UPDATING}")
+
+                _steps_executed += 1
+                if step.success:
+                    _consecutive_failures = 0
+                else:
+                    _consecutive_failures += 1
+                    logger.warning(
+                        f"Agent {self._agent_id} step {step.id} failed "
+                        f"(consecutive_failures={_consecutive_failures}/{_max_consecutive_failures})"
+                    )
+
+                logger.info(f"Agent {self._agent_id} completed step {step.id}, moving to UPDATING")
                 await self.executor.compact_memory()
                 logger.debug(f"Agent {self._agent_id} compacted memory")
                 self.status = AgentStatus.UPDATING

@@ -104,6 +104,21 @@ class Settings(BaseSettings):
     # Set SSL_VERIFY=true only if your gateway has a valid public certificate
     ssl_verify: bool = False
 
+    # Agent loop limits
+    # Maximum number of plan steps the executor will run before force-summarising.
+    # Reduces runaway loops on complex tasks. env var: MAX_STEPS
+    max_steps: int = 50
+
+    # How many consecutive failed steps before the loop skips to SUMMARIZING.
+    # Increase if tasks involve many optional tool calls that may legitimately fail.
+    # env var: MAX_CONSECUTIVE_FAILURES
+    max_consecutive_failures: int = 3
+
+    # Extra instructions appended to all agent system prompts at runtime.
+    # Useful for per-deployment persona customisation without editing code.
+    # env var: EXTEND_SYSTEM_MESSAGE
+    extend_system_message: str | None = None
+
     # MCP configuration
     mcp_config_path: str = "/home/runner/workspace/mcp.json"
     

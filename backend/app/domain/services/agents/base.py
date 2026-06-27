@@ -172,7 +172,15 @@ class BaseAgent(ABC):
         """Update memory and save to repository"""
         await self._ensure_memory()
         if self.memory.empty:
-            self.memory.add_message(SystemMessage(content=self.system_prompt))
+            settings = get_settings()
+            effective_prompt = self.system_prompt
+            if settings.extend_system_message:
+                effective_prompt = (
+                    effective_prompt.rstrip()
+                    + "\n\n"
+                    + settings.extend_system_message.strip()
+                )
+            self.memory.add_message(SystemMessage(content=effective_prompt))
         self.memory.add_messages(messages)
         await self._repository.save_memory(self._agent_id, self.name, self.memory)
     
