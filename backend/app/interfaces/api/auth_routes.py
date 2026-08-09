@@ -8,9 +8,9 @@ from app.application.services.file_service import FileService
 from app.application.services.agent_service import AgentService
 from app.application.services.email_service import EmailService
 from app.application.errors.exceptions import (
-    UnauthorizedError, NotFoundError, BadRequestError
+    UnauthorizedError, NotFoundError, BadRequestError, ForbiddenError
 )
-from app.interfaces.dependencies import get_auth_service, get_current_user, get_file_service, get_agent_service, get_token_service, get_email_service
+from app.interfaces.dependencies import get_auth_service, get_current_user, get_optional_current_user, get_file_service, get_agent_service, get_token_service, get_email_service
 from app.interfaces.schemas.base import APIResponse
 from app.interfaces.schemas.auth import (
     LoginRequest, RegisterRequest, ChangePasswordRequest, ChangeFullnameRequest, RefreshTokenRequest,
@@ -73,13 +73,16 @@ async def register(
 
 @router.get("/status", response_model=APIResponse[AuthStatusResponse])
 async def get_auth_status(
-    auth_service: AuthService = Depends(get_auth_service)
+    auth_service: AuthService = Depends(get_auth_service),
+    current_user: User | None = Depends(get_optional_current_user),
 ) -> APIResponse[AuthStatusResponse]:
     """Get authentication status and configuration"""
     settings = get_settings()
     
     return APIResponse.success(AuthStatusResponse(
-        auth_provider=settings.auth_provider
+        authenticated=current_user is not None,
+        auth_provider=settings.auth_provider,
+        user=UserResponse.from_user(current_user) if current_user else None,
     ))
 
 
@@ -126,7 +129,7 @@ async def get_user(
     """Get user information by ID (admin only)"""
     # Check if current user is admin
     if current_user.role != "admin":
-        raise UnauthorizedError("Admin access required")
+        raise ForbiddenError("Admin access required")
     
     user = await auth_service.get_user_by_id(user_id)
     
@@ -145,7 +148,7 @@ async def deactivate_user(
     """Deactivate user account (admin only)"""
     # Check if current user is admin
     if current_user.role != "admin":
-        raise UnauthorizedError("Admin access required")
+        raise ForbiddenError("Admin access required")
     
     # Prevent self-deactivation
     if current_user.id == user_id:
@@ -164,7 +167,7 @@ async def activate_user(
     """Activate user account (admin only)"""
     # Check if current user is admin
     if current_user.role != "admin":
-        raise UnauthorizedError("Admin access required")
+        raise ForbiddenError("Admin access required")
     
     await auth_service.activate_user(user_id)
     return APIResponse.success({})
@@ -198,7 +201,7 @@ async def logout(
     # Revoke token
     await auth_service.logout(bearer_credentials.credentials)
     
-    return APIResponse.success({})
+    return APIResponse.success({"message": "Logout successful"})
 
 
 @router.post("/send-verification-code", response_model=APIResponse[dict])

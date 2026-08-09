@@ -104,12 +104,12 @@ isValidation = true
 name = "backend-pytest"
 author = "agent"
 
-[[workflows.workflow.tasks]]
-task = "shell.exec"
-args = "cd backend && python3 -m pytest tests/ -x -q 2>&1 | tail -20"
-
 [workflows.workflow.metadata]
 isValidation = true
+
+[[workflows.workflow.tasks]]
+task = "shell.exec"
+args = "cd backend && python3 -m pytest tests/ -x -q"
 
 [[workflows.workflow]]
 name = "Sandbox Services"
@@ -151,14 +151,14 @@ run = ["bash", "-c", "bash /home/runner/workspace/scripts/start_production.sh"]
 [userenv]
 
 [userenv.shared]
-API_BASE = "https://api.swiftrouter.com/v1"
-MODEL_NAME = "qwen3-coder-480b"
+API_BASE = "https://integrate.api.nvidia.com/v1"
+MODEL_NAME = "nvidia/nemotron-3-super-120b-a12b"
 MODEL_PROVIDER = "openai"
 TEMPERATURE = "0.7"
 MAX_TOKENS = "8000"
-VISION_MODEL_NAME = "qwen3-coder-480b"
+VISION_MODEL_NAME = "nvidia/nemotron-3-super-120b-a12b"
 VISION_MODEL_PROVIDER = "openai"
-VISION_API_BASE = "https://api.swiftrouter.com/v1"
+VISION_API_BASE = "https://integrate.api.nvidia.com/v1"
 MONGODB_DATABASE = "manus"
 REDIS_HOST = "redis-14320.c334.asia-southeast2-1.gce.cloud.redislabs.com"
 REDIS_PORT = "14320"
@@ -170,13 +170,13 @@ JWT_REFRESH_TOKEN_EXPIRE_DAYS = "30"
 CLAW_ENABLED = "false"
 LOG_LEVEL = "INFO"
 MCP_CONFIG_PATH = "/home/runner/workspace/mcp.json"
-SUMMARY_MODEL_NAME = "qwen3-coder-480b"
+SUMMARY_MODEL_NAME = "nvidia/nemotron-3-super-120b-a12b"
 MONGODB_URI = "mongodb+srv://galerizaki_db_user:wTkfzrqewY5qCxYG@cluster0.vmiek8b.mongodb.net/manus?retryWrites=true&w=majority"
 REDIS_PASSWORD = "dA82OZIdJg62zWqsPJ9sDNvgtpCKbAAs"
 JWT_SECRET_KEY = "vcyffuhduduffjdejieueueueueuu-#--$-#6#-super-secure"
 TAVILY_API_KEY = "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"
-VISION_API_KEY = "sk-5f30af33f56cdd1e67ca3467b9042ef7a0c42e6dc44326b0c39f01ba9b018920"
-API_KEY = "sk-5f30af33f56cdd1e67ca3467b9042ef7a0c42e6dc44326b0c39f01ba9b018920"
+VISION_API_KEY = "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"
+API_KEY = "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"
 SANDBOX_TTL_MINUTES = "30"
 BROWSER_ENGINE = "browser_use"
 PASSWORD_SALT = "manus-salt-2025"
@@ -185,7 +185,7 @@ SANDBOX_CDP_URL = "http://localhost:8222"
 SANDBOX_BASE_URL = "http://localhost:8080"
 SANDBOX_VNC_URL = "ws://localhost:5901"
 SSL_VERIFY = "false"
-GITHUB_TOKEN = "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"
+GITHUB_TOKEN = "None"
 
 [postMerge]
 path = "scripts/post-merge.sh"

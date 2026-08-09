@@ -21,6 +21,7 @@ from app.domain.models.event import (
     DoneEvent,
 )
 from langchain.messages import HumanMessage as LCHumanMessage
+from langchain.messages import SystemMessage as LCSystemMessage
 import httpx
 from langchain.chat_models import init_chat_model
 from app.core.config import get_settings
@@ -104,6 +105,43 @@ class PlannerAgent(BaseAgent):
             })
         return content
 
+    @staticmethod
+    def _clean_acknowledgement(text: str) -> str:
+        """Return only natural-language acknowledgement text.
+
+        Planning responses are structured JSON, but acknowledgements are user-facing
+        prose.  Some providers follow the planner's cached system instructions even
+        when asked for a short acknowledgement, so never pass a JSON-shaped response
+        through to the chat renderer.
+        """
+        cleaned = text.strip()
+        if not cleaned:
+            return ""
+
+        candidate = cleaned
+        if candidate.startswith("```"):
+            lines = candidate.splitlines()
+            if len(lines) >= 3 and lines[-1].strip().startswith("```"):
+                candidate = "\n".join(lines[1:-1]).strip()
+
+        try:
+            parsed = json.loads(candidate)
+        except json.JSONDecodeError:
+            # A truncated JSON object is especially harmful here: it looks like a
+            # broken assistant answer and can be persisted in session history.
+            if candidate.startswith(("{", "[")):
+                logger.warning("Suppressing malformed JSON acknowledgement from planner")
+                return ""
+            return cleaned
+
+        if isinstance(parsed, dict):
+            for key in ("message", "response", "text"):
+                value = parsed.get(key)
+                if isinstance(value, str) and value.strip():
+                    return value.strip()
+        logger.warning("Suppressing structured acknowledgement from planner")
+        return ""
+
     async def _analyze_images(self, images: List[VisionImage], context: str) -> str:
         """Use the dedicated vision model to describe images as text."""
         prompt = (
@@ -149,8 +187,9 @@ class PlannerAgent(BaseAgent):
     async def acknowledge(self, message: Message) -> AsyncGenerator[BaseEvent, None]:
         """Stream an acknowledgment in < 1 s before full JSON planning begins.
 
-        Uses LangChain astream() so the very first token reaches the client as
-        soon as the model starts responding — typically well under one second.
+        Uses an isolated plain-text prompt.  This must not reuse planner memory:
+        planner memory contains the JSON planning contract, which can make a model
+        stream the plan itself as the acknowledgement.
         """
         import re
 
@@ -179,21 +218,33 @@ class PlannerAgent(BaseAgent):
         prompt = (
             f"{message.message}{context_note}\n\n"
             "Give a short, natural opening reply in the same language as the user. "
-            "Just react to what they asked — no rigid format, no lists, no bullet points."
+            "Just react to what they asked — no rigid format, no lists, no bullet points. "
+            "Return plain text only. Do not return JSON, markdown code fences, or a plan."
         )
         try:
-            full_text = ""
-            # Use full conversation history so the model can actually read previously
-            # uploaded file content — not just a hint that the content "exists".
-            await self._ensure_memory()
-            context = list(self.memory.get_messages())
-            context.append(LCHumanMessage(content=prompt))
+            # Do not use self.memory here.  The planner's memory includes
+            # PLANNER_SYSTEM_PROMPT, which explicitly requires JSON output.
+            context = [
+                LCSystemMessage(
+                    content=(
+                        "You are writing a brief acknowledgement for a user. "
+                        "Reply in plain natural language only. Never output JSON, "
+                        "code fences, a schema, or a step list."
+                    )
+                ),
+                LCHumanMessage(content=prompt),
+            ]
+            raw_text = ""
             async for chunk in self._model.astream(context):
                 text = chunk.content if isinstance(chunk.content, str) else ""
                 if text:
-                    full_text += text
-                    yield MessageChunkEvent(content=text, done=False)
+                    raw_text += text
+
+            # Validate before emitting anything so malformed/truncated JSON can
+            # never flash in the UI or be saved as a persisted assistant message.
+            full_text = self._clean_acknowledgement(raw_text)
             if full_text:
+                yield MessageChunkEvent(content=full_text, done=False)
                 yield MessageChunkEvent(content="", done=True)
                 # Persist the acknowledgment so it survives page refresh.
                 # MessageChunkEvent is transient (not saved to DB), so we follow up
