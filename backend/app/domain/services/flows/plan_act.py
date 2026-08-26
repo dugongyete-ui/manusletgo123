@@ -47,14 +47,16 @@ class AgentStatus(str, Enum):
 # Deterministic step-transition messages so the user ALWAYS sees progress in the
 # chat stream between steps, regardless of whether the model calls
 # message_notify_user on its own (free-tier models often skip it).
+# Kept compact and single-line (≤100 chars per segment) — professional,
+# Manus-style: a short status line, not an essay.
 _NARRATION_TEMPLATES = {
     "en": {
-        "done": "✅ Done: {done}\n\n▶ Next: {next}",
-        "failed": "⚠️ Step failed: {done}\n\n▶ Next: {next}",
+        "done": "✅ {done} — next: {next}",
+        "failed": "⚠️ {done} — next: {next}",
     },
     "id": {
-        "done": "✅ Selesai: {done}\n\n▶ Lanjut: {next}",
-        "failed": "⚠️ Langkah gagal: {done}\n\n▶ Lanjut: {next}",
+        "done": "✅ {done} — lanjut: {next}",
+        "failed": "⚠️ {done} — lanjut: {next}",
     },
 }
 
@@ -75,7 +77,7 @@ def _step_transition_narration(done_step, next_step, language: Optional[str]) ->
     tpl = _NARRATION_TEMPLATES.get(lang, _NARRATION_TEMPLATES["en"])
     key = "failed" if (getattr(done_step, "success", None) is False) else "done"
 
-    def _short(text: str, limit: int = 160) -> str:
+    def _short(text: str, limit: int = 100) -> str:
         text = (text or "").strip().replace("\n", " ")
         return text if len(text) <= limit else text[: limit - 1].rstrip() + "…"
 
@@ -288,7 +290,9 @@ class PlanActFlow(BaseFlow):
                     # Skip acknowledge entirely to avoid a double-response bubble.
                     yield TitleEvent(title=self.plan.title)
                     if self.plan.message:
-                        yield MessageEvent(role="assistant", message=self.plan.message)
+                        yield MessageEvent(
+                            role="assistant", message=self.plan.message, is_final=True
+                        )
                 else:
                     # Complex query: send acknowledgment streaming NOW (gives quick feedback
                     # while the user watches the plan appear below it).

@@ -255,10 +255,9 @@ class PlannerAgent(BaseAgent):
                 LCHumanMessage(content=prompt),
             ]
             raw_text = ""
-            async for chunk in self._model.astream(context):
-                text = chunk.content if isinstance(chunk.content, str) else ""
-                if text:
-                    raw_text += text
+            # Streams with automatic fallback-provider switch when the primary
+            # key is exhausted (auth/limit errors fail before any chunk).
+            raw_text = await self.astream_text_with_fallback(context)
 
             # Validate before emitting anything so malformed/truncated JSON can
             # never flash in the UI or be saved as a persisted assistant message.

@@ -32,6 +32,17 @@ class Settings(BaseSettings):
     model_provider: str = "openai"
     temperature: float = 0.7
     max_tokens: int = 2000
+
+    # Fallback model provider — used automatically when the primary provider
+    # hits rate limits / quota / auth errors so the agent keeps working.
+    # Explicit env config (FALLBACK_*) wins; otherwise the z.ai internal API
+    # credentials are auto-discovered from /etc/.z-ai-config when present.
+    fallback_api_base: str | None = None
+    fallback_api_key: str | None = None
+    fallback_model_name: str | None = None
+    fallback_token: str | None = None
+    fallback_chat_id: str | None = None
+    fallback_user_id: str | None = None
     
     # MongoDB configuration
     mongodb_uri: str = "mongodb://localhost:27017"
@@ -162,3 +173,63 @@ def get_settings() -> Settings:
     settings.extra_headers = _parse_extra_headers()
     settings.check_required_settings()
     return settings
+
+
+# Paths checked for z.ai internal API credentials (z-ai-web-dev-sdk layout).
+_ZAI_CONFIG_PATHS = (
+    "/etc/.z-ai-config",
+    os.path.expanduser("~/.z-ai-config"),
+)
+
+
+def get_fallback_model_config() -> dict | None:
+    """Resolve the fallback LLM provider configuration.
+
+    Priority:
+    1. Explicit FALLBACK_* environment variables (.env / Replit userenv).
+    2. Auto-discovery of the z.ai internal API config
+       (``/etc/.z-ai-config`` — the same credentials the z-ai SDK uses).
+
+    Returns a dict with ``api_base``, ``api_key``, ``model_name`` and
+    ``extra_headers`` ready for init_chat_model, or None when no fallback
+    provider is available (e.g. deployed outside the z.ai environment without
+    FALLBACK_* set — the agent then simply retries the primary provider).
+    """
+    settings = get_settings()
+    if settings.fallback_api_base and settings.fallback_api_key:
+        headers = {"X-Z-AI-From": "Z"}
+        if settings.fallback_token:
+            headers["X-Token"] = settings.fallback_token
+        if settings.fallback_chat_id:
+            headers["X-Chat-Id"] = settings.fallback_chat_id
+        if settings.fallback_user_id:
+            headers["X-User-Id"] = settings.fallback_user_id
+        return {
+            "api_base": settings.fallback_api_base,
+            "api_key": settings.fallback_api_key,
+            "model_name": settings.fallback_model_name or "glm-4.7",
+            "extra_headers": headers,
+        }
+
+    for path in _ZAI_CONFIG_PATHS:
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                cfg = json.load(f)
+            if not (cfg.get("baseUrl") and cfg.get("apiKey")):
+                continue
+            headers = {"X-Z-AI-From": "Z"}
+            if cfg.get("token"):
+                headers["X-Token"] = cfg["token"]
+            if cfg.get("chatId"):
+                headers["X-Chat-Id"] = cfg["chatId"]
+            if cfg.get("userId"):
+                headers["X-User-Id"] = cfg["userId"]
+            return {
+                "api_base": cfg["baseUrl"],
+                "api_key": cfg["apiKey"],
+                "model_name": settings.fallback_model_name or "glm-4.7",
+                "extra_headers": headers,
+            }
+        except (OSError, json.JSONDecodeError):
+            continue
+    return None

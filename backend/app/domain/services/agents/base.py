@@ -18,11 +18,57 @@ from langchain.chat_models import init_chat_model
 from langchain_classic.output_parsers.retry import RetryWithErrorOutputParser
 from langchain_core.output_parsers import JsonOutputParser
 from langchain_core.prompts import PromptTemplate
-from app.core.config import get_settings
+from app.core.config import get_settings, get_fallback_model_config
 from langchain.messages import AIMessage, HumanMessage, ToolCall, ToolMessage, SystemMessage
 from app.domain.services.tools.base import Tool
 from app.domain.utils.robust_json_parser import RobustJsonParser, ToolCallParseError
 import openai
+
+
+def _build_chat_model(prefer_fallback: bool = False):
+    """Create the chat model for an agent.
+
+    prefer_fallback=False → the primary provider from settings.
+    prefer_fallback=True  → the fallback provider (z.ai internal API or
+                            FALLBACK_* env config); returns None when no
+                            fallback is configured.
+    """
+    settings = get_settings()
+    if prefer_fallback:
+        cfg = get_fallback_model_config()
+        if not cfg:
+            return None
+        return init_chat_model(
+            model=cfg["model_name"],
+            model_provider="openai",
+            temperature=settings.temperature,
+            max_tokens=settings.max_tokens,
+            base_url=cfg["api_base"],
+            openai_api_key=cfg["api_key"],
+            default_headers=cfg["extra_headers"],
+            extra_body={"thinking": {"type": "disabled"}},
+        )
+    kwargs = dict(
+        model=settings.model_name,
+        model_provider=settings.model_provider,
+        temperature=settings.temperature,
+        max_tokens=settings.max_tokens,
+        base_url=settings.api_base,
+    )
+    # Pass the API key explicitly — env-var fallback (OPENAI_API_KEY) is
+    # not reliable when credentials are only present in the .env file.
+    if settings.api_key:
+        if settings.model_provider in ("openai",):
+            kwargs["openai_api_key"] = settings.api_key
+        else:
+            kwargs["api_key"] = settings.api_key
+    if settings.extra_headers:
+        kwargs["default_headers"] = settings.extra_headers
+    if settings.api_base:
+        verify = settings.ssl_verify
+        kwargs["http_client"] = httpx.Client(verify=verify)
+        kwargs["http_async_client"] = httpx.AsyncClient(verify=verify)
+    return init_chat_model(**kwargs)
 
 
 logger = logging.getLogger(__name__)
@@ -52,27 +98,7 @@ class BaseAgent(ABC):
         settings = get_settings()
         self._agent_id = agent_id
         self._repository = agent_repository
-        kwargs = dict(
-            model=settings.model_name,
-            model_provider=settings.model_provider,
-            temperature=settings.temperature,
-            max_tokens=settings.max_tokens,
-            base_url=settings.api_base,
-        )
-        # Pass the API key explicitly — env-var fallback (OPENAI_API_KEY) is
-        # not reliable when credentials are only present in the .env file.
-        if settings.api_key:
-            if settings.model_provider in ("openai",):
-                kwargs["openai_api_key"] = settings.api_key
-            else:
-                kwargs["api_key"] = settings.api_key
-        if settings.extra_headers:
-            kwargs["default_headers"] = settings.extra_headers
-        if settings.api_base:
-            verify = settings.ssl_verify
-            kwargs["http_client"] = httpx.Client(verify=verify)
-            kwargs["http_async_client"] = httpx.AsyncClient(verify=verify)
-        self._model = init_chat_model(**kwargs)
+        self._model = _build_chat_model(prefer_fallback=False)
         self._json_output_parser = RetryWithErrorOutputParser.from_llm(
             parser=JsonOutputParser(),
             llm=self._model,
@@ -80,6 +106,54 @@ class BaseAgent(ABC):
         )
         self.toolkits = tools
         self.memory = None
+        # Fallback provider state — switched on automatically when the primary
+        # provider hits rate limits / quota / auth errors.
+        self._using_fallback = False
+
+    def _switch_to_fallback_model(self, reason: str) -> bool:
+        """Swap the agent's model to the fallback provider. Returns success."""
+        if self._using_fallback:
+            return False
+        fallback = _build_chat_model(prefer_fallback=True)
+        if fallback is None:
+            return False
+        self._model = fallback
+        self._using_fallback = True
+        self._json_output_parser = RetryWithErrorOutputParser.from_llm(
+            parser=JsonOutputParser(),
+            llm=self._model,
+            max_retries=self.max_retries,
+        )
+        logger.warning(
+            "Agent %s switching to FALLBACK model provider (%s): %s",
+            self._agent_id, type(self._model).__name__, reason,
+        )
+        return True
+
+    @staticmethod
+    def _is_limit_error(exc: Exception) -> bool:
+        """Whether an API error means the primary provider's key is exhausted
+        (rate limit / quota / credits / auth) and a fallback should be used."""
+        if isinstance(exc, openai.RateLimitError):
+            return True
+        if isinstance(
+            exc,
+            (openai.AuthenticationError, openai.PermissionDeniedError),
+        ):
+            return True
+        msg = str(exc).lower()
+        return any(
+            keyword in msg
+            for keyword in (
+                "rate limit",
+                "quota",
+                "credit",
+                "insufficient",
+                "exceeded your current quota",
+                "billing",
+                "limit reached",
+            )
+        )
 
     async def _parse_json(self, text: str) -> dict:
         """Parse JSON from LLM output using RetryWithErrorOutputParser."""
@@ -237,12 +311,15 @@ class BaseAgent(ABC):
 
         # Stage 1-3: model chain | RobustJsonParser repairs invalid tool call JSON.
         # Stages 4-5: outer retry loop handles cases that survive stages 1-3.
-        chain = (
-            self._model
-            .bind(response_format=response_format, tool_choice=self.tool_choice)
-            .bind_tools(self.get_tools())
-            | RobustJsonParser.from_llm(self._model)
-        )
+        def _build_chain():
+            return (
+                self._model
+                .bind(response_format=response_format, tool_choice=self.tool_choice)
+                .bind_tools(self.get_tools())
+                | RobustJsonParser.from_llm(self._model)
+            )
+
+        chain = _build_chain()
 
         # Transient API errors that are safe to retry (5xx, network blips, rate limits).
         _TRANSIENT_API_ERRORS = (
@@ -270,7 +347,21 @@ class BaseAgent(ABC):
                 else:
                     # Stage 5 (RetryWithErrorOutputParser style): add error feedback.
                     context = e.make_retry_context(context)
+            except (openai.AuthenticationError, openai.PermissionDeniedError) as e:
+                # Invalid / exhausted primary key — retrying the same provider
+                # is pointless. Switch to the fallback provider when one is
+                # configured; otherwise surface the error immediately.
+                if self._switch_to_fallback_model(str(e)):
+                    chain = _build_chain()
+                    continue
+                raise
             except _TRANSIENT_API_ERRORS as e:
+                # Primary key exhausted (rate limit / quota / auth) → switch to
+                # the fallback provider immediately instead of burning retries
+                # against a wall that backoff cannot fix.
+                if self._is_limit_error(e) and self._switch_to_fallback_model(str(e)):
+                    chain = _build_chain()
+                    continue
                 if attempt == self.max_retries - 1:
                     logger.error(
                         "LLM API error after %d attempts, giving up: %s",
@@ -290,6 +381,9 @@ class BaseAgent(ABC):
                 # transient code (429 / 5xx / rate-limit wording).
                 if not self._transient_provider_error(e):
                     raise
+                if self._is_limit_error(e) and self._switch_to_fallback_model(str(e)):
+                    chain = _build_chain()
+                    continue
                 if attempt == self.max_retries - 1:
                     logger.error(
                         "Provider error after %d attempts, giving up: %s",
@@ -326,6 +420,33 @@ class BaseAgent(ABC):
 
         await self._add_to_memory([message])
         return message
+
+    async def astream_text_with_fallback(self, messages) -> str:
+        """Collect the full streamed text from the model.
+
+        On a limit/quota/auth error the request fails BEFORE any chunk is
+        produced, so it is safe to switch to the fallback provider and
+        retry the stream once. Used by the direct-astream call sites
+        (planner acknowledgement, executor summary) that bypass
+        ask_with_messages.
+        """
+        for attempt in (0, 1):
+            try:
+                parts: list = []
+                async for chunk in self._model.astream(messages):
+                    text = chunk.content if isinstance(chunk.content, str) else ""
+                    if text:
+                        parts.append(text)
+                return "".join(parts)
+            except Exception as e:
+                if (
+                    attempt == 0
+                    and self._is_limit_error(e)
+                    and self._switch_to_fallback_model(str(e))
+                ):
+                    continue
+                raise
+        return ""
 
     async def ask(self, request: Union[str, list], format: Optional[str] = None) -> AIMessage:
         return await self.ask_with_messages([

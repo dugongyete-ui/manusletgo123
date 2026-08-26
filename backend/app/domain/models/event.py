@@ -118,6 +118,10 @@ class MessageEvent(BaseEvent):
     role: Literal["user", "assistant"] = "assistant"
     message: str
     attachments: Optional[List[FileInfo]] = None
+    # True ONLY for the task's final summary message. Files created during
+    # the task are never attached to mid-task messages — they are deferred
+    # and delivered exactly once, here, with the final summary (Manus-style).
+    is_final: bool = False
 
 class DoneEvent(BaseEvent):
     """Done event"""

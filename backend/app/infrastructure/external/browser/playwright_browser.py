@@ -2,7 +2,6 @@ from typing import Dict, Any, Optional, List
 from playwright.async_api import async_playwright, Browser, Page
 import asyncio
 from markdownify import markdownify
-from langchain.chat_models import init_chat_model
 from langchain_core.messages import HumanMessage, SystemMessage
 from app.core.config import get_settings
 from app.domain.models.tool_result import ToolResult
@@ -19,24 +18,25 @@ class PlaywrightBrowser:
         self.page: Optional[Page] = None
         self.playwright = None
         self.settings = get_settings()
-        kwargs = dict(
-            model=self.settings.model_name,
-            model_provider=self.settings.model_provider,
-            temperature=self.settings.temperature,
-            max_tokens=self.settings.max_tokens,
-            base_url=self.settings.api_base,
-        )
-        # Pass the API key explicitly — env-var fallback (OPENAI_API_KEY) is
-        # not reliable when credentials are only present in the .env file.
-        if self.settings.api_key:
-            if self.settings.model_provider in ("openai",):
-                kwargs["openai_api_key"] = self.settings.api_key
-            else:
-                kwargs["api_key"] = self.settings.api_key
-        if self.settings.extra_headers:
-            kwargs["default_headers"] = self.settings.extra_headers
-        self._model = init_chat_model(**kwargs)
+        # Shared model builder (keeps the primary/fallback provider logic in
+        # one place — see agents/base.py).
+        from app.domain.services.agents.base import _build_chat_model
+        self._model = _build_chat_model(prefer_fallback=False)
+        self._using_fallback = False
         self.cdp_url = cdp_url
+
+    def _switch_to_fallback_model(self, reason: str) -> bool:
+        """Swap the browser-analysis model to the fallback provider."""
+        from app.domain.services.agents.base import _build_chat_model
+        if self._using_fallback:
+            return False
+        fallback = _build_chat_model(prefer_fallback=True)
+        if fallback is None:
+            return False
+        self._model = fallback
+        self._using_fallback = True
+        logger.warning("PlaywrightBrowser switching to FALLBACK model: %s", reason)
+        return True
         
     async def initialize(self):
         """Initialize and ensure resources are available"""
@@ -233,10 +233,23 @@ class PlaywrightBrowser:
         markdown_content = markdownify(visible_content)
 
         max_content_length = min(50000, len(markdown_content))
-        response = await self._model.ainvoke([
+        messages = [
             SystemMessage(content="You are a professional web page information extraction assistant. Please extract all information from the current page content and convert it to Markdown format."),
             HumanMessage(content=markdown_content[:max_content_length]),
-        ])
+        ]
+        try:
+            response = await self._model.ainvoke(messages)
+        except Exception as exc:
+            # Primary provider exhausted (rate limit / quota / auth) → one
+            # transparent retry on the fallback provider before giving up.
+            msg = str(exc).lower()
+            if any(k in msg for k in ("rate limit", "quota", "credit", "insufficient", "billing", "429", "401", "403")) or type(exc).__name__ in ("RateLimitError", "AuthenticationError", "PermissionDeniedError"):
+                if self._switch_to_fallback_model(str(exc)):
+                    response = await self._model.ainvoke(messages)
+                else:
+                    raise
+            else:
+                raise
         return response.content
     
     async def view_page(self) -> ToolResult:

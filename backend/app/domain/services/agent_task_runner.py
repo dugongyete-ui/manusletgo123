@@ -463,14 +463,18 @@ class AgentTaskRunner(TaskRunner):
 
         sandbox_ready = False
         # Collect files written during this run so we can auto-attach them to
-        # the final MessageEvent when the agent forgets to include them.
+        # the FINAL summary MessageEvent when the agent forgets to include them.
+        # Files are NEVER attached to mid-task messages anymore — the user
+        # wants every deliverable to arrive ONCE, at the end, with the summary
+        # (Manus-style).
         files_written: List[FileInfo] = []
         # File paths already attached to ANY message in this run. Guarantees
-        # each file is delivered to the user EXACTLY ONCE — previously every
-        # MessageEvent after a file_write re-attached the same file, so the
-        # report .md appeared on the executor narration AND again on the
-        # final summary (the "double send" bug).
+        # each file is delivered to the user EXACTLY ONCE.
         delivered_paths: set = set()
+
+        def _is_generator_script(fi: FileInfo) -> bool:
+            name = fi.filename or fi.file_path or ""
+            return name.endswith(".py")
 
         async for event in self._flow.run(message):
             if isinstance(event, ToolEvent):
@@ -500,53 +504,48 @@ class AgentTaskRunner(TaskRunner):
                                 f"Agent {self._agent_id} failed to sync step attachment {attachment_path}: {e}"
                             )
             elif isinstance(event, MessageEvent):
-                # Strip attachments the user already received on an earlier
-                # message of this run FIRST — every file must be delivered
-                # EXACTLY once regardless of which agent layer re-attached it.
-                if event.attachments:
-                    fresh = [
-                        f for f in event.attachments
-                        if not (f.file_path and f.file_path in delivered_paths)
-                    ]
-                    if len(fresh) != len(event.attachments):
-                        dropped = [
-                            f.filename or f.file_path
-                            for f in event.attachments
-                            if f not in fresh
-                        ]
-                        logger.info(
-                            f"Agent {self._agent_id} stripped already-delivered "
-                            f"attachment(s) from message: {dropped}"
-                        )
-                    event.attachments = fresh or None
-                # Merge NOT-yet-delivered written files into the message
-                # attachments. The agent may attach some files (e.g. a summary
-                # .md) while forgetting to include downloaded images — we merge
-                # the missing ones, but never re-attach a file that was already
-                # delivered on an earlier message in this same run.
-                if files_written:
-                    # Prefer actual output files over intermediate generator scripts (.py).
-                    # If there are non-.py output files, exclude bare generator scripts
-                    # (e.g. generate_foo.py) so they don't clutter the attachment list.
-                    def _is_generator_script(fi: FileInfo) -> bool:
-                        name = fi.filename or fi.file_path or ""
-                        return name.endswith(".py")
-
+                if event.is_final:
+                    # ── Final summary message — THE single delivery point ─────
+                    # Attach everything the task produced that has not been
+                    # delivered yet: the model's own attachments + every file
+                    # written by tools during the run (minus generator scripts
+                    # when real outputs exist) + files deferred from mid-task
+                    # messages. Deduplicated by path, never re-sent.
+                    merged: List[FileInfo] = list(event.attachments or [])
+                    known_paths = {f.file_path for f in merged if f.file_path}
                     non_scripts = [f for f in files_written if not _is_generator_script(f)]
                     files_to_merge = non_scripts if non_scripts else files_written
-
-                    existing_paths = {f.file_path for f in (event.attachments or []) if f.file_path}
-                    extra = [
-                        f for f in files_to_merge
-                        if f.file_path not in existing_paths
-                        and f.file_path not in delivered_paths
-                    ]
-                    if extra:
-                        event.attachments = list(event.attachments or []) + extra
+                    for f in files_to_merge:
+                        if (
+                            f.file_path
+                            and f.file_path not in known_paths
+                            and f.file_path not in delivered_paths
+                        ):
+                            known_paths.add(f.file_path)
+                            merged.append(f)
+                    event.attachments = merged or None
+                    if len(merged) != len(files_written) or files_written:
                         logger.info(
-                            f"Agent {self._agent_id} merged {len(extra)} written file(s) "
-                            f"into MessageEvent: {[f.filename for f in extra]}"
+                            f"Agent {self._agent_id} final summary delivers "
+                            f"{len(merged)} file(s): "
+                            f"{[f.filename or f.file_path for f in merged]}"
                         )
+                elif event.attachments:
+                    # ── Mid-task message — strip attachments entirely. ───────
+                    # Progress notifications must stay pure text; the files
+                    # ride along with the final summary instead. Park them in
+                    # files_written (if not already tracked) so nothing is lost.
+                    dropped = [f.filename or f.file_path for f in event.attachments]
+                    logger.info(
+                        f"Agent {self._agent_id} deferred mid-task attachment(s) "
+                        f"to the final summary: {dropped}"
+                    )
+                    for f in event.attachments:
+                        if f.file_path and all(
+                            fw.file_path != f.file_path for fw in files_written
+                        ):
+                            files_written.append(f)
+                    event.attachments = None
                 # Record everything this message carries so no later message
                 # (e.g. the final summary) sends the same file again.
                 for f in (event.attachments or []):

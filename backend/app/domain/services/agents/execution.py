@@ -52,10 +52,48 @@ class ExecutionAgent(BaseAgent):
             agent_repository=agent_repository,
             tools=tools,
         )
-        # Sandbox file paths already delivered to the user during execution
-        # (via message_notify_user with attachments). Used by summarize() to
-        # avoid sending the same file twice — the "double send" bug.
-        self._delivered_attachments: List[str] = []
+        # Sandbox file paths the user still needs to receive. Deferred from
+        # mid-task message_notify_user calls (files are ONLY delivered with the
+        # final summary — never mid-task, Manus-style) and consumed by
+        # summarize() so nothing is lost and nothing is sent twice.
+        self._deferred_attachments: List[str] = []
+        # Last narration text sent via message_notify_user — used to suppress
+        # near-duplicate progress messages (the model sometimes re-announces
+        # the same intent with slightly different wording).
+        self._last_narration_norm: Optional[str] = None
+        # tool_call_ids of notify calls suppressed as duplicates — their
+        # completion (CALLED) events are dropped too so the duplicate text
+        # can never reach the chat UI through the back door.
+        self._suppressed_notify_ids: set = set()
+
+    @staticmethod
+    def _normalize_narration(text: str) -> str:
+        """Lowercase, strip punctuation and collapse whitespace for comparison."""
+        import re as _re
+        return _re.sub(r"\s+", " ", _re.sub(r"[^\w\s]", " ", (text or "").lower())).strip()
+
+    @classmethod
+    def _is_duplicate_narration(cls, text: str, last_norm: Optional[str], threshold: float = 0.7) -> bool:
+        """True when `text` is (near-)identical to the previous narration.
+
+        Uses word-token Jaccard similarity: free-tier models occasionally send
+        the same progress line twice with small rewording ("Memulai pengujian
+        browser: membuka halaman Wikipedia…" followed immediately by "…
+        halaman contoh…"). Those read as glitches in the chat stream.
+        """
+        norm = cls._normalize_narration(text)
+        if not norm:
+            return True  # empty narration → nothing new to say
+        if not last_norm:
+            return False
+        if norm == last_norm:
+            return True
+        a = set(norm.split())
+        b = set(last_norm.split())
+        if not a or not b:
+            return False
+        jaccard = len(a & b) / len(a | b)
+        return jaccard >= threshold
 
     @staticmethod
     def _counts_as_real_action(event: "ToolEvent") -> bool:
@@ -151,35 +189,57 @@ class ExecutionAgent(BaseAgent):
                         yield WaitEvent()
                         return
                     continue
-                elif (
-                    event.function_name == "message_notify_user"
-                    and event.status == ToolStatus.CALLING
-                ):
-                    raw_att = event.function_args.get("attachments")
-                    if raw_att:
-                        att_list = (
-                            [raw_att] if isinstance(raw_att, str) else list(raw_att)
-                        )
-                        att_list = [p for p in att_list if p]
-                        # Only deliver files that were NOT already delivered in an
-                        # earlier message of this run — re-attaching them here made
-                        # the same file appear on multiple chat bubbles (the
-                        # "double send" bug).
-                        new_paths = [
-                            p for p in att_list
-                            if p not in self._delivered_attachments
-                        ]
-                        if new_paths:
-                            # Record mid-task deliveries so the final summary
-                            # never re-sends the same file (double-send bug).
-                            for p in new_paths:
-                                if p not in self._delivered_attachments:
-                                    self._delivered_attachments.append(p)
-                            yield MessageEvent(
-                                message=event.function_args.get("text", ""),
-                                attachments=[FileInfo(file_path=p) for p in new_paths],
+                elif event.function_name == "message_notify_user":
+                    if event.status == ToolStatus.CALLING:
+                        raw_att = event.function_args.get("attachments")
+                        if raw_att:
+                            att_list = (
+                                [raw_att] if isinstance(raw_att, str) else list(raw_att)
                             )
+                            att_list = [p for p in att_list if p]
+                            # Files are NEVER delivered mid-task anymore — every
+                            # path is deferred and delivered exactly ONCE with
+                            # the final summary (user requirement: files created
+                            # during the task are sent at the end, in the summary).
+                            for p in att_list:
+                                if p not in self._deferred_attachments:
+                                    self._deferred_attachments.append(p)
+                                    logger.info(
+                                        "Deferred mid-task attachment to final "
+                                        "summary: %s", p,
+                                    )
+                        # Suppress near-duplicate progress narrations so the
+                        # chat stream stays clean and professional.
+                        notify_text = (event.function_args.get("text") or "").strip()
+                        if self._is_duplicate_narration(
+                            notify_text, self._last_narration_norm
+                        ):
+                            logger.info(
+                                "Suppressed duplicate progress narration: %s",
+                                notify_text[:80],
+                            )
+                            self._suppressed_notify_ids.add(event.tool_call_id)
                             continue
+                        self._last_narration_norm = self._normalize_narration(
+                            notify_text
+                        )
+                    elif (
+                        event.status == ToolStatus.CALLED
+                        and event.tool_call_id in self._suppressed_notify_ids
+                    ):
+                        # The matching CALLING event was suppressed as a
+                        # duplicate — drop its completion event too, otherwise
+                        # the frontend would still render the duplicate text.
+                        self._suppressed_notify_ids.discard(event.tool_call_id)
+                        continue
+                    # The notify ToolEvent itself streams to the frontend and is
+                    # rendered as a plain chat bubble (ToolUse.vue renders
+                    # tool.args.text for the message toolkit) — no MessageEvent
+                    # needed, so files can never leak into a mid-task bubble.
+                    yield event
+                    continue
+            # ErrorEvents (logged above) and all non-message ToolEvents
+            # (file/shell/browser/…) pass through unchanged.
             yield event
 
     async def execute_step(
@@ -505,10 +565,8 @@ class ExecutionAgent(BaseAgent):
 
         Args:
             step_attachments: final deliverable file paths collected from every
-                step's result JSON. Used (a) to skip creating a duplicate
-                summary .md when a report already exists, and (b) to filter out
-                files that were already delivered mid-task via
-                message_notify_user so nothing is sent twice.
+                step's result JSON — delivered ONCE here, with this final
+                summary message (never mid-task).
         """
         await self._ensure_memory()
         context = list(self.memory.get_messages())
@@ -517,10 +575,9 @@ class ExecutionAgent(BaseAgent):
 
         full_text = ""
         try:
-            async for chunk in self._model.astream(stream_context):
-                token = chunk.content if isinstance(chunk.content, str) else ""
-                if token:
-                    full_text += token
+            # Streams with automatic fallback-provider switch when the primary
+            # key is exhausted (auth/limit errors fail before any chunk).
+            full_text = await self.astream_text_with_fallback(stream_context)
 
             if full_text:
                 clean_text = self._extract_text_from_json(full_text)
@@ -537,15 +594,22 @@ class ExecutionAgent(BaseAgent):
                 attachments = await self._decide_and_create_summary_file(
                     clean_text, context, existing_attachments=step_attachments
                 )
-                # Deliver step deliverables that were NOT already sent mid-task.
-                already_delivered = set(self._delivered_attachments)
-                for p in step_attachments or []:
-                    if p and p not in already_delivered:
-                        already_delivered.add(p)
+                # Deliver every deliverable from this task exactly once, here,
+                # with the final summary: the step JSON attachments plus any
+                # files deferred from mid-task notifications.
+                already_listed = {
+                    a.file_path for a in attachments if a.file_path
+                }
+                for p in list(step_attachments or []) + list(
+                    self._deferred_attachments
+                ):
+                    if p and p not in already_listed:
+                        already_listed.add(p)
                         attachments.append(FileInfo(file_path=p))
                 yield MessageEvent(
                     message=clean_text,
                     attachments=attachments if attachments else None,
+                    is_final=True,
                 )
             return
 
@@ -555,7 +619,6 @@ class ExecutionAgent(BaseAgent):
             )
 
         # Fallback: JSON-based summarize
-        already_delivered = list(self._delivered_attachments)
         async for event in self.execute(SUMMARIZE_PROMPT):
             if isinstance(event, MessageEvent):
                 logger.debug(f"Execution agent summary: {event.message}")
@@ -564,16 +627,23 @@ class ExecutionAgent(BaseAgent):
                     logger.warning(
                         "Summarize fallback returned non-JSON, using raw message"
                     )
-                    yield MessageEvent(message=event.message)
+                    yield MessageEvent(message=event.message, is_final=True)
                     continue
                 msg_obj = Message.model_validate(parsed_response)
-                # Filter out anything already delivered mid-task so the user
-                # never receives the same file twice.
-                attachment_paths = [
-                    fp for fp in msg_obj.attachments
-                    if fp and fp not in already_delivered
-                ]
-                attachments = [FileInfo(file_path=fp) for fp in attachment_paths]
-                yield MessageEvent(message=msg_obj.message, attachments=attachments)
+                # Collect every deliverable exactly once, deduplicated:
+                # the model's own attachments + step deliverables + files
+                # deferred from mid-task notifications.
+                paths: List[str] = []
+                for fp in list(msg_obj.attachments) + list(
+                    step_attachments or []
+                ) + list(self._deferred_attachments):
+                    if fp and fp not in paths:
+                        paths.append(fp)
+                attachments = [FileInfo(file_path=fp) for fp in paths]
+                yield MessageEvent(
+                    message=msg_obj.message,
+                    attachments=attachments if attachments else None,
+                    is_final=True,
+                )
                 continue
             yield event
