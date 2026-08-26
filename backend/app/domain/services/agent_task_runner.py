@@ -49,6 +49,44 @@ from app.domain.models.search import SearchResults
 
 logger = logging.getLogger(__name__)
 
+
+def _friendly_task_error(exc: Exception) -> str:
+    """Translate raw provider exceptions into a clear, actionable message.
+
+    Raw exceptions like ``Error code: 401 - {'error': {'message': ...}}`` are
+    meaningless to end users. Map the common provider failures to short,
+    actionable guidance while the full traceback still goes to the server log.
+    """
+    import openai as _openai
+
+    if isinstance(exc, _openai.AuthenticationError):
+        return (
+            "API key ditolak oleh provider (401). Periksa kecocokan API_KEY dan "
+            "API_BASE — key NVIDIA (nvapi-…) hanya untuk "
+            "https://integrate.api.nvidia.com/v1, key OpenRouter (sk-or-…) hanya "
+            "untuk https://openrouter.ai/api/v1. / The API key was rejected: make "
+            "sure API_KEY matches API_BASE, then restart the app."
+        )
+    if isinstance(exc, _openai.RateLimitError):
+        return (
+            "Model provider sedang membatasi permintaan (429 / kuota habis). "
+            "Tunggu beberapa saat lalu coba lagi, atau ganti API key/provider. / "
+            "Rate limit reached — wait a moment or switch to another API key."
+        )
+    if isinstance(exc, _openai.PermissionDeniedError):
+        return (
+            "API key tidak memiliki akses ke model ini (403). Periksa MODEL_NAME "
+            "dan paket kuota akun Anda. / The API key cannot access this model — "
+            "check MODEL_NAME and your account quota."
+        )
+    if isinstance(exc, _openai.NotFoundError) and "model" in str(exc).lower():
+        return (
+            "Model tidak ditemukan (404). MODEL_NAME mungkin sudah tidak tersedia "
+            "di provider — ganti ke model yang aktif. / Model not found — update "
+            "MODEL_NAME to an available model and restart."
+        )
+    return f"Task error: {exc}"
+
 class AgentTaskRunner(TaskRunner):
     """Agent task that can be cancelled"""
     def __init__(
@@ -104,9 +142,31 @@ class AgentTaskRunner(TaskRunner):
         return event
     
     async def _get_browser_screenshot(self) -> str:
-        screenshot = await self._browser.screenshot()
-        result = await self._file_storage.upload_file(screenshot, "screenshot.png", self._user_id)
-        return result.file_id
+        """Capture the current page for the tool panel — strictly best-effort.
+
+        The browser may be busy rendering a heavy page (or the CDP websocket
+        may go silent) right after a click/navigation. The agent task must
+        NEVER stall on a panel preview: short deadline, swallow every failure
+        and return "" so the tool event still flows through immediately.
+        """
+        try:
+            screenshot = await asyncio.wait_for(
+                self._browser.screenshot(), timeout=10.0
+            )
+        except asyncio.TimeoutError:
+            logger.warning(
+                "Browser screenshot timed out (10s) — skipping panel preview"
+            )
+            return ""
+        except Exception as e:
+            logger.warning(f"Browser screenshot failed — skipping panel preview: {e}")
+            return ""
+        try:
+            result = await self._file_storage.upload_file(screenshot, "screenshot.png", self._user_id)
+            return result.file_id
+        except Exception as e:
+            logger.warning(f"Browser screenshot upload failed: {e}")
+            return ""
 
     async def _sync_file_to_storage(self, file_path: str) -> Optional[FileInfo]:
         """Upload or update file and return FileInfo"""
@@ -445,7 +505,7 @@ class AgentTaskRunner(TaskRunner):
                 traceback.print_exc()
                 debugpy.breakpoint()
             
-            await self._put_and_add_event(task, ErrorEvent(error=f"Task error: {str(e)}"))
+            await self._put_and_add_event(task, ErrorEvent(error=_friendly_task_error(e)))
             await self._session_repository.update_status(self._session_id, SessionStatus.COMPLETED)
     
     async def _run_flow(self, message: Message, sandbox_task=None, mcp_task=None) -> AsyncGenerator[BaseEvent, None]:
