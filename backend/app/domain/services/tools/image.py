@@ -211,15 +211,35 @@ class ImageToolkit(BaseToolkit):
 
             result = await self.sandbox.file_upload(image_data, file_path)
             if result and result.success:
-                import base64
                 import mimetypes
                 ext = file_path.rsplit(".", 1)[-1].lower() if "." in file_path else ""
                 mime = mimetypes.types_map.get(f".{ext}", "image/jpeg")
-                data_url = f"data:{mime};base64,{base64.b64encode(image_data).decode()}"
+
+                # NEVER return the full image as a base64 data_url in the tool
+                # result: the result is stored in the agent's MongoDB memory
+                # document (16MB BSON cap) and in the LLM context. A multi-MB
+                # image here previously crashed the whole task with
+                # pymongo DocumentTooLarge ('update' command document too large).
+                # A small inline preview is kept only for tiny images.
+                data: dict = {
+                    "file_path": file_path,
+                    "size": len(image_data),
+                    "source_url": url,
+                }
+                if len(image_data) <= 100 * 1024:  # ≤100 KB → inline preview is safe
+                    import base64
+                    data["data_url"] = (
+                        f"data:{mime};base64,{base64.b64encode(image_data).decode()}"
+                    )
+                else:
+                    data["data_url_preview_skipped"] = (
+                        f"image too large for inline preview ({len(image_data)} bytes); "
+                        f"file saved at {file_path}"
+                    )
                 return ToolResult(
                     success=True,
                     message=f"Image saved to {file_path} ({len(image_data)} bytes)",
-                    data={"file_path": file_path, "size": len(image_data), "data_url": data_url, "source_url": url},
+                    data=data,
                 )
             return ToolResult(
                 success=False,

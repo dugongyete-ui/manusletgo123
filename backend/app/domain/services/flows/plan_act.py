@@ -42,6 +42,49 @@ class AgentStatus(str, Enum):
     COMPLETED = "completed"
     UPDATING = "updating"
 
+
+# ── Manus-style progress narration ─────────────────────────────────────────────
+# Deterministic step-transition messages so the user ALWAYS sees progress in the
+# chat stream between steps, regardless of whether the model calls
+# message_notify_user on its own (free-tier models often skip it).
+_NARRATION_TEMPLATES = {
+    "en": {
+        "done": "✅ Done: {done}\n\n▶ Next: {next}",
+        "failed": "⚠️ Step failed: {done}\n\n▶ Next: {next}",
+    },
+    "id": {
+        "done": "✅ Selesai: {done}\n\n▶ Lanjut: {next}",
+        "failed": "⚠️ Langkah gagal: {done}\n\n▶ Lanjut: {next}",
+    },
+}
+
+
+def _narration_lang(language: Optional[str]) -> str:
+    """Normalise the plan language to a narration template key."""
+    if not language:
+        return "en"
+    lang = language.lower().strip()
+    if lang.startswith("id") or "indonesia" in lang or "bahasa" in lang:
+        return "id"
+    return "en"
+
+
+def _step_transition_narration(done_step, next_step, language: Optional[str]) -> str:
+    """Build the chat message shown between two plan steps."""
+    lang = _narration_lang(language)
+    tpl = _NARRATION_TEMPLATES.get(lang, _NARRATION_TEMPLATES["en"])
+    key = "failed" if (getattr(done_step, "success", None) is False) else "done"
+
+    def _short(text: str, limit: int = 160) -> str:
+        text = (text or "").strip().replace("\n", " ")
+        return text if len(text) <= limit else text[: limit - 1].rstrip() + "…"
+
+    return tpl[key].format(
+        done=_short(getattr(done_step, "description", "")),
+        next=_short(getattr(next_step, "description", "")),
+    )
+# ──────────────────────────────────────────────────────────────────────────────
+
 class PlanActFlow(BaseFlow):
     def __init__(
         self,
@@ -116,18 +159,34 @@ class PlanActFlow(BaseFlow):
                 message.vision_images, message.message
             )
         except Exception as e:
-            logger.warning(f"Vision pre-processing failed, passing raw images to agents: {e}")
-            return message
+            logger.warning(f"Vision pre-processing failed: {e}")
+            description = ""
 
-        if not description:
-            return message
+        if description:
+            from copy import deepcopy
+            enriched = deepcopy(message)
+            enriched.message = message.message + f"\n\n[Image Analysis]\n{description}"
+            enriched.vision_images = []
+            logger.info("Vision pre-processing complete — image descriptions injected into message")
+            return enriched
 
+        # Vision analysis produced nothing (vision model down / rejected images).
+        # Strip the raw images and tell the agents why: passing raw image data to
+        # a text-only main model makes the provider fail the WHOLE request
+        # (observed: nemotron-3 500 Internal Server Error), which kills the task.
         from copy import deepcopy
-        enriched = deepcopy(message)
-        enriched.message = message.message + f"\n\n[Image Analysis]\n{description}"
-        enriched.vision_images = []
-        logger.info("Vision pre-processing complete — image descriptions injected into message")
-        return enriched
+        stripped = deepcopy(message)
+        stripped.message = message.message + (
+            "\n\n[Note: The user attached image(s), but automatic image analysis is "
+            "currently unavailable. Proceed with the text request only and tell the "
+            "user you could not visually inspect the images.]"
+        )
+        stripped.vision_images = []
+        logger.warning(
+            "Vision analysis unavailable — raw images stripped from message to "
+            "protect the text model request"
+        )
+        return stripped
 
     async def run(self, message: Message) -> AsyncGenerator[BaseEvent, None]:
 
@@ -169,6 +228,7 @@ class PlanActFlow(BaseFlow):
 
         logger.info(f"Agent {self._agent_id} started processing message: {message.message[:50]}...")
         step = None
+        _last_completed_step = None  # for step-transition narration
         while True:
             if self.status == AgentStatus.IDLE:
                 logger.info(f"Agent {self._agent_id} state changed from {AgentStatus.IDLE} to {AgentStatus.PLANNING}")
@@ -289,12 +349,27 @@ class PlanActFlow(BaseFlow):
                     self.status = AgentStatus.SUMMARIZING
                     continue
 
+                # ── Manus-style progress narration: announce the transition
+                # between the previously completed step and the step that is
+                # about to run, so the chat stream is never silent mid-task.
+                # (The first step is covered by the acknowledgement message.)
+                if _steps_executed > 0 and _last_completed_step is not None:
+                    narration = _step_transition_narration(
+                        _last_completed_step, step, getattr(self.plan, "language", None)
+                    )
+                    logger.info(
+                        f"Agent {self._agent_id} step transition narration: "
+                        f"{narration[:80]}..."
+                    )
+                    yield MessageEvent(role="assistant", message=narration)
+
                 # Execute step
                 logger.info(f"Agent {self._agent_id} started executing step {step.id}: {step.description[:50]}...")
                 async for event in self.executor.execute_step(self.plan, step, message):
                     yield event
 
                 _steps_executed += 1
+                _last_completed_step = step
                 if step.success:
                     _consecutive_failures = 0
                 else:

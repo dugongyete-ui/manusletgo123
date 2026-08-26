@@ -9,12 +9,15 @@ same conversation after a backend restart (agent history lives in MongoDB).
 Usage:
     python3 e2e_driver.py [--message "text"] [--timeout 480]
                           [--new-session] [--no-send]
+                          [--login EMAIL:PASSWORD]
+                          [--upload PATH]...       # attach file(s) to the message
 
 Output artifacts (JSONL event log, summary, session snapshot) are written to
 E2E_OUT_DIR (default: ./out next to this script).
 """
 import argparse
 import json
+import mimetypes
 import os
 import sys
 import time
@@ -52,9 +55,25 @@ def save_state(state):
         json.dump(state, f, indent=2)
 
 
-def get_token(state):
-    """Register a fresh user (or login if already registered). Returns access token."""
+def get_token(state, login_creds=None):
+    """Authenticate. With --login EMAIL:PASSWORD try that account first.
+
+    Order: explicit --login → saved state → register a fresh user.
+    Returns (access_token, email).
+    """
     client = httpx.Client(timeout=30)
+    if login_creds:
+        email, _, password = login_creds.partition(":")
+        r = client.post(
+            f"{BACKEND}/auth/login",
+            json={"email": email, "password": password},
+        )
+        if r.status_code == 200:
+            data = r.json()["data"]
+            state["email"], state["password"] = email, password
+            save_state(state)
+            return data["access_token"], email
+        print(f"[driver] --login failed ({r.status_code}), falling back: {r.text[:200]}", flush=True)
     if "email" in state:
         r = client.post(
             f"{BACKEND}/auth/login",
@@ -78,6 +97,28 @@ def get_token(state):
     return data["access_token"], email
 
 
+def upload_file(client, token, path):
+    """Upload one file via POST /files (multipart) and return the attachment dict
+    the chat endpoint expects ({file_id, filename, content_type, size})."""
+    filename = os.path.basename(path)
+    ctype = mimetypes.guess_type(filename)[0] or "application/octet-stream"
+    with open(path, "rb") as fh:
+        r = client.post(
+            f"{BACKEND}/files",
+            headers={"Authorization": f"Bearer {token}"},
+            files={"file": (filename, fh, ctype)},
+        )
+    r.raise_for_status()
+    info = r.json()["data"]
+    print(f"[driver] uploaded {filename} -> file_id={info.get('file_id')} ({info.get('size')} B, {info.get('content_type')})", flush=True)
+    return {
+        "file_id": info.get("file_id"),
+        "filename": info.get("filename") or filename,
+        "content_type": info.get("content_type") or ctype,
+        "size": info.get("size"),
+    }
+
+
 def create_session(client, token):
     r = client.put(
         f"{BACKEND}/sessions", headers={"Authorization": f"Bearer {token}"}
@@ -86,7 +127,7 @@ def create_session(client, token):
     return r.json()["data"]["session_id"]
 
 
-def stream_chat(token, session_id, message, timeout_s, events_out):
+def stream_chat(token, session_id, message, timeout_s, events_out, attachments=None):
     """POST chat and consume the SSE stream. Returns summary info."""
     deadline = time.time() + timeout_s
     counts = {}
@@ -102,6 +143,8 @@ def stream_chat(token, session_id, message, timeout_s, events_out):
         "Content-Type": "application/json",
     }
     payload = {"message": message, "timestamp": int(time.time() * 1000)}
+    if attachments:
+        payload["attachments"] = attachments
 
     with httpx.Client(timeout=httpx.Timeout(connect=15, read=timeout_s, write=30, pool=15)) as client:
         with client.stream(
@@ -215,20 +258,54 @@ def fetch_session_events(token, session_id):
     return None
 
 
+def poll_session(token, session_id, poll_seconds, interval=10):
+    """Poll GET /sessions/{id} until the task reaches a terminal status.
+
+    Used after the SSE stream times out but the agent task keeps running
+    server-side. Re-POSTing the message would re-queue it (double execution),
+    so we poll the authoritative session state instead.
+    Returns final session status string, or None if still running at deadline.
+    """
+    deadline = time.time() + poll_seconds
+    last_status = None
+    n_events = 0
+    while time.time() < deadline:
+        data = fetch_session_events(token, session_id)
+        if data:
+            last_status = data.get("status")
+            n_events = len(data.get("events") or [])
+            print(f"[driver] poll: status={last_status} events={n_events}", flush=True)
+            if last_status != "running" and last_status != "pending":
+                return last_status
+        time.sleep(interval)
+    print(f"[driver] poll deadline reached (status={last_status})", flush=True)
+    return None
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--message", default=os.environ.get("E2E_MESSAGE", DEFAULT_MESSAGE))
     ap.add_argument("--timeout", type=float, default=float(os.environ.get("E2E_TIMEOUT", "480")))
     ap.add_argument("--new-session", action="store_true")
     ap.add_argument("--no-send", action="store_true", help="only fetch existing session state")
+    ap.add_argument("--login", default=os.environ.get("E2E_LOGIN", ""), help="EMAIL:PASSWORD — try this account first")
+    ap.add_argument("--upload", action="append", default=[], help="file path to attach (repeatable)")
+    ap.add_argument("--poll-after", type=float, default=float(os.environ.get("E2E_POLL_AFTER", "0")), help="after stream timeout, poll session status this many seconds (task keeps running server-side)")
     args = ap.parse_args()
 
     os.makedirs(OUT_DIR, exist_ok=True)
 
     state = load_state()
-    token, email = get_token(state)
+    token, email = get_token(state, args.login or None)
     state["token"] = token
     print(f"[driver] authenticated as {email}", flush=True)
+
+    # Upload attachments (if any) BEFORE creating/sending the chat message.
+    chat_attachments = []
+    if args.upload and not args.no_send:
+        with httpx.Client(timeout=120) as client:
+            for path in args.upload:
+                chat_attachments.append(upload_file(client, token, path))
 
     if args.new_session or "session_id" not in state:
         session_id = create_session(httpx.Client(timeout=30), token)
@@ -240,6 +317,10 @@ def main():
         print(f"[driver] reusing session {session_id}", flush=True)
 
     if args.no_send:
+        if args.poll_after > 0:
+            final = poll_session(token, session_id, args.poll_after)
+            if final is None:
+                sys.exit(4)  # still running
         data = fetch_session_events(token, session_id)
         if data:
             print(json.dumps({
@@ -250,8 +331,18 @@ def main():
         return
 
     t0 = time.time()
-    result = stream_chat(token, session_id, args.message, args.timeout, EVENTS_FILE)
+    result = stream_chat(token, session_id, args.message, args.timeout, EVENTS_FILE, chat_attachments or None)
     elapsed = time.time() - t0
+
+    # Task still running server-side? Poll the session until it finishes
+    # instead of re-POSTing (re-POST would re-queue the message).
+    if result["ended_with"] == "timeout" and args.poll_after > 0:
+        final = poll_session(token, session_id, args.poll_after)
+        if final == "completed":
+            result = dict(result, ended_with="done_after_poll")
+        elif final == "waiting":
+            result = dict(result, ended_with="wait_after_poll")
+        # final None -> still running; keep ended_with=timeout (exit 4 below)
 
     # Snapshot persisted session state (status + events) for offline analysis.
     session_data = fetch_session_events(token, session_id)
@@ -286,7 +377,10 @@ def main():
     print("=" * 60, flush=True)
 
     if result["ended_with"] == "timeout":
-        sys.exit(2)
+        # Stream timed out AND polling never saw a terminal status:
+        # the task is still running server-side (exit 4 = continue later
+        # with --no-send --poll-after). Without polling it's a plain timeout (2).
+        sys.exit(4 if args.poll_after > 0 else 2)
     if result["ended_with"] == "error":
         sys.exit(3)
 

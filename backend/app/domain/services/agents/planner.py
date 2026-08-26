@@ -143,19 +143,33 @@ class PlannerAgent(BaseAgent):
         return ""
 
     async def _analyze_images(self, images: List[VisionImage], context: str) -> str:
-        """Use the dedicated vision model to describe images as text."""
-        prompt = (
-            f"The user sent you these images as part of this request: {context}\n\n"
-            "Describe each image in detail. Focus on what is visually present, "
-            "any text visible, the overall content, and anything relevant to the user's request."
-        )
-        content = self._build_vision_content(prompt, images)
-        try:
-            response = await self._vision_model.ainvoke([LCHumanMessage(content=content)])
-            return response.content if isinstance(response.content, str) else ""
-        except Exception as e:
-            logger.warning(f"Vision model image analysis failed: {e}")
+        """Use the dedicated vision model to describe images as text.
+
+        Images are sent ONE PER REQUEST: many vision endpoints (NVIDIA NIM
+        llama-3.2-vision, some OpenRouter models) accept at most one image per
+        call — batching them fails the whole analysis with
+        'At most 1 image(s) may be provided in one prompt'.
+        """
+        descriptions = []
+        for idx, image in enumerate(images, 1):
+            prompt = (
+                f"The user sent {len(images)} image(s) as part of this request: {context}\n"
+                f"This is image {idx} of {len(images)}. "
+                "Describe it in detail. Focus on what is visually present, "
+                "any text visible, the overall content, and anything relevant "
+                "to the user's request."
+            )
+            content = self._build_vision_content(prompt, [image])
+            try:
+                response = await self._vision_model.ainvoke([LCHumanMessage(content=content)])
+                text = response.content if isinstance(response.content, str) else ""
+                if text.strip():
+                    descriptions.append(f"[Image {idx}]\n{text.strip()}")
+            except Exception as e:
+                logger.warning(f"Vision model analysis failed for image {idx}: {e}")
+        if not descriptions:
             return ""
+        return "\n\n".join(descriptions)
 
     async def _get_previous_file_names(self) -> list:
         """Scan conversation memory for file names analyzed in previous turns.
@@ -260,6 +274,67 @@ class PlannerAgent(BaseAgent):
         except Exception as e:
             logger.warning(f"Acknowledge streaming failed, skipping: {e}")
 
+    def _fallback_plan(self, message: Message) -> Plan:
+        """Single-step fallback plan when the planner LLM returns unparseable JSON.
+
+        Routing the task through the executor (instead of crashing with a raw
+        pydantic validation error) keeps the task alive — the executor is
+        tool-driven and completes the user's request directly.
+        """
+        snippet = (message.message or "").strip().replace("\n", " ")
+        if len(snippet) > 300:
+            snippet = snippet[:299].rstrip() + "…"
+        return Plan(
+            title="Task",
+            goal=snippet or "Complete the user's request",
+            language=None,
+            steps=[Step(
+                id="1",
+                description=f"Complete the user's request: {snippet}",
+            )],
+            message=None,
+        )
+
+    def _safe_plan(self, parsed_response, message: Message) -> Plan:
+        """Validate the parsed planner JSON into a Plan, never raising.
+
+        _parse_json returns None when the LLM output cannot be repaired into
+        JSON at all — Plan.model_validate(None) used to crash the whole task
+        with 'Input should be a valid dictionary or instance of Plan'.
+        """
+        if isinstance(parsed_response, dict):
+            try:
+                plan = Plan.model_validate(parsed_response)
+                # Salvage plans whose steps are unusable — an empty steps list
+                # with a non-conversational request would answer nothing.
+                if not plan.steps and plan.message:
+                    return plan  # conversational answer path (0 steps is valid)
+                if plan.steps:
+                    return plan
+                # No steps and no message — fall through to executor routing
+            except Exception as val_err:
+                logger.warning(f"Plan validation failed, salvaging: {val_err}")
+                # Try a permissive rebuild: keep any usable fields
+                try:
+                    salvage = dict(parsed_response)
+                    salvage.setdefault("steps", [])
+                    plan = Plan.model_validate(salvage)
+                    if plan.steps or plan.message:
+                        return plan
+                except Exception:
+                    pass
+        elif parsed_response is not None:
+            logger.warning(
+                f"Planner JSON parse returned {type(parsed_response).__name__} "
+                "instead of dict — using fallback single-step plan"
+            )
+        else:
+            logger.warning(
+                "Planner returned unparseable JSON — using fallback single-step plan "
+                "so the executor can still complete the task"
+            )
+        return self._fallback_plan(message)
+
     async def create_plan(self, message: Message) -> AsyncGenerator[BaseEvent, None]:
         # If the current message has no pre-extracted files, check conversation
         # history for files from earlier turns.  Injecting their names helps the
@@ -312,7 +387,7 @@ class PlannerAgent(BaseAgent):
                 if isinstance(event, MessageEvent):
                     logger.info(event.message)
                     parsed_response = await self._parse_json(event.message)
-                    plan = Plan.model_validate(parsed_response)
+                    plan = self._safe_plan(parsed_response, message)
                     yield PlanEvent(status=PlanStatus.CREATED, plan=plan)
                     return
                 else:
@@ -342,7 +417,7 @@ class PlannerAgent(BaseAgent):
                 if isinstance(event, MessageEvent):
                     logger.info(event.message)
                     parsed_response = await self._parse_json(event.message)
-                    plan = Plan.model_validate(parsed_response)
+                    plan = self._safe_plan(parsed_response, message)
                     yield PlanEvent(status=PlanStatus.CREATED, plan=plan)
                 else:
                     yield event
@@ -353,7 +428,20 @@ class PlannerAgent(BaseAgent):
             if isinstance(event, MessageEvent):
                 logger.debug(f"Planner agent update plan: {event.message}")
                 parsed_response = await self._parse_json(event.message)
-                updated_plan = Plan.model_validate(parsed_response)
+                if not isinstance(parsed_response, dict):
+                    # Unparseable update response — keep the current plan as-is
+                    # instead of crashing the whole task with a validation error.
+                    logger.warning(
+                        "update_plan could not parse planner JSON — keeping existing plan"
+                    )
+                    yield PlanEvent(status=PlanStatus.UPDATED, plan=plan)
+                    continue
+                try:
+                    updated_plan = Plan.model_validate(parsed_response)
+                except Exception as val_err:
+                    logger.warning(f"update_plan validation failed, keeping existing plan: {val_err}")
+                    yield PlanEvent(status=PlanStatus.UPDATED, plan=plan)
+                    continue
                 new_steps = [Step.model_validate(step) for step in updated_plan.steps]
                 
                 # Find the index of the first pending step
