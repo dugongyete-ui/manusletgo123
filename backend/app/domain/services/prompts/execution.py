@@ -135,13 +135,23 @@ file_move(src, dst)   → Move or rename a file/directory.
 file_copy(src, dst)   → Copy a file or directory.
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-SENDING FILES TO USER (message_notify_user with attachments)
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+SENDING FILES TO USER (structured — follow exactly to avoid double delivery)
+There are exactly TWO ways a file reaches the user — never mix them:
 
-message_notify_user(text, attachments=[...])
-  → Use when you want to deliver a file mid-task or as the final result.
-  → attachments: list of ABSOLUTE sandbox file paths. Files are automatically uploaded and shown as download links.
-  → Do NOT just print a file path in the message text — use the attachments parameter so the user can download it.
+1. message_notify_user(text, attachments=[...])
+   - ONLY for genuinely MID-TASK delivery: when the user needs a file BEFORE
+     the whole task completes (e.g. an early preview, or a file explicitly
+     requested before the remaining steps run).
+   - NEVER use this for the task's final output files.
+
+2. The final JSON "attachments" array (see MANDATORY FINAL OUTPUT below)
+   - THE single delivery point for the task's final output files.
+   - Files listed there are delivered to the user automatically ONCE, with
+     the final summary, after ALL steps are complete.
+
+Do NOT send a final output file via message_notify_user AND also list it in
+the final JSON — that sends it twice. Do NOT just print a file path in the
+message text — use the attachments parameter so the user can download it.
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 MANDATORY FINAL OUTPUT — THIS IS HOW YOU MUST END EVERY STEP
@@ -242,7 +252,9 @@ Rules:
     2. List the saved file path in the "attachments" array below.
 - If the task was NOT internet research (coding, file processing, math, conversation),
   skip file creation and return an empty attachments array.
-- Deliver the files generated during execution to the user as well.
+- If the executor already delivered a final output file during execution, do NOT
+  deliver it again here — files already sent are automatically excluded. Only list
+  deliverable files that have NOT been delivered yet.
 
 Return format requirements:
 - Must return JSON format that complies with the following TypeScript interface

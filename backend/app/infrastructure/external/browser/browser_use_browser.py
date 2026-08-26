@@ -20,6 +20,16 @@ class BrowserUseBrowser:
     def __init__(self, cdp_url: str):
         self.cdp_url = cdp_url
         self._session: Optional[BrowserSession] = None
+        # Cached actor Page for the currently focused tab.
+        # browser_use's session.get_current_page() constructs a NEW Page object
+        # (with _session_id=None) on EVERY call, so each operation would attach a
+        # fresh CDP session — leaking sessions and, critically, making any
+        # DOM.getDocument setup useless for the next Page object (root cause of
+        # the -32000 "Document needs to be requested first" failures).
+        self._cached_page = None
+        # Targets that already have the console-capture init script registered
+        # via Page.addScriptToEvaluateOnNewDocument (avoids duplicate scripts).
+        self._console_capture_targets: set = set()
 
     # ------------------------------------------------------------------
     # Session lifecycle
@@ -89,23 +99,104 @@ class BrowserUseBrowser:
                 logger.error("Error stopping BrowserSession: %s", exc)
             finally:
                 self._session = None
+        self._cached_page = None
+        self._console_capture_targets.clear()
 
     # ------------------------------------------------------------------
     # Internal helpers
     # ------------------------------------------------------------------
 
     async def _get_current_page(self):
-        """Return the actor Page for the currently focused tab."""
+        """Return the actor Page for the currently focused tab (CACHED per target).
+
+        browser_use's session.get_current_page() builds a new Page object on
+        every call — each starting with _session_id=None — so every caller
+        attached a brand-new CDP session (Target.attachToTarget). That leaked
+        sessions AND meant DOM.getDocument called on one Page never applied to
+        the next Page's session, reproducing CDP -32000 "Document needs to be
+        requested first" on every element.evaluate() based tool. Caching the
+        Page per target_id keeps ONE stable session per tab.
+
+        The cache is validated with a cheap liveness probe so a CDP websocket
+        reconnect (which clears all sessions) transparently re-attaches a
+        fresh session instead of hanging forever on a dead one.
+        """
         session = await self._ensure_session()
+        current_target = getattr(session, "agent_focus_target_id", None)
+        if (
+            self._cached_page is not None
+            and current_target is not None
+            and getattr(self._cached_page, "_target_id", None) == current_target
+        ):
+            if await self._page_session_alive(self._cached_page):
+                return self._cached_page
+            logger.info("Cached page session is stale — re-attaching a fresh CDP session")
+            self._cached_page = None
         page = await session.get_current_page()
         if page is None:
             page = await session.new_page()
+        self._cached_page = page
         return page
+
+    async def _page_session_alive(self, page) -> bool:
+        """Cheap liveness probe for a cached page's CDP session."""
+        try:
+            session_id = getattr(page, "_session_id", None)
+            if not session_id:
+                return False
+            await self._call_with_deadline(
+                page._client.send.Runtime.evaluate(
+                    params={"expression": "1", "returnByValue": True},
+                    session_id=session_id,
+                ),
+                timeout=3.0,
+            )
+            return True
+        except Exception:
+            return False
 
     async def _get_cdp_session(self) -> CDPSession:
         """Return the CDPSession for the currently focused tab."""
         session = await self._ensure_session()
         return await session.get_or_create_cdp_session()
+
+    async def _call_with_deadline(self, coro, timeout: float):
+        """Await `coro` with a hard deadline, ABANDONING it on timeout.
+
+        Unlike asyncio.wait_for(), this never waits for the cancelled task to
+        actually finish: cdp_use send futures do not react to cancellation
+        while the CDP websocket is reconnecting, so wait_for would hang
+        forever in its cancellation wait. asyncio.wait() leaves the timed-out
+        task running (it is garbage once the session is re-established).
+        """
+        task = asyncio.ensure_future(coro)
+        done, _pending = await asyncio.wait({task}, timeout=timeout)
+        if done:
+            return task.result()
+        task.cancel()  # best-effort cancel; do NOT await it
+        raise asyncio.TimeoutError()
+
+    async def _ensure_dom_document(self) -> None:
+        """Ensure the page's CDP session has an active DOM document.
+
+        Element.evaluate() resolves elements through
+        DOM.pushNodesByBackendIdsToFrontend, which fails with CDP error -32000
+        "Document needs to be requested first" unless DOM.getDocument has been
+        called on that session. Page._ensure_session() only enables the DOM
+        domain — it never requests the document — so every element.evaluate()
+        based tool (get_select_options / smart_select / verify_value / click
+        strategies 2–3) failed. Calling DOM.getDocument here is cheap and
+        idempotent, so we do it before each element interaction.
+        """
+        try:
+            page = await self._get_current_page()
+            session_id = await page._ensure_session()
+            await page._client.send.DOM.getDocument(
+                params={"depth": 1},
+                session_id=session_id,
+            )
+        except Exception as exc:
+            logger.debug("DOM.getDocument failed (non-fatal): %s", exc)
 
     # Map from CSS icon-font class keywords → human-readable symbol.
     # Covers Layui icons used by the leaftools.net calculator (and similar sites).
@@ -281,7 +372,11 @@ class BrowserUseBrowser:
         """
         # ── Strategy 1: Playwright click ──────────────────────────────────────
         try:
-            await element.click(timeout=4000)
+            # NOTE: browser_use's Element.click() signature is
+            # click(button, click_count, modifiers) — it takes NO timeout kwarg.
+            # Passing timeout= raised TypeError instantly, so strategy 1 always
+            # "failed" before it even attempted the click.
+            await element.click()
             return True, "playwright"
         except Exception as e1:
             logger.info("CLICK[%d] S1-playwright failed → trying S2-js-synthetic (%s)", index, type(e1).__name__)
@@ -334,14 +429,22 @@ class BrowserUseBrowser:
         """
         try:
             page = await self._get_current_page()
-            await page.evaluate(f"""() => new Promise(resolve => {{
+            # Timeout-guarded: a dead CDP session makes the raw evaluate hang forever
+            # (Chrome silently drops messages addressed to unknown sessions).
+            try:
+                await self._call_with_deadline(
+                    page.evaluate(f"""() => new Promise(resolve => {{
                 let timer = null;
                 const reset = () => {{ clearTimeout(timer); timer = setTimeout(resolve, 150); }};
                 const obs = new MutationObserver(reset);
                 obs.observe(document.body, {{childList:true, subtree:true, attributes:true}});
                 reset();  // start immediately
                 setTimeout(() => {{ obs.disconnect(); resolve(); }}, {int(timeout*1000)});
-            }})""")
+            }})"""),
+                    timeout=timeout + 5.0,
+                )
+            except asyncio.TimeoutError:
+                logger.debug("_wait_for_dom_settle timed out (session may be reconnecting)")
         except Exception:
             await asyncio.sleep(0.3)
 
@@ -354,7 +457,9 @@ class BrowserUseBrowser:
         """
         try:
             page = await self._get_current_page()
-            await page.evaluate(f"""() => new Promise(resolve => {{
+            try:
+                await self._call_with_deadline(
+                    page.evaluate(f"""() => new Promise(resolve => {{
                 const deadline = Date.now() + {int(timeout * 1000)};
                 let lastCount = performance.getEntriesByType('resource').length;
                 const check = () => {{
@@ -366,7 +471,11 @@ class BrowserUseBrowser:
                     setTimeout(check, 300);
                 }};
                 setTimeout(check, 300);
-            }})""")
+            }})"""),
+                    timeout=timeout + 5.0,
+                )
+            except asyncio.TimeoutError:
+                logger.debug("_wait_for_network_idle timed out (session may be reconnecting)")
         except Exception:
             await asyncio.sleep(0.5)
 
@@ -377,6 +486,138 @@ class BrowserUseBrowser:
             return ToolResult(success=True, message=f"Network idle confirmed (waited up to {timeout}s)")
         except Exception as exc:
             return ToolResult(success=False, message=f"wait_for_network_idle failed: {exc}")
+
+    async def _wait_for_page_ready(self, timeout: float = 10.0) -> None:
+        """Poll document.readyState until 'complete' on the current tab.
+
+        Survives mid-navigation execution-context swaps (each failed evaluate is
+        simply retried). Fixes the "Empty DOM tree" race where browser_view()
+        right after browser_back()/browser_forward() serialised the DOM while
+        the navigation was still in flight.
+        """
+        deadline = asyncio.get_event_loop().time() + timeout
+        while asyncio.get_event_loop().time() < deadline:
+            try:
+                page = await self._get_current_page()
+                state = await self._call_with_deadline(
+                    page.evaluate("() => document.readyState"), timeout=3.0,
+                )
+                if state and "complete" in str(state):
+                    return
+            except Exception:
+                pass  # context destroyed mid-navigation — keep polling
+            await asyncio.sleep(0.15)
+
+    # ------------------------------------------------------------------
+    # Console capture (browser_console_view support)
+    # ------------------------------------------------------------------
+
+    # Plain script source for Page.addScriptToEvaluateOnNewDocument — runs
+    # BEFORE page scripts on every future navigation of the tab, so console
+    # output is captured from the very first line after a page load.
+    _CONSOLE_CAPTURE_NEW_DOC_SOURCE = """
+(function () {
+    if (window.__consoleLogs) { return; }
+    try {
+        window.__consoleLogs = [];
+        var __fmt = function (args) {
+            var out = [];
+            for (var i = 0; i < args.length; i++) {
+                var a = args[i];
+                try {
+                    if (typeof a === 'string') { out.push(a); }
+                    else if (a instanceof Error) { out.push(a.message); }
+                    else { out.push(JSON.stringify(a)); }
+                } catch (e) { out.push(String(a)); }
+            }
+            return out.join(' ');
+        };
+        ['log', 'info', 'warn', 'error', 'debug'].forEach(function (level) {
+            var orig = console[level] ? console[level].bind(console) : null;
+            console[level] = function () {
+                try {
+                    window.__consoleLogs.push('[' + level.toUpperCase() + '] ' + __fmt(arguments));
+                    if (window.__consoleLogs.length > 1000) { window.__consoleLogs.shift(); }
+                } catch (e) {}
+                if (orig) { orig.apply(null, arguments); }
+            };
+        });
+        window.addEventListener('error', function (e) {
+            try {
+                window.__consoleLogs.push('[ERROR] ' + e.message + ' @ ' + (e.filename || '') + ':' + (e.lineno || 0));
+                if (window.__consoleLogs.length > 1000) { window.__consoleLogs.shift(); }
+            } catch (err) {}
+        });
+    } catch (e) {}
+})();
+"""
+
+    # Arrow-function installer for the CURRENT document (idempotent).
+    _CONSOLE_CAPTURE_INSTALL_JS = """() => {
+    if (window.__consoleLogs) { return 'already-installed'; }
+    try {
+        window.__consoleLogs = [];
+        const __fmt = (args) => Array.from(args).map(a => {
+            try {
+                if (typeof a === 'string') { return a; }
+                if (a instanceof Error) { return a.message; }
+                return JSON.stringify(a);
+            } catch (e) { return String(a); }
+        }).join(' ');
+        ['log', 'info', 'warn', 'error', 'debug'].forEach(level => {
+            const orig = console[level] ? console[level].bind(console) : null;
+            console[level] = function () {
+                try {
+                    window.__consoleLogs.push('[' + level.toUpperCase() + '] ' + __fmt(arguments));
+                    if (window.__consoleLogs.length > 1000) { window.__consoleLogs.shift(); }
+                } catch (e) {}
+                if (orig) { orig.apply(null, arguments); }
+            };
+        });
+        window.addEventListener('error', e => {
+            try {
+                window.__consoleLogs.push('[ERROR] ' + e.message + ' @ ' + (e.filename || '') + ':' + (e.lineno || 0));
+                if (window.__consoleLogs.length > 1000) { window.__consoleLogs.shift(); }
+            } catch (err) {}
+        });
+        return 'installed';
+    } catch (e) { return 'err:' + e.message; }
+}"""
+
+    async def _ensure_console_capture(self) -> None:
+        """Install the console-capture shim into the current tab.
+
+        Two layers:
+        1. Page.addScriptToEvaluateOnNewDocument — captures console output on
+           every FUTURE navigation of this tab (registered once per target).
+        2. page.evaluate installer — captures output in the CURRENT document.
+
+        Idempotent: the shim itself no-ops when already installed.
+        """
+        try:
+            page = await self._get_current_page()
+            session_id = await page._ensure_session()
+            target_id = getattr(page, "_target_id", None)
+            if target_id and target_id not in self._console_capture_targets:
+                try:
+                    await self._call_with_deadline(
+                        page._client.send.Page.addScriptToEvaluateOnNewDocument(
+                            params={"source": self._CONSOLE_CAPTURE_NEW_DOC_SOURCE},
+                            session_id=session_id,
+                        ),
+                        timeout=5.0,
+                    )
+                    self._console_capture_targets.add(target_id)
+                except Exception as exc:
+                    logger.debug("addScriptToEvaluateOnNewDocument failed: %s", exc)
+            try:
+                await self._call_with_deadline(
+                    page.evaluate(self._CONSOLE_CAPTURE_INSTALL_JS), timeout=5.0
+                )
+            except Exception as exc:
+                logger.debug("Console capture install evaluate failed: %s", exc)
+        except Exception as exc:
+            logger.debug("_ensure_console_capture failed: %s", exc)
 
     async def wait_for_element(
         self,
@@ -495,6 +736,7 @@ class BrowserUseBrowser:
             if node is None:
                 return ToolResult(success=False, message=f"Cannot find element with index {index}")
 
+            await self._ensure_dom_document()
             page = await self._get_current_page()
             element = await page.get_element(node.backend_node_id)
 
@@ -544,11 +786,26 @@ class BrowserUseBrowser:
                 content = state.dom_state.llm_representation()
                 selector_map = state.dom_state.selector_map or {}
                 interactive_elements = self._format_selector_map(selector_map)
-                if len(interactive_elements) > self._MAX_INTERACTIVE_ELEMENTS:
-                    interactive_elements = interactive_elements[:self._MAX_INTERACTIVE_ELEMENTS]
-                    interactive_elements.append(
-                        f"... (truncated, showing first {self._MAX_INTERACTIVE_ELEMENTS} of {len(selector_map)} elements — use coordinates or scroll to reach others)"
-                    )
+
+            # Retry once when the DOM serialisation came back empty — this
+            # happens when the snapshot races an in-flight navigation (e.g.
+            # right after browser_back/forward). Wait for the page to settle,
+            # then re-serialise instead of reporting "Empty DOM tree".
+            if (not content or not content.strip()) and not interactive_elements:
+                logger.info("view_page: empty DOM snapshot — waiting for page ready and retrying once")
+                await self._wait_for_page_ready(timeout=8.0)
+                await self._wait_for_dom_settle(timeout=1.0)
+                state = await session.get_browser_state_summary(include_screenshot=False)
+                if state.dom_state is not None:
+                    content = state.dom_state.llm_representation()
+                    selector_map = state.dom_state.selector_map or {}
+                    interactive_elements = self._format_selector_map(selector_map)
+
+            if len(interactive_elements) > self._MAX_INTERACTIVE_ELEMENTS:
+                interactive_elements = interactive_elements[:self._MAX_INTERACTIVE_ELEMENTS]
+                interactive_elements.append(
+                    f"... (truncated, showing first {self._MAX_INTERACTIVE_ELEMENTS} of {len(selector_map)} elements — use coordinates or scroll to reach others)"
+                )
 
             # Build tab summary so the agent always knows which tabs are open
             # and can use browser_switch_tab instead of browser_navigate
@@ -586,7 +843,11 @@ class BrowserUseBrowser:
         try:
             logger.info("NAVIGATE → %s", url)
             session = await self._ensure_session()
+            # Register the console-capture init script on this tab BEFORE
+            # navigating so browser_console_view() has data from page load.
+            await self._ensure_console_capture()
             await session.navigate_to(url)
+            await self._wait_for_page_ready()
             # navigate_to() completes before the DOM watchdog has serialised the new page,
             # so _cached_selector_map is empty at this point.  Calling
             # get_browser_state_summary() triggers DOM serialisation and populates the
@@ -644,6 +905,10 @@ class BrowserUseBrowser:
                         success=False,
                         message=f"Cannot find interactive element with index {index}",
                     )
+                # Ensure the page session has requested the DOM document —
+                # otherwise element.evaluate() fails with CDP -32000
+                # "Document needs to be requested first".
+                await self._ensure_dom_document()
                 page = await self._get_current_page()
                 element = await page.get_element(node.backend_node_id)
 
@@ -889,6 +1154,7 @@ class BrowserUseBrowser:
                     success=False,
                     message=f"Cannot find selector element with index {index}",
                 )
+            await self._ensure_dom_document()
             page = await self._get_current_page()
 
             # Resolve to the exact Element handle for this specific backend_node_id.
@@ -953,7 +1219,18 @@ class BrowserUseBrowser:
         try:
             page = await self._get_current_page()
             await page.go_back()
+            # Wait for the new document to actually load before returning —
+            # Page.navigateToHistoryEntry returns immediately, and an immediate
+            # browser_view() used to race the navigation and see an empty DOM.
+            await self._wait_for_page_ready()
             await self._wait_for_dom_settle()
+            # Refresh the DOM snapshot so the next view/interaction sees the
+            # restored page instead of stale state.
+            try:
+                session = await self._ensure_session()
+                await session.get_browser_state_summary(include_screenshot=False)
+            except Exception:
+                pass
             logger.info("NAVIGATE ← back")
             return ToolResult(success=True, message="Navigated back")
         except Exception as exc:
@@ -964,7 +1241,14 @@ class BrowserUseBrowser:
         try:
             page = await self._get_current_page()
             await page.go_forward()
+            # Same ready-wait as go_back — fixes the "Empty DOM tree" race.
+            await self._wait_for_page_ready()
             await self._wait_for_dom_settle()
+            try:
+                session = await self._ensure_session()
+                await session.get_browser_state_summary(include_screenshot=False)
+            except Exception:
+                pass
             logger.info("NAVIGATE → forward")
             return ToolResult(success=True, message="Navigated forward")
         except Exception as exc:
@@ -1014,6 +1298,7 @@ class BrowserUseBrowser:
                     success=False,
                     message=f"Cannot find element with index {index}",
                 )
+            await self._ensure_dom_document()
             page = await self._get_current_page()
             element = await page.get_element(node.backend_node_id)
 
@@ -1042,7 +1327,16 @@ class BrowserUseBrowser:
                 data={"options": options},
             )
         except Exception as exc:
-            return ToolResult(success=False, message=f"Element at index {index} is not a native <select> (use click approach): {exc}")
+            # Report the raw error — do NOT claim "not a native <select>" when
+            # the actual failure is a CDP/session problem (misleading diagnosis).
+            return ToolResult(
+                success=False,
+                message=(
+                    f"get_select_options failed for element {index}: {exc}. "
+                    "Call browser_view() to refresh the DOM snapshot, then retry "
+                    "with a fresh index."
+                ),
+            )
 
     async def select_by_text(self, index: int, text: str) -> ToolResult:
         """Select a native <select> option whose visible text matches `text` (case-insensitive).
@@ -1056,6 +1350,7 @@ class BrowserUseBrowser:
             node = await session.get_dom_element_by_index(index)
             if node is None:
                 return ToolResult(success=False, message=f"Cannot find element with index {index}")
+            await self._ensure_dom_document()
             page = await self._get_current_page()
             element = await page.get_element(node.backend_node_id)
 
@@ -1304,6 +1599,7 @@ class BrowserUseBrowser:
                     success=False,
                     message=f"Cannot find element with index {index}",
                 )
+            await self._ensure_dom_document()
             page = await self._get_current_page()
             element = await page.get_element(node.backend_node_id)
 
@@ -1350,27 +1646,40 @@ class BrowserUseBrowser:
         """Execute arbitrary JavaScript in the current page context."""
         try:
             page = await self._get_current_page()
-            # page.evaluate() requires a function; wrap bare expressions/statements
+            # Install the console capture shim FIRST so any console.* calls
+            # inside the user's code are recorded for browser_console_view().
+            await self._ensure_console_capture()
             js = javascript.strip()
             if not (js.startswith("(") and "=>" in js):
-                # Use async IIFE so await works inside, and wrap in parens so
-                # it evaluates as an expression (not a statement).
-                # If the code contains explicit return statements leave it as a
-                # block body; otherwise treat the whole thing as a return value.
-                if "return " in js:
-                    js = f"async () => {{ {js} }}"
-                else:
-                    js = f"async () => ({js})"
-            result = await page.evaluate(js)
+                # Bare JavaScript (not an arrow function). page.evaluate()
+                # requires an expression starting with "(" containing "=>",
+                # so wrap the code in an async arrow that runs it through
+                # GLOBAL INDIRECT EVAL — this gives console-like semantics:
+                # multiple statements are allowed AND the completion value
+                # (last expression) is returned.
+                import json as _json
+                js = f"(async () => (0, eval)({_json.dumps(js)}))"
+            result = await self._call_with_deadline(page.evaluate(js), timeout=60.0)
             return ToolResult(success=True, data={"result": result})
         except Exception as exc:
             return ToolResult(success=False, message=f"Failed to execute JavaScript: {exc}")
 
     async def console_view(self, max_lines: Optional[int] = None) -> ToolResult:
-        """Return captured console log lines from the current page."""
+        """Return captured console log lines from the current page.
+
+        Reads the buffer maintained by the console-capture shim installed via
+        _ensure_console_capture() (registered with
+        Page.addScriptToEvaluateOnNewDocument + an in-document installer, so
+        capture also survives navigations).
+        """
         try:
+            # Make sure capture is active on the current document before reading.
+            await self._ensure_console_capture()
             page = await self._get_current_page()
-            logs_raw = await page.evaluate("() => window.console.logs || []")
+            logs_raw = await self._call_with_deadline(
+                page.evaluate("() => JSON.stringify(window.__consoleLogs || [])"),
+                timeout=30.0,
+            )
 
             import json
 
@@ -1379,7 +1688,9 @@ class BrowserUseBrowser:
             except (TypeError, ValueError):
                 logs = logs_raw
 
-            if max_lines is not None and isinstance(logs, list):
+            if logs is None:
+                logs = []
+            if max_lines is not None and isinstance(logs, list) and max_lines > 0:
                 logs = logs[-max_lines:]
 
             return ToolResult(success=True, data={"logs": logs})

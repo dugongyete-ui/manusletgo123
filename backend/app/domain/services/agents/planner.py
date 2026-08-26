@@ -227,9 +227,15 @@ class PlannerAgent(BaseAgent):
             context = [
                 LCSystemMessage(
                     content=(
-                        "You are writing a brief acknowledgement for a user. "
-                        "Reply in plain natural language only. Never output JSON, "
-                        "code fences, a schema, or a step list."
+                        "You are writing a brief acknowledgement on behalf of an AI "
+                        "assistant agent. The agent HAS working tools (browser, shell, "
+                        "file operations, web search, image tools, messaging) and will "
+                        "use them right after this acknowledgement — the full task is "
+                        "already being handled. Never speculate about tools being "
+                        "missing, unavailable, or not connected, and never describe "
+                        "limitations of the environment. Reply in plain natural "
+                        "language only. Never output JSON, code fences, a schema, or "
+                        "a step list."
                     )
                 ),
                 LCHumanMessage(content=prompt),

@@ -48,23 +48,59 @@ class ReplitSandbox(Sandbox):
     # ------------------------------------------------------------------
 
     async def _run_admin_cmd(self, cmd: str, timeout: int = 30) -> str:
-        """Run a one-shot admin command via the sandbox shell HTTP API."""
+        """Run a one-shot admin command via the sandbox shell HTTP API.
+
+        NOTE: exec_dir must be a directory that ALWAYS exists and is writable
+        for the sandbox process user. "/root" fails with a permission error when
+        the sandbox runs as a non-root user, which silently broke every caller
+        of this helper (file_exists, setup_user_home, warmup) — hence "/tmp".
+        """
         session = f"{_SYS_BASE_SESSION}_{os.urandom(4).hex()}"
         try:
-            await self.client.post(
+            # The exec endpoint waits up to 5 s internally and returns the
+            # output directly when the command completes fast — use that first.
+            exec_resp = await self.client.post(
                 f"{self.base_url}/api/v1/shell/exec",
-                json={"id": session, "exec_dir": "/root", "command": cmd},
+                json={"id": session, "exec_dir": "/tmp", "command": cmd},
             )
-            await self.client.post(
-                f"{self.base_url}/api/v1/shell/wait",
-                json={"id": session, "seconds": timeout},
-            )
-            await asyncio.sleep(1.0)
+            exec_data = exec_resp.json() if exec_resp.status_code == 200 else {}
+            if not exec_data.get("success"):
+                logger.warning(
+                    "Admin cmd exec failed (%s): %s",
+                    cmd[:60], exec_data.get("message", exec_resp.status_code),
+                )
+                return ""
+            exec_result = exec_data.get("data") or {}
+            if (
+                isinstance(exec_result, dict)
+                and exec_result.get("status") == "completed"
+                and exec_result.get("output") is not None
+            ):
+                return str(exec_result.get("output") or "")
+
+            # Long-running command — wait for it, then read the session output.
+            try:
+                await self.client.post(
+                    f"{self.base_url}/api/v1/shell/wait",
+                    json={"id": session, "seconds": timeout},
+                )
+            except Exception:
+                pass
+            await asyncio.sleep(0.3)
             view_resp = await self.client.post(
                 f"{self.base_url}/api/v1/shell/view",
                 json={"id": session, "console": False},
             )
+            if view_resp.status_code != 200:
+                logger.warning(
+                    "Admin cmd view failed (%s): HTTP %s",
+                    cmd[:60], view_resp.status_code,
+                )
+                return ""
             data = view_resp.json()
+            if not data.get("success"):
+                logger.warning("Admin cmd view error (%s): %s", cmd[:60], data.get("message"))
+                return ""
             result = data.get("data", {})
             if isinstance(result, dict):
                 return str(result.get("output", "") or "")
@@ -334,36 +370,100 @@ class ReplitSandbox(Sandbox):
         )
 
     async def file_delete(self, path: str) -> ToolResult:
-        await self._run_admin_cmd(f"rm -rf '{path}'")
-        return ToolResult(
-            success=True,
-            message=f"Deleted: {path}",
-            data={"path": path},
-        )
+        """Delete a file/directory via the sandbox file API (real, verified)."""
+        try:
+            response = await self.client.post(
+                f"{self.base_url}/api/v1/file/delete",
+                json={"path": path},
+            )
+            data = response.json()
+            if response.status_code != 200 or not data.get("success"):
+                return ToolResult(
+                    success=False,
+                    message=f"Failed to delete {path}: {data.get('message', response.status_code)}",
+                )
+            return ToolResult(
+                success=True,
+                message=f"Deleted: {path}",
+                data=data.get("data") or {"path": path},
+            )
+        except Exception as exc:
+            return ToolResult(success=False, message=f"Failed to delete {path}: {exc}")
 
     async def file_move(self, source: str, destination: str) -> ToolResult:
-        await self._run_admin_cmd(f"mv '{source}' '{destination}'")
-        return ToolResult(
-            success=True,
-            message=f"Moved: {source} → {destination}",
-            data={"source": source, "destination": destination},
-        )
+        """Move/rename a file/directory via the sandbox file API (real, verified)."""
+        try:
+            response = await self.client.post(
+                f"{self.base_url}/api/v1/file/move",
+                json={"source": source, "destination": destination},
+            )
+            data = response.json()
+            if response.status_code != 200 or not data.get("success"):
+                return ToolResult(
+                    success=False,
+                    message=f"Failed to move {source} → {destination}: {data.get('message', response.status_code)}",
+                )
+            return ToolResult(
+                success=True,
+                message=f"Moved: {source} → {destination}",
+                data=data.get("data") or {"source": source, "destination": destination},
+            )
+        except Exception as exc:
+            return ToolResult(
+                success=False, message=f"Failed to move {source} → {destination}: {exc}"
+            )
 
     async def file_copy(self, source: str, destination: str) -> ToolResult:
-        await self._run_admin_cmd(f"cp -rp '{source}' '{destination}'")
-        return ToolResult(
-            success=True,
-            message=f"Copied: {source} → {destination}",
-            data={"source": source, "destination": destination},
-        )
+        """Copy a file/directory via the sandbox file API (real, verified)."""
+        try:
+            response = await self.client.post(
+                f"{self.base_url}/api/v1/file/copy",
+                json={"source": source, "destination": destination},
+            )
+            data = response.json()
+            if response.status_code != 200 or not data.get("success"):
+                return ToolResult(
+                    success=False,
+                    message=f"Failed to copy {source} → {destination}: {data.get('message', response.status_code)}",
+                )
+            return ToolResult(
+                success=True,
+                message=f"Copied: {source} → {destination}",
+                data=data.get("data") or {"source": source, "destination": destination},
+            )
+        except Exception as exc:
+            return ToolResult(
+                success=False, message=f"Failed to copy {source} → {destination}: {exc}"
+            )
 
     async def file_list(self, path: str) -> ToolResult:
-        output = await self._run_admin_cmd(f"ls -la '{path}'")
-        return ToolResult(
-            success=True,
-            message="Directory listed",
-            data={"listing": output},
-        )
+        """List a directory via the sandbox file API (real, verified)."""
+        try:
+            response = await self.client.post(
+                f"{self.base_url}/api/v1/file/list",
+                json={"path": path},
+            )
+            data = response.json()
+            if response.status_code != 200 or not data.get("success"):
+                return ToolResult(
+                    success=False,
+                    message=f"Failed to list directory {path}: {data.get('message', response.status_code)}",
+                )
+            result_data = data.get("data") or {}
+            entries = result_data.get("entries", [])
+            # Human-readable multi-line listing (name, type, size) for the LLM.
+            lines = [
+                f"{e.get('type', 'file'):4s} {str(e.get('size', 0)):>10s}  {e.get('name', '')}"
+                for e in entries
+            ]
+            listing = "\n".join(lines)
+            return ToolResult(
+                success=True,
+                message=f"Directory listed: {len(entries)} entry(ies)",
+                data={"listing": listing, "entries": entries},
+            )
+        except Exception as exc:
+            return ToolResult(success=False, message=f"Failed to list directory {path}: {exc}")
 
     async def file_replace(
         self,

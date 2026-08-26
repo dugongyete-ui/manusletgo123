@@ -30,8 +30,14 @@ class UserScopedSandbox:
     def __init__(self, sandbox, user_id: str) -> None:
         self._inner = sandbox
         self._user_id = user_id
-        self._user_home = f"/home/runner/users/{user_id}"
-        self._upload_dir = f"/home/runner/users/{user_id}/upload"
+        # Root is configurable (default matches Replit's /home/runner). Other
+        # environments where /home/runner cannot be created (no permission to
+        # mkdir under /home) can point this at a writable location via the
+        # USER_HOME_ROOT env var — keeping behaviour identical on Replit.
+        from app.core.config import get_settings
+        root = getattr(get_settings(), "user_home_root", None) or "/home/runner/users"
+        self._user_home = f"{root}/{user_id}"
+        self._upload_dir = f"{self._user_home}/upload"
 
     # ------------------------------------------------------------------
     # User-specific properties
@@ -53,7 +59,22 @@ class UserScopedSandbox:
             await self._inner._run_admin_cmd(
                 f"mkdir -p '{self._upload_dir}' && chmod 750 '{self._user_home}'"
             )
-            logger.info("UserScopedSandbox: home ready at %s", self._user_home)
+            # Verify the directories actually exist — mkdir can fail silently
+            # (e.g. no permission to create /home/runner on non-Replit hosts)
+            # and the agent would then be told to work in a directory that
+            # does not exist.
+            check = await self._inner._run_admin_cmd(
+                f"test -d '{self._upload_dir}' && echo HOME_OK || echo HOME_MISSING"
+            )
+            if "HOME_OK" in check:
+                logger.info("UserScopedSandbox: home ready at %s", self._user_home)
+            else:
+                logger.warning(
+                    "UserScopedSandbox: home %s could NOT be created — the agent "
+                    "prompt references a non-existent directory. Set USER_HOME_ROOT "
+                    "to a writable path.",
+                    self._user_home,
+                )
         except Exception as exc:
             logger.warning("UserScopedSandbox: failed to create home for user %s: %s", self._user_id, exc)
 

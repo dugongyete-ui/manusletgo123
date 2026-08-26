@@ -59,6 +59,13 @@ class BaseAgent(ABC):
             max_tokens=settings.max_tokens,
             base_url=settings.api_base,
         )
+        # Pass the API key explicitly — env-var fallback (OPENAI_API_KEY) is
+        # not reliable when credentials are only present in the .env file.
+        if settings.api_key:
+            if settings.model_provider in ("openai",):
+                kwargs["openai_api_key"] = settings.api_key
+            else:
+                kwargs["api_key"] = settings.api_key
         if settings.extra_headers:
             kwargs["default_headers"] = settings.extra_headers
         if settings.api_base:
@@ -111,6 +118,38 @@ class BaseAgent(ABC):
     # Compact browser tool results in memory every this many tool-call rounds
     # within a single step to prevent "Payload Too Large" on complex pages.
     _COMPACT_EVERY_N_ITERATIONS = 10
+
+    @staticmethod
+    def _transient_provider_error(exc: Exception) -> bool:
+        """Detect transient provider errors that arrive as a bare ValueError.
+
+        OpenRouter (and some OpenAI-compatible gateways) occasionally return
+        HTTP 200 with an ``{"error": {"message": ..., "code": 429/5xx}}`` body.
+        The OpenAI SDK does not raise for HTTP 200, so langchain-openai surfaces
+        the payload as ``ValueError({'message': ..., 'code': ...})`` — which the
+        transient-retry loop below would otherwise never catch, crashing the
+        whole agent task on a simple rate limit.
+        """
+        if not isinstance(exc, ValueError) or not exc.args:
+            return False
+        payload = exc.args[0]
+        if not isinstance(payload, dict):
+            return False
+        code = payload.get("code")
+        if code == 429 or (isinstance(code, int) and 500 <= code < 600):
+            return True
+        message = str(payload.get("message", "")).lower()
+        return any(
+            keyword in message
+            for keyword in (
+                "rate limit",
+                "overloaded",
+                "temporarily unavailable",
+                "try again",
+                "provider returned error",
+                "no endpoints found",
+            )
+        )
 
     async def execute(self, request: Union[str, list], format: Optional[str] = None) -> AsyncGenerator[BaseEvent, None]:
         format = format or self.format
@@ -242,6 +281,45 @@ class BaseAgent(ABC):
                 logger.warning(
                     "Transient LLM API error (attempt %d/%d), retrying in %.1fs: %s",
                     attempt + 1, self.max_retries, wait, type(e).__name__,
+                )
+                await asyncio.sleep(wait)
+            except ValueError as e:
+                # OpenRouter-style "HTTP 200 + error body" provider failures are
+                # surfaced by langchain-openai as a bare ValueError — retry them
+                # exactly like the transient API errors above when they carry a
+                # transient code (429 / 5xx / rate-limit wording).
+                if not self._transient_provider_error(e):
+                    raise
+                if attempt == self.max_retries - 1:
+                    logger.error(
+                        "Provider error after %d attempts, giving up: %s",
+                        self.max_retries, e,
+                    )
+                    raise
+                wait = self.retry_interval * (2 ** attempt)
+                logger.warning(
+                    "Transient provider error in 200-response body "
+                    "(attempt %d/%d), retrying in %.1fs: %s",
+                    attempt + 1, self.max_retries, wait, e,
+                )
+                await asyncio.sleep(wait)
+            except openai.NotFoundError as e:
+                # OpenRouter free-tier models intermittently report
+                # "No endpoints found" (HTTP 404) while the provider pool
+                # recycles — transient in practice, so retry with backoff.
+                if "no endpoints found" not in str(e).lower():
+                    raise
+                if attempt == self.max_retries - 1:
+                    logger.error(
+                        "Provider endpoints unavailable after %d attempts: %s",
+                        self.max_retries, e,
+                    )
+                    raise
+                wait = self.retry_interval * (2 ** attempt)
+                logger.warning(
+                    "Provider endpoints unavailable (attempt %d/%d), "
+                    "retrying in %.1fs: %s",
+                    attempt + 1, self.max_retries, wait, e,
                 )
                 await asyncio.sleep(wait)
         logger.debug(f"Response from model: {message}")

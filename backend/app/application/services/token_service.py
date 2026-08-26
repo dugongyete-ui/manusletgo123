@@ -1,4 +1,5 @@
 import jwt
+import uuid
 from datetime import datetime, timedelta, UTC
 from typing import Optional, Dict, Any
 from app.core.config import get_settings
@@ -32,7 +33,11 @@ class TokenService:
             "is_active": user.is_active,
             "iat": int(now.timestamp()),  # Issued at (timestamp)
             "exp": int(expire.timestamp()),  # Expiration time (timestamp)
-            "type": "access"
+            "type": "access",
+            # Unique token ID — without it two logins within the same second
+            # produce IDENTICAL tokens (same claims + second-precision iat),
+            # so revoking one (logout) silently invalidates the other session.
+            "jti": uuid.uuid4().hex,
         }
         
         try:
@@ -57,7 +62,8 @@ class TokenService:
             "fullname": user.fullname,
             "iat": int(now.timestamp()),  # Issued at (timestamp)
             "exp": int(expire.timestamp()),  # Expiration time (timestamp)
-            "type": "refresh"
+            "type": "refresh",
+            "jti": uuid.uuid4().hex,  # unique per issuance — see create_access_token
         }
         
         try:
@@ -167,7 +173,8 @@ class TokenService:
             "user_id": user_id,
             "iat": int(now.timestamp()),  # Issued at (timestamp)
             "exp": int(expire.timestamp()),  # Expiration time (timestamp)
-            "type": "resource_access"
+            "type": "resource_access",
+            "jti": uuid.uuid4().hex,  # unique per issuance — prevents token collisions
         }
         
         try:

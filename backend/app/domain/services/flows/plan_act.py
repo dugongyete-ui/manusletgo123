@@ -155,6 +155,11 @@ class PlanActFlow(BaseFlow):
 
         await self._session_repository.update_status(self._session_id, SessionStatus.RUNNING)  
         self.plan = session.get_last_plan()
+        # Remember the session's previous plan before re-planning overwrites it.
+        # When the new plan is empty (conversational follow-up answered directly),
+        # the COMPLETED PlanEvent must still reference the previous non-empty plan —
+        # emitting a 0-step plan wipes the visible steps in the UI panel.
+        previous_plan = self.plan
 
         settings = get_settings()
         _max_steps = settings.max_steps
@@ -313,14 +318,38 @@ class PlanActFlow(BaseFlow):
             elif self.status == AgentStatus.SUMMARIZING:
                 # Conclusion
                 logger.info(f"Agent {self._agent_id} started summarizing")
-                async for event in self.executor.summarize():
+                # Collect the final deliverable file paths recorded by every
+                # step's result JSON — delivered once, here, in the summary.
+                step_attachments: list = []
+                seen_paths: set = set()
+                if self.plan is not None:
+                    for s in self.plan.steps or []:
+                        for fp in getattr(s, "attachments", None) or []:
+                            if fp and fp not in seen_paths:
+                                seen_paths.add(fp)
+                                step_attachments.append(fp)
+                if step_attachments:
+                    logger.info(
+                        f"Agent {self._agent_id} summary will deliver {len(step_attachments)} "
+                        f"step deliverable(s): {step_attachments}"
+                    )
+                async for event in self.executor.summarize(step_attachments):
                     yield event
                 logger.info(f"Agent {self._agent_id} summarizing completed, state changed from {AgentStatus.SUMMARIZING} to {AgentStatus.COMPLETED}")
                 self.status = AgentStatus.COMPLETED
             elif self.status == AgentStatus.COMPLETED:
-                self.plan.status = ExecutionStatus.COMPLETED
+                # Prefer the previous non-empty plan when the current one is empty
+                # (conversational follow-up): completing with a 0-step plan would
+                # make the user's visible plan disappear from the UI.
+                completion_plan = self.plan
+                if (
+                    (not completion_plan or not completion_plan.steps)
+                    and previous_plan and previous_plan.steps
+                ):
+                    completion_plan = previous_plan
+                completion_plan.status = ExecutionStatus.COMPLETED
                 logger.info(f"Agent {self._agent_id} plan has been completed")
-                yield PlanEvent(status=PlanStatus.COMPLETED, plan=self.plan)
+                yield PlanEvent(status=PlanStatus.COMPLETED, plan=completion_plan)
                 self.status = AgentStatus.IDLE
                 break
         yield DoneEvent()

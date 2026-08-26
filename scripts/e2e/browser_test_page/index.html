@@ -1,0 +1,26 @@
+<!DOCTYPE html>
+<html>
+<head><meta charset="utf-8"><title>Test Page AI Dzeck</title></head>
+<body>
+  <h1>Automation Test Page</h1>
+
+  <form id="loginForm" onsubmit="event.preventDefault(); document.getElementById('flash').textContent='You logged into a secure area!';">
+    <input id="username" type="text" name="username" placeholder="Enter username">
+    <button id="loginBtn" type="submit">Login</button>
+  </form>
+
+  <div id="flash" style="margin-top:10px;color:green;"></div>
+
+  <select id="dropdown" name="dropdown">
+    <option value="" selected disabled>Please select an option</option>
+    <option value="1">Option 1</option>
+    <option value="2">Option 2</option>
+  </select>
+
+  <a id="page2link" href="page2.html">Go to page 2</a>
+
+  <script>
+    console.log('PAGE_LOADED_MARKER');
+  </script>
+</body>
+</html>

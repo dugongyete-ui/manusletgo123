@@ -52,6 +52,32 @@ class ExecutionAgent(BaseAgent):
             agent_repository=agent_repository,
             tools=tools,
         )
+        # Sandbox file paths already delivered to the user during execution
+        # (via message_notify_user with attachments). Used by summarize() to
+        # avoid sending the same file twice — the "double send" bug.
+        self._delivered_attachments: List[str] = []
+
+    @staticmethod
+    def _counts_as_real_action(event: "ToolEvent") -> bool:
+        """Whether a tool CALL counts as a real action for ghost-success detection.
+
+        Any non-message toolkit tool counts. Within the message toolkit,
+        ``message_notify_user`` **with attachments** and ``message_ask_user``
+        also count: a step whose whole purpose is delivering files or asking
+        the user a question legitimately completes with only message-tool
+        calls — treating those as "ghost success" re-ran the step and
+        re-delivered the same files (double-send bug).
+        """
+        if event.tool_name != "message":
+            return True
+        if event.function_name == "message_ask_user":
+            return True
+        if (
+            event.function_name == "message_notify_user"
+            and event.function_args.get("attachments")
+        ):
+            return True
+        return False
 
     def _build_vision_content(self, text: str, images: List[VisionImage]) -> list:
         content = [{"type": "text", "text": text}]
@@ -135,10 +161,23 @@ class ExecutionAgent(BaseAgent):
                             [raw_att] if isinstance(raw_att, str) else list(raw_att)
                         )
                         att_list = [p for p in att_list if p]
-                        if att_list:
+                        # Only deliver files that were NOT already delivered in an
+                        # earlier message of this run — re-attaching them here made
+                        # the same file appear on multiple chat bubbles (the
+                        # "double send" bug).
+                        new_paths = [
+                            p for p in att_list
+                            if p not in self._delivered_attachments
+                        ]
+                        if new_paths:
+                            # Record mid-task deliveries so the final summary
+                            # never re-sends the same file (double-send bug).
+                            for p in new_paths:
+                                if p not in self._delivered_attachments:
+                                    self._delivered_attachments.append(p)
                             yield MessageEvent(
                                 message=event.function_args.get("text", ""),
-                                attachments=[FileInfo(file_path=p) for p in att_list],
+                                attachments=[FileInfo(file_path=p) for p in new_paths],
                             )
                             continue
             yield event
@@ -174,7 +213,7 @@ class ExecutionAgent(BaseAgent):
         try:
             async for event in self._handle_execution_events(step, content):
                 if isinstance(event, ToolEvent) and event.status == ToolStatus.CALLING:
-                    if event.tool_name != "message":
+                    if self._counts_as_real_action(event):
                         real_tools_called = True
                     if event.function_name == "message_notify_user":
                         narration_sent = True
@@ -243,7 +282,7 @@ class ExecutionAgent(BaseAgent):
                     step, correction_content
                 ):
                     if isinstance(event, ToolEvent) and event.status == ToolStatus.CALLING:
-                        if event.tool_name != "message":
+                        if self._counts_as_real_action(event):
                             real_tools_called = True
                         if event.function_name == "message_notify_user":
                             narration_sent = True
@@ -289,6 +328,8 @@ class ExecutionAgent(BaseAgent):
                     step, correction_content
                 ):
                     if isinstance(event, ToolEvent) and event.status == ToolStatus.CALLING:
+                        if self._counts_as_real_action(event):
+                            real_tools_called = True
                         if event.function_name == "message_notify_user":
                             narration_sent = True
                     yield event
@@ -378,11 +419,16 @@ class ExecutionAgent(BaseAgent):
         self,
         summary_text: str,
         context: list,
+        existing_attachments: Optional[List[str]] = None,
     ) -> List[FileInfo]:
         """
         Ask the LLM (without modifying memory) whether this task involved
         internet research. If yes, write the summary as a .md file directly
         via the sandbox and return its FileInfo.
+
+        Skipped when the executor already produced a Markdown deliverable
+        (e.g. laporan_pengujian.md) — creating a second summary_<topic>.md
+        with the same content caused the duplicated-MD complaint.
         """
         from app.domain.services.tools.file import FileToolkit
 
@@ -390,6 +436,19 @@ class ExecutionAgent(BaseAgent):
             (tk for tk in self.toolkits if isinstance(tk, FileToolkit)), None
         )
         if not file_toolkit:
+            return []
+
+        # If any step already delivered a .md report file, do NOT create
+        # another summary .md — the existing report IS the deliverable.
+        existing_md = [
+            p for p in (existing_attachments or [])
+            if isinstance(p, str) and p.strip().lower().endswith(".md")
+        ]
+        if existing_md:
+            logger.info(
+                "Summary .md skipped — task already produced a Markdown deliverable: %s",
+                existing_md,
+            )
             return []
 
         DECIDE_PROMPT = (
@@ -439,7 +498,18 @@ class ExecutionAgent(BaseAgent):
             logger.warning("Could not create summary .md file: %s", exc)
             return []
 
-    async def summarize(self) -> AsyncGenerator[BaseEvent, None]:
+    async def summarize(
+        self, step_attachments: Optional[List[str]] = None
+    ) -> AsyncGenerator[BaseEvent, None]:
+        """Deliver the final result to the user.
+
+        Args:
+            step_attachments: final deliverable file paths collected from every
+                step's result JSON. Used (a) to skip creating a duplicate
+                summary .md when a report already exists, and (b) to filter out
+                files that were already delivered mid-task via
+                message_notify_user so nothing is sent twice.
+        """
         await self._ensure_memory()
         context = list(self.memory.get_messages())
 
@@ -463,9 +533,16 @@ class ExecutionAgent(BaseAgent):
                 yield MessageChunkEvent(content="", done=True)
 
                 # Let the LLM decide whether a .md summary file is appropriate
+                # (skipped automatically when a report .md already exists).
                 attachments = await self._decide_and_create_summary_file(
-                    clean_text, context
+                    clean_text, context, existing_attachments=step_attachments
                 )
+                # Deliver step deliverables that were NOT already sent mid-task.
+                already_delivered = set(self._delivered_attachments)
+                for p in step_attachments or []:
+                    if p and p not in already_delivered:
+                        already_delivered.add(p)
+                        attachments.append(FileInfo(file_path=p))
                 yield MessageEvent(
                     message=clean_text,
                     attachments=attachments if attachments else None,
@@ -478,6 +555,7 @@ class ExecutionAgent(BaseAgent):
             )
 
         # Fallback: JSON-based summarize
+        already_delivered = list(self._delivered_attachments)
         async for event in self.execute(SUMMARIZE_PROMPT):
             if isinstance(event, MessageEvent):
                 logger.debug(f"Execution agent summary: {event.message}")
@@ -489,9 +567,13 @@ class ExecutionAgent(BaseAgent):
                     yield MessageEvent(message=event.message)
                     continue
                 msg_obj = Message.model_validate(parsed_response)
-                attachments = [
-                    FileInfo(file_path=fp) for fp in msg_obj.attachments
+                # Filter out anything already delivered mid-task so the user
+                # never receives the same file twice.
+                attachment_paths = [
+                    fp for fp in msg_obj.attachments
+                    if fp and fp not in already_delivered
                 ]
+                attachments = [FileInfo(file_path=fp) for fp in attachment_paths]
                 yield MessageEvent(message=msg_obj.message, attachments=attachments)
                 continue
             yield event

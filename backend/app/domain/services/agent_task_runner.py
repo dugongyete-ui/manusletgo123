@@ -465,6 +465,12 @@ class AgentTaskRunner(TaskRunner):
         # Collect files written during this run so we can auto-attach them to
         # the final MessageEvent when the agent forgets to include them.
         files_written: List[FileInfo] = []
+        # File paths already attached to ANY message in this run. Guarantees
+        # each file is delivered to the user EXACTLY ONCE — previously every
+        # MessageEvent after a file_write re-attached the same file, so the
+        # report .md appeared on the executor narration AND again on the
+        # final summary (the "double send" bug).
+        delivered_paths: set = set()
 
         async for event in self._flow.run(message):
             if isinstance(event, ToolEvent):
@@ -494,9 +500,30 @@ class AgentTaskRunner(TaskRunner):
                                 f"Agent {self._agent_id} failed to sync step attachment {attachment_path}: {e}"
                             )
             elif isinstance(event, MessageEvent):
-                # Always merge files_written into the message attachments.
-                # The agent may attach some files (e.g. a summary .md) while
-                # forgetting to include downloaded images — we merge both.
+                # Strip attachments the user already received on an earlier
+                # message of this run FIRST — every file must be delivered
+                # EXACTLY once regardless of which agent layer re-attached it.
+                if event.attachments:
+                    fresh = [
+                        f for f in event.attachments
+                        if not (f.file_path and f.file_path in delivered_paths)
+                    ]
+                    if len(fresh) != len(event.attachments):
+                        dropped = [
+                            f.filename or f.file_path
+                            for f in event.attachments
+                            if f not in fresh
+                        ]
+                        logger.info(
+                            f"Agent {self._agent_id} stripped already-delivered "
+                            f"attachment(s) from message: {dropped}"
+                        )
+                    event.attachments = fresh or None
+                # Merge NOT-yet-delivered written files into the message
+                # attachments. The agent may attach some files (e.g. a summary
+                # .md) while forgetting to include downloaded images — we merge
+                # the missing ones, but never re-attach a file that was already
+                # delivered on an earlier message in this same run.
                 if files_written:
                     # Prefer actual output files over intermediate generator scripts (.py).
                     # If there are non-.py output files, exclude bare generator scripts
@@ -509,13 +536,22 @@ class AgentTaskRunner(TaskRunner):
                     files_to_merge = non_scripts if non_scripts else files_written
 
                     existing_paths = {f.file_path for f in (event.attachments or []) if f.file_path}
-                    extra = [f for f in files_to_merge if f.file_path not in existing_paths]
+                    extra = [
+                        f for f in files_to_merge
+                        if f.file_path not in existing_paths
+                        and f.file_path not in delivered_paths
+                    ]
                     if extra:
                         event.attachments = list(event.attachments or []) + extra
                         logger.info(
                             f"Agent {self._agent_id} merged {len(extra)} written file(s) "
                             f"into MessageEvent: {[f.filename for f in extra]}"
                         )
+                # Record everything this message carries so no later message
+                # (e.g. the final summary) sends the same file again.
+                for f in (event.attachments or []):
+                    if f.file_path:
+                        delivered_paths.add(f.file_path)
                 await self._sync_message_attachments_to_storage(event)
 
             yield event

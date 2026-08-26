@@ -249,14 +249,36 @@ class AgentDomainService:
             logger.info(f"Session {session_id} started")
             logger.debug(f"Session {session_id} task: {task}")
            
-            while task and not task.done:
-                event_id, event_str = await task.output_stream.get(start_id=latest_event_id, block_ms=0)
-                latest_event_id = event_id
+            # Drain the task's output stream until a TERMINAL event (done /
+            # error / wait) is delivered. Do NOT stop merely because the
+            # producing task finished: the client consumes events slower than
+            # the agent produces them (e.g. streaming a long summary in
+            # chunks), and stopping at `task.done` dropped the final summary
+            # message and the DoneEvent — the stream closed while the user was
+            # still waiting ("execution stopped before it finished" bug).
+            while task:
+                event_id, event_str = await task.output_stream.get(
+                    start_id=latest_event_id, block_ms=1000
+                )
+                # Keep the last valid cursor — get() returns (None, None) on
+                # timeout/transport errors, and resetting the cursor to None
+                # would replay the whole stream from "0" (duplicate events).
+                if event_id is not None:
+                    latest_event_id = event_id
                 if event_str is None:
-                    logger.debug(f"No event found in Session {session_id}'s event queue")
+                    if task.done:
+                        # No new events for a full block window AND the
+                        # producer has finished — the stream is fully drained
+                        # (terminal events are always put before the task
+                        # completes, so this only happens if they were lost).
+                        logger.info(
+                            "Session %s output stream drained after task completion",
+                            session_id,
+                        )
+                        break
                     continue
                 event = TypeAdapter(AgentEvent).validate_json(event_str)
-                event.id = event_id
+                event.id = latest_event_id
                 logger.debug(f"Got event from Session {session_id}'s event queue: {type(event).__name__}")
                 await self._session_repository.update_unread_message_count(session_id, 0)
                 yield event

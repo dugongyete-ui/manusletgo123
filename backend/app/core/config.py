@@ -52,6 +52,10 @@ class Settings(BaseSettings):
     sandbox_base_url: str = "http://localhost:8080"
     sandbox_vnc_url: str = "ws://localhost:5901"
     sandbox_cdp_url: str = "http://localhost:8222"
+    # Root directory for per-user sandbox homes. On Replit the runner user owns
+    # /home/runner, so the default matches production. Other deployments (where
+    # /home/runner cannot be created) can override it via USER_HOME_ROOT.
+    user_home_root: str = "/home/runner/users"
 
     # Vision model configuration (optional, for browser screenshot analysis)
     vision_model_name: str | None = None
@@ -143,11 +147,18 @@ class Settings(BaseSettings):
 @lru_cache()
 def get_settings() -> Settings:
     """Get application settings"""
+    settings = Settings()
+    # Ensure OPENAI_API_KEY is always present in the process environment for
+    # the OpenAI SDK / langchain-openai clients. On Replit the userenv vars
+    # (API_KEY, …) are injected as real process env vars, but when the app is
+    # run from a plain shell the credentials only live in the .env file that
+    # pydantic-settings reads — they never reach os.environ, so any client
+    # relying on the OPENAI_API_KEY env var would fail with
+    # "The api_key client option must be set …".
     if not os.environ.get("OPENAI_API_KEY"):
-        api_key_val = os.getenv("API_KEY")
+        api_key_val = os.getenv("API_KEY") or settings.api_key
         if api_key_val:
             os.environ["OPENAI_API_KEY"] = api_key_val
-    settings = Settings()
     settings.extra_headers = _parse_extra_headers()
     settings.check_required_settings()
-    return settings 
+    return settings

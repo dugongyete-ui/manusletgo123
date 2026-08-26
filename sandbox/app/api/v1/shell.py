@@ -24,10 +24,17 @@ async def exec_command(request: ShellExecRequest):
         command=request.command
     )
     
+    # Reflect the actual process status in the message so the caller can
+    # distinguish "started and still running" from "finished".
+    if getattr(result, "status", None) == "running":
+        message = "Command started (still running)"
+    else:
+        message = "Command executed"
+    
     # Construct response
     return Response(
         success=True,
-        message="Command executed",
+        message=message,
         data=result.model_dump()
     )
 

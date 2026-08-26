@@ -59,6 +59,9 @@ coverage.xml
 *.log
 logs/
 
+# E2E test artifacts (event logs, session snapshots, state)
+scripts/e2e/out/
+
 # Local development settings
 .env.local
 .env.development.local

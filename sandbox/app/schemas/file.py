@@ -42,3 +42,25 @@ class FileFindRequest(BaseModel):
     """File find request"""
     path: str = Field(..., description="Directory path to search")
     glob: str = Field(..., description="Filename pattern (glob syntax)")
+
+
+class FileListRequest(BaseModel):
+    """Directory listing request"""
+    path: str = Field(..., description="Absolute directory path to list")
+
+
+class FileCopyRequest(BaseModel):
+    """File copy request"""
+    source: str = Field(..., description="Absolute source file/directory path")
+    destination: str = Field(..., description="Absolute destination path")
+
+
+class FileMoveRequest(BaseModel):
+    """File move/rename request"""
+    source: str = Field(..., description="Absolute source file/directory path")
+    destination: str = Field(..., description="Absolute destination path")
+
+
+class FileDeleteRequest(BaseModel):
+    """File delete request"""
+    path: str = Field(..., description="Absolute path of the file/directory to delete")

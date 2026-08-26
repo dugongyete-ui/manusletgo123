@@ -41,3 +41,34 @@ class FileUploadResult(BaseModel):
     file_path: str = Field(..., description="Path of the uploaded file")
     file_size: int = Field(..., description="Size of the uploaded file in bytes")
     success: bool = Field(..., description="Whether upload was successful")
+
+
+class FileListEntry(BaseModel):
+    """Single entry in a directory listing"""
+    name: str = Field(..., description="File or directory name")
+    type: str = Field(..., description="Entry type: 'file' or 'dir'")
+    size: int = Field(0, description="Size in bytes (0 for directories)")
+
+
+class FileListResult(BaseModel):
+    """Directory listing result"""
+    path: str = Field(..., description="Path of the listed directory")
+    entries: List[FileListEntry] = Field([], description="Directory entries")
+
+
+class FileCopyResult(BaseModel):
+    """File copy result"""
+    source: str = Field(..., description="Source path")
+    destination: str = Field(..., description="Destination path")
+    bytes_copied: int = Field(0, description="Number of bytes copied")
+
+
+class FileMoveResult(BaseModel):
+    """File move/rename result"""
+    source: str = Field(..., description="Original path")
+    destination: str = Field(..., description="New path")
+
+
+class FileDeleteResult(BaseModel):
+    """File delete result"""
+    path: str = Field(..., description="Path of the deleted file/directory")

@@ -26,6 +26,13 @@ class PlaywrightBrowser:
             max_tokens=self.settings.max_tokens,
             base_url=self.settings.api_base,
         )
+        # Pass the API key explicitly — env-var fallback (OPENAI_API_KEY) is
+        # not reliable when credentials are only present in the .env file.
+        if self.settings.api_key:
+            if self.settings.model_provider in ("openai",):
+                kwargs["openai_api_key"] = self.settings.api_key
+            else:
+                kwargs["api_key"] = self.settings.api_key
         if self.settings.extra_headers:
             kwargs["default_headers"] = self.settings.extra_headers
         self._model = init_chat_model(**kwargs)
@@ -1149,18 +1156,87 @@ class PlaywrightBrowser:
         except Exception as exc:
             return ToolResult(success=False, message=f"upload_file failed: {exc}")
 
+    # Console-capture shim source — installed via add_init_script so it runs
+    # before page scripts on every navigation, plus an in-document installer
+    # for the currently loaded document. Mirrors the browser_use engine fix.
+    _CONSOLE_CAPTURE_SOURCE = """
+(function () {
+    if (window.__consoleLogs) { return; }
+    try {
+        window.__consoleLogs = [];
+        var __fmt = function (args) {
+            var out = [];
+            for (var i = 0; i < args.length; i++) {
+                var a = args[i];
+                try {
+                    if (typeof a === 'string') { out.push(a); }
+                    else if (a instanceof Error) { out.push(a.message); }
+                    else { out.push(JSON.stringify(a)); }
+                } catch (e) { out.push(String(a)); }
+            }
+            return out.join(' ');
+        };
+        ['log', 'info', 'warn', 'error', 'debug'].forEach(function (level) {
+            var orig = console[level] ? console[level].bind(console) : null;
+            console[level] = function () {
+                try {
+                    window.__consoleLogs.push('[' + level.toUpperCase() + '] ' + __fmt(arguments));
+                    if (window.__consoleLogs.length > 1000) { window.__consoleLogs.shift(); }
+                } catch (e) {}
+                if (orig) { orig.apply(null, arguments); }
+            };
+        });
+        window.addEventListener('error', function (e) {
+            try {
+                window.__consoleLogs.push('[ERROR] ' + e.message + ' @ ' + (e.filename || '') + ':' + (e.lineno || 0));
+                if (window.__consoleLogs.length > 1000) { window.__consoleLogs.shift(); }
+            } catch (err) {}
+        });
+    } catch (e) {}
+})();
+"""
+
+    _console_capture_registered = False
+
+    async def _ensure_console_capture(self) -> None:
+        """Install the console-capture shim on the current page (idempotent)."""
+        try:
+            await self._ensure_page()
+            if not self._console_capture_registered:
+                try:
+                    await self.page.add_init_script(self._CONSOLE_CAPTURE_SOURCE)
+                    self._console_capture_registered = True
+                except Exception as exc:
+                    logger.debug("add_init_script failed: %s", exc)
+            try:
+                await self.page.evaluate(self._CONSOLE_CAPTURE_SOURCE)
+            except Exception as exc:
+                logger.debug("console capture install failed: %s", exc)
+        except Exception as exc:
+            logger.debug("_ensure_console_capture failed: %s", exc)
+
     async def console_exec(self, javascript: str) -> ToolResult:
         """Execute JavaScript code"""
         await self._ensure_page()
+        # Capture console output produced by the user's code.
+        await self._ensure_console_capture()
         result = await self.page.evaluate(javascript)
         return ToolResult(success=True, data={"result": result})
-    
+
     async def console_view(self, max_lines: Optional[int] = None) -> ToolResult:
-        """View console output"""
+        """View console output (reads the console-capture shim buffer)."""
         await self._ensure_page()
-        logs = await self.page.evaluate("""() => {
-            return window.console.logs || [];
-        }""")
-        if max_lines is not None:
+        await self._ensure_console_capture()
+        import json
+        logs_raw = await self.page.evaluate(
+            "() => JSON.stringify(window.__consoleLogs || [])"
+        )
+        try:
+            logs = json.loads(logs_raw) if isinstance(logs_raw, str) else logs_raw
+        except (TypeError, ValueError):
+            logs = logs_raw
+        if logs is None:
+            logs = []
+        if max_lines is not None and isinstance(logs, list) and max_lines > 0:
             logs = logs[-max_lines:]
         return ToolResult(success=True, data={"logs": logs})
