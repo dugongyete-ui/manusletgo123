@@ -333,6 +333,7 @@ class PlanActFlow(BaseFlow):
                             f"Reached the maximum step limit ({_max_steps}). "
                             "Summarising with the data collected so far."
                         ),
+                        is_progress=True,
                     )
                     self.status = AgentStatus.SUMMARIZING
                     continue
@@ -349,6 +350,7 @@ class PlanActFlow(BaseFlow):
                             f"{_consecutive_failures} steps failed consecutively. "
                             "Summarising with the data collected so far."
                         ),
+                        is_progress=True,
                     )
                     self.status = AgentStatus.SUMMARIZING
                     continue

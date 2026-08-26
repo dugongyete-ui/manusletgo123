@@ -126,6 +126,10 @@ class MessageEvent(BaseEvent):
     # transitions). The frontend renders them INSIDE the unified step
     # timeline instead of standalone chat bubbles.
     is_progress: bool = False
+    # True ONLY for agent questions that require a user answer (ask_user).
+    # These must stay VISIBLE as standalone chat messages — they pause the
+    # task — so the timeline must not swallow them.
+    is_question: bool = False
 
 class DoneEvent(BaseEvent):
     """Done event"""

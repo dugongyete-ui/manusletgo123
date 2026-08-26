@@ -33,6 +33,8 @@ export interface MessageEventData extends BaseEventData {
   is_progress?: boolean;
   /** true = the task's final summary message (single delivery point for files) */
   is_final?: boolean;
+  /** true = agent question that pauses the task and needs a user answer */
+  is_question?: boolean;
 }
 
 export interface MessageChunkEventData extends BaseEventData {

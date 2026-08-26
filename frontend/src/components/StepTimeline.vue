@@ -2,16 +2,20 @@
   <div class="step-timeline flex flex-col w-full">
     <div v-for="(entry, i) in stepEntries" :key="entry.step.id || i" class="relative flex flex-col"
       :class="i < stepEntries.length - 1 ? 'pb-[12px]' : ''">
-      <!-- Continuous timeline rail: connects every step icon into ONE line.
-           Each step owns the segment from its icon down to the next step. -->
-      <div class="absolute left-[7px] top-[16px] bottom-0 border-l border-dashed border-[var(--border-dark)]"
-        :class="i === stepEntries.length - 1 && !entry.items.length ? 'hidden' : ''"></div>
+      <!-- Continuous timeline rail: ONE unbroken line through every step.
+           Step 1 starts at its icon's center; every following step starts at
+           its container top — exactly where the previous step's rail ended —
+           so the segments join seamlessly (no gaps, no restarts), and each
+           status icon sits ON the line like a node (Manus-style). -->
+      <div v-if="!(i === stepEntries.length - 1 && !entry.items.length)"
+        class="absolute left-[7px] border-l border-dashed border-[var(--border-dark)]"
+        :class="i === 0 ? 'top-[8px] bottom-0' : 'top-0 bottom-0'"></div>
 
       <!-- Step header: status node + description + chevron -->
       <div
         class="text-sm w-full clickable flex gap-2 justify-between group/header truncate text-[var(--text-primary)]">
         <div class="flex flex-row gap-2 justify-center items-center truncate" @click="toggle(i)">
-          <!-- status node -->
+          <!-- status node — solid background so the rail passes BEHIND it -->
           <div v-if="entry.step.status === 'completed'"
             class="w-4 h-4 flex-shrink-0 flex items-center justify-center border-[var(--border-dark)] rounded-[15px] bg-[var(--text-disable)] dark:bg-[var(--fill-tsp-white-dark)] border-0">
             <CheckIcon class="text-[var(--icon-white)] dark:text-[var(--icon-white-tsp)]" :size="10" />
@@ -22,7 +26,7 @@
             <XIcon class="text-white" :size="10" />
           </div>
           <div v-else
-            class="w-4 h-4 flex-shrink-0 flex items-center justify-center border border-[var(--border-dark)] rounded-[15px]">
+            class="w-4 h-4 flex-shrink-0 flex items-center justify-center border border-[var(--border-dark)] rounded-[15px] bg-[var(--background-gray-main)]">
             <span v-if="entry.step.status === 'running'"
               class="block w-[6px] h-[6px] rounded-full bg-[var(--text-secondary)] animate-pulse"></span>
           </div>
@@ -43,7 +47,9 @@
         </div>
       </div>
 
-      <!-- Step items: tool pills + progress narrations, chronologically ordered -->
+      <!-- Step items: tool pills + progress narrations, chronologically ordered.
+           Narration text renders BESIDE the rail (indented right of it) — the
+           user-notification style of the Manus work loop. -->
       <div class="flex" v-if="entry.items.length">
         <div class="w-[24px] flex-shrink-0"></div>
         <div
@@ -109,6 +115,7 @@ const stepEntries = computed<StepEntry[]>(() => {
       entries.push(current);
     } else if (msg.type === 'assistant' && current) {
       const mc = msg.content as MessageContent;
+      if (!mc.content) continue;
       current.items.push({
         kind: 'narration',
         timestamp: mc.timestamp,
@@ -119,6 +126,10 @@ const stepEntries = computed<StepEntry[]>(() => {
   }
   for (const entry of entries) {
     for (const tool of entry.step.tools || []) {
+      // Message-tool events are converted to narration messages by
+      // handleToolEvent — if one still rides along inside a step (legacy
+      // session state), skip it so its text never renders twice.
+      if (tool.name === 'message') continue;
       entry.items.push({
         kind: 'tool',
         timestamp: tool.timestamp,

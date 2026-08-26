@@ -16,6 +16,10 @@ export interface MessageContent extends BaseContent {
   isStreaming?: boolean;
   /** true = compact progress narration belonging to the step timeline */
   is_progress?: boolean;
+  /** true = the task's final summary message */
+  is_final?: boolean;
+  /** true = agent question that pauses the task and needs a user answer */
+  is_question?: boolean;
 }
 
 export interface ToolContent extends BaseContent {

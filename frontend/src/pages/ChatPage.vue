@@ -249,10 +249,14 @@ const allTools = computed<ToolContent[]>(() => {
 })
 
 // ── Message grouping ────────────────────────────────────────────────────────────
-// Consecutive 'step' messages — together with assistant progress narrations
-// (is_progress=true) that belong to the running timeline — are merged into a
-// single 'timeline' group rendered by StepTimeline as ONE connected block.
-// Regular assistant messages (ack, final summary, errors) stay standalone.
+// Manus-style: ONE task run = ONE connected timeline. From the first step
+// message, every mid-task element — subsequent steps, progress narrations
+// (is_progress), the model's own inline narration text — renders INSIDE the
+// timeline, beside the continuous rail. Only these break the timeline back
+// into standalone chat bubbles:
+//   • the final summary (is_final)      • agent questions (is_question)
+//   • user / error / attachment messages
+// The ack (before the first step) naturally stays standalone.
 interface MessageGroup {
   kind: 'single' | 'timeline';
   messages: Message[];
@@ -261,31 +265,36 @@ interface MessageGroup {
 const messageGroups = computed<MessageGroup[]>(() => {
   const groups: MessageGroup[] = []
   const msgs = messages.value
-  let i = 0
-  while (i < msgs.length) {
-    if (msgs[i].type === 'step') {
-      const groupMsgs: Message[] = [msgs[i]]
-      let j = i + 1
-      while (j < msgs.length) {
-        const m = msgs[j]
-        if (m.type === 'step') {
-          groupMsgs.push(m)
-          j++
-          continue
-        }
-        if (m.type === 'assistant' && (m.content as MessageContent).is_progress) {
-          groupMsgs.push(m)
-          j++
-          continue
-        }
-        break
+  let timeline: MessageGroup | null = null
+  for (let i = 0; i < msgs.length; i++) {
+    const m = msgs[i]
+    if (m.type === 'step') {
+      if (timeline) {
+        timeline.messages.push(m)
+      } else {
+        timeline = { kind: 'timeline', messages: [m], startIndex: i }
+        groups.push(timeline)
       }
-      groups.push({ kind: 'timeline', messages: groupMsgs, startIndex: i })
-      i = j
-    } else {
-      groups.push({ kind: 'single', messages: [msgs[i]], startIndex: i })
-      i++
+      continue
     }
+    if (m.type === 'assistant') {
+      const mc = m.content as MessageContent
+      if (mc.is_final || mc.is_question) {
+        // Summary / question — standalone, ends the timeline.
+        groups.push({ kind: 'single', messages: [m], startIndex: i })
+        timeline = null
+      } else if (timeline) {
+        // Mid-task narration → inside the timeline, beside the rail.
+        timeline.messages.push(m)
+      } else {
+        // Ack / pre-plan text — standalone (no timeline started yet).
+        groups.push({ kind: 'single', messages: [m], startIndex: i })
+      }
+      continue
+    }
+    // user / tool / attachments — standalone, timeline ends.
+    groups.push({ kind: 'single', messages: [m], startIndex: i })
+    timeline = null
   }
   return groups
 })
@@ -421,6 +430,28 @@ const handleMessageEvent = (messageData: MessageEventData) => {
 
 // Handle tool event
 const handleToolEvent = (toolData: ToolEventData) => {
+  // Message-tool events (message_notify_user) are progress narrations, not
+  // tool pills: render them as narration text INSIDE the unified timeline
+  // (beside the rail) no matter whether a step is currently running. This is
+  // what keeps the Manus-style work loop continuous — a notify fired between
+  // two steps can never break the timeline apart again. The CALLED event
+  // carries the same text and is skipped to avoid duplicates.
+  if (toolData.name === 'message') {
+    const text = (toolData.args as any)?.text
+    if (toolData.status === 'calling' && text) {
+      messages.value.push({
+        type: 'assistant',
+        content: {
+          content: text,
+          timestamp: toolData.timestamp,
+          is_progress: true,
+        } as MessageContent,
+      })
+      scheduleScroll()
+    }
+    return
+  }
+
   // Update thinking text: show current action while calling, reset to null when done
   if (toolData.status === 'calling') {
     currentThinkingText.value = t(TOOL_FUNCTION_MAP[toolData.function] || toolData.function);
@@ -501,7 +532,9 @@ const handleErrorEvent = (errorData: ErrorEventData) => {
     type: 'assistant',
     content: {
       content: errorData.error,
-      timestamp: errorData.timestamp
+      timestamp: errorData.timestamp,
+      // Terminal message — always standalone, never swallowed by a timeline.
+      is_final: true,
     } as MessageContent,
   });
 }

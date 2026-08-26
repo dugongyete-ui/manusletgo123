@@ -281,7 +281,13 @@ class ExecutionAgent(BaseAgent):
             elif isinstance(event, ToolEvent):
                 if event.function_name == "message_ask_user":
                     if event.status == ToolStatus.CALLING:
-                        yield MessageEvent(message=event.function_args.get("text", ""))
+                        # Question → standalone chat message (pauses the task,
+                        # waits for the user's answer). It must break out of
+                        # the step timeline, hence is_question (NOT progress).
+                        yield MessageEvent(
+                            message=event.function_args.get("text", ""),
+                            is_question=True,
+                        )
                     elif event.status == ToolStatus.CALLED:
                         yield WaitEvent()
                         return
@@ -565,7 +571,7 @@ class ExecutionAgent(BaseAgent):
                     f"**Alasan:** {_reason_id}\n\n"
                     "Analisis akan dilanjutkan dengan data yang sudah terkumpul dari langkah lain."
                 )
-            yield MessageEvent(role="assistant", message=_msg)
+            yield MessageEvent(role="assistant", message=_msg, is_progress=True)
 
         step.status = ExecutionStatus.COMPLETED
 

@@ -64,6 +64,7 @@ class MessageEventData(BaseEventData):
     attachments: Optional[List[FileInfoResponse]] = None
     is_progress: bool = False
     is_final: bool = False
+    is_question: bool = False
 
 class MessageSSEEvent(BaseSSEEvent):
     event: Literal["message"] = "message"
@@ -79,6 +80,7 @@ class MessageSSEEvent(BaseSSEEvent):
                 attachments=[await FileInfoResponse.from_file_info(attachment) for attachment in event.attachments] if event.attachments else None,
                 is_progress=event.is_progress,
                 is_final=event.is_final,
+                is_question=event.is_question,
             )
         )
 
