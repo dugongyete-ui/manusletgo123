@@ -62,6 +62,8 @@ class MessageEventData(BaseEventData):
     role: Literal["user", "assistant"]
     content: str
     attachments: Optional[List[FileInfoResponse]] = None
+    is_progress: bool = False
+    is_final: bool = False
 
 class MessageSSEEvent(BaseSSEEvent):
     event: Literal["message"] = "message"
@@ -74,7 +76,9 @@ class MessageSSEEvent(BaseSSEEvent):
                 **BaseEventData.base_event_data(event),
                 role=event.role,
                 content=event.message,
-                attachments=[await FileInfoResponse.from_file_info(attachment) for attachment in event.attachments] if event.attachments else None
+                attachments=[await FileInfoResponse.from_file_info(attachment) for attachment in event.attachments] if event.attachments else None,
+                is_progress=event.is_progress,
+                is_final=event.is_final,
             )
         )
 

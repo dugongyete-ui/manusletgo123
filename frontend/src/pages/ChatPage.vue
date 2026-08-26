@@ -102,9 +102,15 @@
       </div>
       <div class="mx-auto w-full max-w-full sm:max-w-[768px] sm:min-w-[390px] flex flex-col flex-1">
         <div class="flex flex-col w-full gap-[12px] pb-[80px] pt-[12px] flex-1 overflow-y-auto">
-          <ChatMessage v-for="(message, index) in messages" :key="index" :message="message"
-            :hideHeader="isConsecutiveAssistant(messages, index)"
-            @toolClick="handleToolClick" />
+          <!-- Unified step timeline: consecutive step messages (plus their progress
+               narrations) render as ONE connected block with a continuous rail,
+               instead of one detached collapsible block per step. -->
+          <template v-for="group in messageGroups" :key="group.startIndex">
+            <StepTimeline v-if="group.kind === 'timeline'" :messages="group.messages"
+              @toolClick="handleToolClick" />
+            <ChatMessage v-else :message="group.messages[0]" :hideHeader="isGroupHideHeader(group)"
+              @toolClick="handleToolClick" />
+          </template>
 
           <!-- Loading indicator — hidden while streaming acknowledgment chunks -->
           <LoadingIndicator v-if="isLoading && !streamingMessageContent" :text="currentThinkingText || $t('Thinking')" />
@@ -140,8 +146,9 @@ import { useRouter, onBeforeRouteUpdate } from 'vue-router';
 import { useI18n } from 'vue-i18n';
 import ChatBox from '../components/ChatBox.vue';
 import ChatMessage from '../components/ChatMessage.vue';
+import StepTimeline from '../components/StepTimeline.vue';
 import * as agentApi from '../api/agent';
-import { Message, MessageContent, ToolContent, StepContent, AttachmentsContent, isConsecutiveAssistant } from '../types/message';
+import { Message, MessageContent, ToolContent, StepContent, AttachmentsContent } from '../types/message';
 import {
   StepEventData,
   ToolEventData,
@@ -240,6 +247,61 @@ const allTools = computed<ToolContent[]>(() => {
   }
   return tools
 })
+
+// ── Message grouping ────────────────────────────────────────────────────────────
+// Consecutive 'step' messages — together with assistant progress narrations
+// (is_progress=true) that belong to the running timeline — are merged into a
+// single 'timeline' group rendered by StepTimeline as ONE connected block.
+// Regular assistant messages (ack, final summary, errors) stay standalone.
+interface MessageGroup {
+  kind: 'single' | 'timeline';
+  messages: Message[];
+  startIndex: number;
+}
+const messageGroups = computed<MessageGroup[]>(() => {
+  const groups: MessageGroup[] = []
+  const msgs = messages.value
+  let i = 0
+  while (i < msgs.length) {
+    if (msgs[i].type === 'step') {
+      const groupMsgs: Message[] = [msgs[i]]
+      let j = i + 1
+      while (j < msgs.length) {
+        const m = msgs[j]
+        if (m.type === 'step') {
+          groupMsgs.push(m)
+          j++
+          continue
+        }
+        if (m.type === 'assistant' && (m.content as MessageContent).is_progress) {
+          groupMsgs.push(m)
+          j++
+          continue
+        }
+        break
+      }
+      groups.push({ kind: 'timeline', messages: groupMsgs, startIndex: i })
+      i = j
+    } else {
+      groups.push({ kind: 'single', messages: [msgs[i]], startIndex: i })
+      i++
+    }
+  }
+  return groups
+})
+
+// Consecutive-assistant header suppression, evaluated on the underlying
+// message array (groups hide the grouping from the check).
+const isGroupHideHeader = (group: MessageGroup): boolean => {
+  if (group.kind !== 'single') return false
+  const idx = group.startIndex
+  if (idx <= 0) return false
+  const isAst = (m: Message) =>
+    m.type === 'assistant' ||
+    (m.type === 'attachments' && (m.content as AttachmentsContent).role === 'assistant')
+  return isAst(msgs_or(group)) && isAst(messages.value[idx - 1])
+}
+const msgs_or = (_g: MessageGroup) => messages.value[_g.startIndex]
 
 // Non-state refs that don't need reset
 const toolPanel = ref<InstanceType<typeof ToolPanel>>()

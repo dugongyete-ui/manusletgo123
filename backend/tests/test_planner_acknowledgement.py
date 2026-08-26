@@ -38,11 +38,12 @@ async def test_acknowledgement_does_not_leak_planner_json():
 
     events = await collect_events(agent, Message(message="Buat website"))
 
-    assert [event.type for event in events] == ["message_chunk", "message_chunk", "message"]
-    assert events[0].content == "Saya akan mengerjakannya."
-    assert events[2].message == "Saya akan mengerjakannya."
-    assert "{" not in events[0].content
-    assert "steps" not in events[0].content
+    # Single atomic MessageEvent — no transient MessageChunkEvents (they are
+    # not persisted, so replaying them after a refresh re-typed the message).
+    assert [event.type for event in events] == ["message"]
+    assert events[0].message == "Saya akan mengerjakannya."
+    assert "{" not in events[0].message
+    assert "steps" not in events[0].message
     assert agent._model.messages is not None
     assert len(agent._model.messages) == 2
     assert "JSON" in agent._model.messages[0].content
@@ -56,7 +57,5 @@ async def test_acknowledgement_emits_clean_plain_text_only():
 
     events = await collect_events(agent, Message(message="Buat website"))
 
-    assert [event.type for event in events] == ["message_chunk", "message_chunk", "message"]
-    assert events[0].content == "Baik, saya akan membantu membuatnya."
-    assert events[1].done is True
-    assert events[2].message == "Baik, saya akan membantu membuatnya."
+    assert [event.type for event in events] == ["message"]
+    assert events[0].message == "Baik, saya akan membantu membuatnya."

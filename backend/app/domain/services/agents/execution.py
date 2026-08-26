@@ -65,6 +65,103 @@ class ExecutionAgent(BaseAgent):
         # completion (CALLED) events are dropped too so the duplicate text
         # can never reach the chat UI through the back door.
         self._suppressed_notify_ids: set = set()
+        # ── Deterministic tool-progress narration state ─────────────────────
+        # Keeps the chat stream alive while tools run: a compact, professional
+        # status line whenever the agent switches to a new kind of work
+        # (search → browse → write file → shell…), independent of whether the
+        # model calls message_notify_user on its own.
+        self._narration_lang: str = "en"
+        self._last_narrated_function: Optional[str] = None
+        self._last_tool_narration_ts: float = 0.0
+        self._step_narrated_functions: set = set()
+
+    # ── Deterministic tool-progress narration ──────────────────────────────────
+    # Plain, professional status lines derived from the tool itself — no
+    # emojis, no raw tool names, no internal jargon (Manus-style narration).
+    _TOOL_NARRATIONS = {
+        "en": {
+            "info_search_web": "Searching the web for \"{q}\"",
+            "browser_navigate": "Opening {q}",
+            "browser_view": "Reading the page content",
+            "browser_click": "Interacting with the page",
+            "file_write": "Writing file {q}",
+            "file_str_replace": "Updating file {q}",
+            "file_read": "Reading file {q}",
+            "shell_exec": "Running shell command",
+            "image_search_web": "Searching for images: {q}",
+            "image_download": "Downloading image",
+        },
+        "id": {
+            "info_search_web": "Mencari di web: {q}",
+            "browser_navigate": "Membuka {q}",
+            "browser_view": "Membaca isi halaman",
+            "browser_click": "Berinteraksi dengan halaman",
+            "file_write": "Menulis file {q}",
+            "file_str_replace": "Memperbarui file {q}",
+            "file_read": "Membaca file {q}",
+            "shell_exec": "Menjalankan perintah shell",
+            "image_search_web": "Mencari gambar: {q}",
+            "image_download": "Mengunduh gambar",
+        },
+    }
+
+    # Minimum seconds between two tool narrations — keeps the stream
+    # informative without becoming spammy on tool-heavy steps.
+    _TOOL_NARRATION_MIN_INTERVAL = 3.0
+
+    @staticmethod
+    def _narration_arg(event: "ToolEvent") -> str:
+        """Extract a short human-readable argument from a tool call."""
+        args = event.function_args or {}
+        if event.function_name == "browser_navigate":
+            url = str(args.get("url", "")).strip()
+            try:
+                from urllib.parse import urlparse
+                host = urlparse(url).hostname or url
+                return host
+            except Exception:
+                return url
+        for key in ("query", "file", "cmd"):
+            val = str(args.get(key, "")).strip()
+            if val:
+                if key == "file":
+                    val = val.rstrip("/").split("/")[-1]
+                if key == "cmd":
+                    val = val.replace("\n", " ")
+                return val[:60] + ("…" if len(val) > 60 else "")
+        return ""
+
+    def _tool_progress_narration(self, event: "ToolEvent") -> Optional[str]:
+        """Deterministic one-line status for a completed tool call.
+
+        Narrates once per KIND of work within the current step (search →
+        browse → read → write file → shell…), throttled to at most one line
+        per _TOOL_NARRATION_MIN_INTERVAL seconds so rapid tool bursts stay
+        quiet.  Independent of message_notify_user — the chat stream is never
+        silent while the agent works.
+        """
+        import time as _time
+
+        fn = event.function_name
+        table = self._TOOL_NARRATIONS.get(
+            self._narration_lang, self._TOOL_NARRATIONS["en"]
+        )
+        if fn not in table:
+            return None
+        # Already narrated this kind of work in this step — stay quiet.
+        if fn in self._step_narrated_functions:
+            return None
+        now = _time.monotonic()
+        # First narration of the step always goes out; later ones need a gap.
+        if (
+            self._step_narrated_functions
+            and (now - self._last_tool_narration_ts) < self._TOOL_NARRATION_MIN_INTERVAL
+        ):
+            return None
+        self._step_narrated_functions.add(fn)
+        self._last_narrated_function = fn
+        self._last_tool_narration_ts = now
+        return table[fn].format(q=self._narration_arg(event) or "")
 
     @staticmethod
     def _normalize_narration(text: str) -> str:
@@ -241,10 +338,31 @@ class ExecutionAgent(BaseAgent):
             # ErrorEvents (logged above) and all non-message ToolEvents
             # (file/shell/browser/…) pass through unchanged.
             yield event
+            # Deterministic progress narration: after a non-message tool
+            # COMPLETES, emit a short status line when the agent moves to a
+            # new kind of work. Keeps the chat stream alive even when the
+            # model never calls message_notify_user by itself.
+            if (
+                isinstance(event, ToolEvent)
+                and event.status == ToolStatus.CALLED
+                and event.tool_name != "message"
+            ):
+                narration = self._tool_progress_narration(event)
+                if narration:
+                    yield MessageEvent(
+                        role="assistant", message=narration, is_progress=True
+                    )
 
     async def execute_step(
         self, plan: Plan, step: Step, message: Message
     ) -> AsyncGenerator[BaseEvent, None]:
+        # Reset per-step deterministic-narration state and pick up the plan
+        # language so tool-progress lines are spoken in the user's language.
+        self._step_narrated_functions = set()
+        self._last_narrated_function = None
+        _lang = (getattr(plan, "language", None) or "").lower()
+        self._narration_lang = "id" if _lang.startswith("id") or "indonesia" in _lang or "bahasa" in _lang else "en"
+
         prompt = EXECUTION_PROMPT.format(
             step=step.description,
             message=message.message,
@@ -437,13 +555,13 @@ class ExecutionAgent(BaseAgent):
 
             if _lang == "en":
                 _msg = (
-                    f"⚠️ **Step could not be completed:** {_step_desc}\n\n"
+                    f"**Step could not be completed:** {_step_desc}\n\n"
                     f"**Reason:** {_reason_en}\n\n"
                     "Analysis will continue with the data already collected from other steps."
                 )
             else:
                 _msg = (
-                    f"⚠️ **Langkah tidak dapat diselesaikan:** {_step_desc}\n\n"
+                    f"**Langkah tidak dapat diselesaikan:** {_step_desc}\n\n"
                     f"**Alasan:** {_reason_id}\n\n"
                     "Analisis akan dilanjutkan dengan data yang sudah terkumpul dari langkah lain."
                 )
@@ -581,13 +699,13 @@ class ExecutionAgent(BaseAgent):
 
             if full_text:
                 clean_text = self._extract_text_from_json(full_text)
-                # Emit in small chunks for a smooth progressive typing effect
-                _CHUNK = 5
-                for _i in range(0, len(clean_text), _CHUNK):
-                    yield MessageChunkEvent(
-                        content=clean_text[_i : _i + _CHUNK], done=False
-                    )
-                yield MessageChunkEvent(content="", done=True)
+                # NOTE: the summary is delivered as ONE atomic MessageEvent —
+                # no MessageChunkEvent "fake typing" replay.  Chunk events are
+                # transient (never persisted to session history), so a client
+                # that refreshes mid-summary would replay every chunk already
+                # emitted and the whole summary re-typed from scratch.  A single
+                # authoritative MessageEvent is idempotent under replay: the
+                # refreshed page shows the summary exactly once.
 
                 # Let the LLM decide whether a .md summary file is appropriate
                 # (skipped automatically when a report .md already exists).

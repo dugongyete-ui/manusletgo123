@@ -29,6 +29,10 @@ export interface MessageEventData extends BaseEventData {
   content: string;
   role: "user" | "assistant";
   attachments: FileInfo[];
+  /** true = compact progress narration belonging to the step timeline */
+  is_progress?: boolean;
+  /** true = the task's final summary message (single delivery point for files) */
+  is_final?: boolean;
 }
 
 export interface MessageChunkEventData extends BaseEventData {

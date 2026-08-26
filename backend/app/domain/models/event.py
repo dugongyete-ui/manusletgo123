@@ -122,6 +122,10 @@ class MessageEvent(BaseEvent):
     # the task are never attached to mid-task messages — they are deferred
     # and delivered exactly once, here, with the final summary (Manus-style).
     is_final: bool = False
+    # True for compact progress narrations (tool-progress lines, step
+    # transitions). The frontend renders them INSIDE the unified step
+    # timeline instead of standalone chat bubbles.
+    is_progress: bool = False
 
 class DoneEvent(BaseEvent):
     """Done event"""

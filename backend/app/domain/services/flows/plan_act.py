@@ -48,15 +48,15 @@ class AgentStatus(str, Enum):
 # chat stream between steps, regardless of whether the model calls
 # message_notify_user on its own (free-tier models often skip it).
 # Kept compact and single-line (≤100 chars per segment) — professional,
-# Manus-style: a short status line, not an essay.
+# Manus-style: a short status line, not an essay. No emojis — clean text only.
 _NARRATION_TEMPLATES = {
     "en": {
-        "done": "✅ {done} — next: {next}",
-        "failed": "⚠️ {done} — next: {next}",
+        "done": "Completed: {done} — next: {next}",
+        "failed": "Could not complete: {done} — next: {next}",
     },
     "id": {
-        "done": "✅ {done} — lanjut: {next}",
-        "failed": "⚠️ {done} — lanjut: {next}",
+        "done": "Selesai: {done} — lanjut: {next}",
+        "failed": "Belum selesai: {done} — lanjut: {next}",
     },
 }
 
@@ -330,7 +330,7 @@ class PlanActFlow(BaseFlow):
                     yield MessageEvent(
                         role="assistant",
                         message=(
-                            f"⚠️ Reached the maximum step limit ({_max_steps}). "
+                            f"Reached the maximum step limit ({_max_steps}). "
                             "Summarising with the data collected so far."
                         ),
                     )
@@ -346,7 +346,7 @@ class PlanActFlow(BaseFlow):
                     yield MessageEvent(
                         role="assistant",
                         message=(
-                            f"⚠️ {_consecutive_failures} steps failed consecutively. "
+                            f"{_consecutive_failures} steps failed consecutively. "
                             "Summarising with the data collected so far."
                         ),
                     )
@@ -365,7 +365,9 @@ class PlanActFlow(BaseFlow):
                         f"Agent {self._agent_id} step transition narration: "
                         f"{narration[:80]}..."
                     )
-                    yield MessageEvent(role="assistant", message=narration)
+                    yield MessageEvent(
+                        role="assistant", message=narration, is_progress=True
+                    )
 
                 # Execute step
                 logger.info(f"Agent {self._agent_id} started executing step {step.id}: {step.description[:50]}...")

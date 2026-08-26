@@ -124,6 +124,20 @@ class PlannerAgent(BaseAgent):
             if len(lines) >= 3 and lines[-1].strip().startswith("```"):
                 candidate = "\n".join(lines[1:-1]).strip()
 
+        # Some models stream the acknowledgement prose and then keep going into
+        # a raw tool-call JSON block:  "Oke, saya akan…\n{\"name\": …}".
+        # Cut at the first JSON-ish opening brace (or stray code fence) and keep
+        # only the prose before it — raw JSON in a chat bubble looks broken.
+        import re as _re
+
+        m = _re.search(r"(```|\{)", candidate)
+        if m:
+            remainder = candidate[m.start():]
+            looks_like_json = remainder.lstrip("{").lstrip().startswith(('"', "'")) or '"name"' in remainder or '"arguments"' in remainder
+            prose = candidate[: m.start()].strip()
+            if looks_like_json and prose:
+                candidate = prose
+
         try:
             parsed = json.loads(candidate)
         except json.JSONDecodeError:
@@ -132,7 +146,7 @@ class PlannerAgent(BaseAgent):
             if candidate.startswith(("{", "[")):
                 logger.warning("Suppressing malformed JSON acknowledgement from planner")
                 return ""
-            return cleaned
+            return candidate
 
         if isinstance(parsed, dict):
             for key in ("message", "response", "text"):
@@ -263,12 +277,10 @@ class PlannerAgent(BaseAgent):
             # never flash in the UI or be saved as a persisted assistant message.
             full_text = self._clean_acknowledgement(raw_text)
             if full_text:
-                yield MessageChunkEvent(content=full_text, done=False)
-                yield MessageChunkEvent(content="", done=True)
-                # Persist the acknowledgment so it survives page refresh.
-                # MessageChunkEvent is transient (not saved to DB), so we follow up
-                # with a MessageEvent that IS saved.  The frontend replaces the
-                # streaming bubble with this rather than creating a duplicate.
+                # Single atomic MessageEvent (persisted + authoritative).
+                # No MessageChunkEvent replay: transient chunk events are not
+                # persisted, so a client refreshing mid-ack would re-receive
+                # every chunk already emitted and re-type the message.
                 yield MessageEvent(role="assistant", message=full_text)
         except Exception as e:
             logger.warning(f"Acknowledge streaming failed, skipping: {e}")
