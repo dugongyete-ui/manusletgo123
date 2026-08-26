@@ -151,14 +151,14 @@ run = ["bash", "-c", "bash /home/runner/workspace/scripts/start_production.sh"]
 [userenv]
 
 [userenv.shared]
-API_BASE = "https://integrate.api.nvidia.com/v1"
-MODEL_NAME = "nvidia/nemotron-3-super-120b-a12b"
+API_BASE = "https://openrouter.ai/api/v1"
+MODEL_NAME = "stealth/ox-alpha"
 MODEL_PROVIDER = "openai"
 TEMPERATURE = "0.7"
 MAX_TOKENS = "8000"
-VISION_MODEL_NAME = "nvidia/nemotron-3-super-120b-a12b"
+VISION_MODEL_NAME = "stealth/ox-alpha"
 VISION_MODEL_PROVIDER = "openai"
-VISION_API_BASE = "https://integrate.api.nvidia.com/v1"
+VISION_API_BASE = "https://openrouter.ai/api/v1"
 MONGODB_DATABASE = "manus"
 REDIS_HOST = "redis-14320.c334.asia-southeast2-1.gce.cloud.redislabs.com"
 REDIS_PORT = "14320"
