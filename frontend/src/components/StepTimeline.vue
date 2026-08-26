@@ -1,16 +1,18 @@
 <template>
-  <div class="step-timeline flex flex-col w-full">
+  <div class="step-timeline relative flex flex-col w-full">
+    <!-- ONE continuous rail: a single unbroken dashed line from the first
+         step's node down through EVERY following step, narration and tool
+         row. The whole timeline shares ONE rail element, so the line can
+         never be cut between steps — no segment stitching, no gaps, no
+         restarts (Manus-style work loop). Status icons sit ON the line as
+         nodes (solid backgrounds) and all progress text renders BESIDE the
+         rail, indented right of it. -->
+    <div v-if="stepEntries.length"
+      class="absolute left-[7px] top-[10px] border-l border-dashed border-[var(--border-dark)] pointer-events-none"
+      :style="{ bottom: railBottom }"></div>
+
     <div v-for="(entry, i) in stepEntries" :key="entry.step.id || i" class="relative flex flex-col"
       :class="i < stepEntries.length - 1 ? 'pb-[12px]' : ''">
-      <!-- Continuous timeline rail: ONE unbroken line through every step.
-           Step 1 starts at its icon's center; every following step starts at
-           its container top — exactly where the previous step's rail ended —
-           so the segments join seamlessly (no gaps, no restarts), and each
-           status icon sits ON the line like a node (Manus-style). -->
-      <div v-if="!(i === stepEntries.length - 1 && !entry.items.length)"
-        class="absolute left-[7px] border-l border-dashed border-[var(--border-dark)]"
-        :class="i === 0 ? 'top-[8px] bottom-0' : 'top-0 bottom-0'"></div>
-
       <!-- Step header: status node + description + chevron -->
       <div
         class="text-sm w-full clickable flex gap-2 justify-between group/header truncate text-[var(--text-primary)]">
@@ -141,6 +143,18 @@ const stepEntries = computed<StepEntry[]>(() => {
     entry.items.sort((a, b) => a.timestamp - b.timestamp || a.seq - b.seq);
   }
   return entries;
+});
+
+// Where the single rail ends. With visible items under the last step (tool
+// pills / narrations), the line runs beside them to the bottom of the block.
+// Otherwise it stops exactly at the last node's center (header height 20px,
+// icon center at 10px) — the line never dangles past the final node.
+const railBottom = computed(() => {
+  const entries = stepEntries.value;
+  const last = entries[entries.length - 1];
+  if (!last) return '0px';
+  const lastIdx = entries.length - 1;
+  return last.items.length && isExpanded(lastIdx) ? '0px' : '10px';
 });
 
 // ── Per-step collapse state (default expanded) ──────────────────────────────
