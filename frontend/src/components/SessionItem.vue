@@ -4,7 +4,7 @@
     class="group flex items-center rounded-[10px] cursor-pointer transition-colors w-full gap-[12px] h-[36px] flex-shrink-0 pointer-events-auto ps-[9px] pe-[2px] active:bg-[var(--fill-tsp-white-dark)]"
     :class="isCurrentSession ? 'bg-[var(--fill-tsp-white-main)]' : 'hover:bg-[var(--fill-tsp-white-light)]'">
 
-    <!-- 状态图标 -->
+    <!-- Ikon status -->
     <div class="shrink-0 size-[18px] flex items-center justify-center relative">
       <template v-if="session.status === SessionStatus.RUNNING || session.status === SessionStatus.PENDING">
         <div class="border rounded-full animate-spin" style="width: 18px; height: 18px; border-width: 2px; border-color: var(--fill-blue); border-top-color: var(--icon-brand);"></div>
@@ -23,14 +23,14 @@
     
     </div>
 
-    <!-- 标题 -->
+    <!-- Judul -->
     <div class="flex-1 min-w-0 flex gap-[4px] items-center text-[14px] text-[var(--text-primary)]">
       <span class="truncate" :title="session.title || t('New Chat')">
         {{ session.title || t('New Chat') }}
       </span>
     </div>
 
-    <!-- 省略号菜单 -->
+    <!-- Menu titik tiga -->
     <div class="shrink-0 flex items-center gap-1">
       <div
         @click.stop="handleSessionMenuClick"

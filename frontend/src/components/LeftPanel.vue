@@ -10,7 +10,7 @@
         'relative flex flex-col overflow-hidden bg-[var(--background-nav)] fixed top-1 start-1 bottom-1 z-[1] border-1 dark:border-[1px] border-[var(--border-main)] dark:border-[var(--border-light)] rounded-xl shadow-[0px_8px_32px_0px_rgba(0,0,0,0.16),0px_0px_0px_1px_rgba(0,0,0,0.06)] opacity-0 pointer-events-none -translate-x-10'"
       :style="(isLeftPanelShow ? 'width: 300px;' : 'width: 0px;') + ' transition: opacity 0.2s, transform 0.2s, width 0.2s;'">
 
-      <!-- 顶部折叠按钮 -->
+      <!-- Tombol collapse di atas -->
       <div class="flex items-center px-3 h-[52px] flex-shrink-0">
         <div class="flex justify-between w-full px-1 pt-2">
           <div class="relative flex">
@@ -23,10 +23,10 @@
         </div>
       </div>
 
-      <!-- 快捷入口区域 -->
+      <!-- Area akses cepat -->
       <div class="flex flex-col flex-1 min-h-0 px-[8px] pb-0 gap-px">
 
-        <!-- 新建任务 -->
+        <!-- Tugas baru -->
         <div
           @click="handleNewTaskClick"
           class="flex items-center rounded-[10px] cursor-pointer transition-colors w-full gap-[12px] h-[36px] ps-[9px] pe-[2px]"
@@ -47,14 +47,14 @@
           </div>
         </div>
 
-        <!-- 所有任务分组标题 + 会话列表 -->
+        <!-- Judul grup Semua Tugas + daftar sesi -->
         <div class="flex flex-col flex-1 min-h-0 -mx-[8px] mt-[4px] overflow-hidden" style="padding-bottom: 48px;">
           <div class="w-full border-t border-[var(--border-main)] transition-opacity duration-200" :class="isListScrolled ? 'opacity-100' : 'opacity-0'"></div>
 
-          <!-- 滚动容器：标题 + 列表一起滚动 -->
+          <!-- Container scroll: judul + daftar scroll bersama -->
           <div ref="scrollContainerRef" class="flex flex-col flex-1 min-h-0 overflow-y-auto overflow-x-hidden pb-5 px-[8px]" @scroll="handleListScroll">
 
-            <!-- 分组标题 -->
+            <!-- Judul grup -->
             <div
               class="group flex items-center justify-between ps-[10px] pe-[2px] py-[2px] h-[36px] gap-[12px] flex-shrink-0 rounded-[10px]">
               <div class="flex items-center flex-1 min-w-0 gap-0.5 cursor-pointer hover:bg-[var(--fill-tsp-white-light)] transition-colors rounded-[10px] px-1 h-full" @click="isAllTasksCollapsed = !isAllTasksCollapsed">
@@ -79,7 +79,7 @@
               </button>
             </div>
 
-            <!-- 会话列表 -->
+            <!-- Daftar sesi -->
             <template v-if="!isAllTasksCollapsed">
               <div v-if="sessions.length > 0" class="flex flex-col gap-px">
                 <SessionItem

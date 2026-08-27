@@ -202,6 +202,10 @@ export default {
   'Link copied to clipboard': 'Tautan disalin ke clipboard',
   'Failed to copy link': 'Gagal menyalin tautan',
   'You are viewing a completed Dzeck task. Replay will start automatically in {countdown} seconds.': 'Anda sedang melihat tugas Dzeck yang telah selesai. Pemutaran ulang dimulai otomatis dalam {countdown} detik.',
+  'Dzeck task replay completed.': 'Tugas Dzeck selesai diputar ulang.',
+  'Dzeck is replaying the task...': 'Dzeck sedang memutar ulang tugas...',
+  'Replay': 'Putar Ulang',
+  'Jump to results': 'Lompat ke Hasil',
   'Please check {count} attachment(s) I sent': 'Silakan periksa {count} lampiran yang saya kirim',
   'WebSocket not connected, please try again later': 'WebSocket tidak terhubung, coba lagi nanti',
 }

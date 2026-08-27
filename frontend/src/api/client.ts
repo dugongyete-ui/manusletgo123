@@ -310,7 +310,7 @@ export const createSSEConnection = async <T = any>(
     requestHeaders.Authorization = `Bearer ${token}`;
   }
   
-  // 创建SSE连接
+  // Membuat koneksi SSE
   const createConnection = async (): Promise<void> => {
     return new Promise((_resolve, reject) => {
       if (abortController.signal.aborted) {

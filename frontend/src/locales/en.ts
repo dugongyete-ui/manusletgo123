@@ -202,6 +202,10 @@ export default {
   'Link copied to clipboard': 'Link copied to clipboard',
   'Failed to copy link': 'Failed to copy link',
   'You are viewing a completed Dzeck task. Replay will start automatically in {countdown} seconds.': 'You are viewing a completed Dzeck task. Replay will start automatically in {countdown} seconds.',
+  'Dzeck task replay completed.': 'Dzeck task replay completed.',
+  'Dzeck is replaying the task...': 'Dzeck is replaying the task...',
+  'Replay': 'Replay',
+  'Jump to results': 'Jump to results',
   'Please check {count} attachment(s) I sent': 'Please check {count} attachment(s) I sent',
   'WebSocket not connected, please try again later': 'WebSocket not connected, please try again later',
 } 

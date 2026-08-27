@@ -57,7 +57,7 @@ export const formatRelativeTime = (timestamp: number): string => {
 /**
  * Format timestamp according to custom requirements:
  * - Today: show time (HH:MM)
- * - This week: show day of week (e.g., 周一)
+ * - This week: show day of week (e.g., Mon)
  * - This year: show date (MM/DD)
  * - Other years: show year/month (YYYY/MM)
  * @param timestamp Timestamp (seconds)

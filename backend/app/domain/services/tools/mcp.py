@@ -32,16 +32,16 @@ class MCPClientManager:
             return
         
         try:
-            logger.info(f"从配置加载了 {len(self._config.mcpServers)} 个 MCP 服务器配置")
+            logger.info(f"Memuat {len(self._config.mcpServers)} konfigurasi server MCP")
             
             # 连接到所有启用的服务器
             await self._connect_servers()
             
             self._initialized = True
-            logger.info("MCP 客户端管理器初始化成功")
+            logger.info("Manajer klien MCP berhasil diinisialisasi")
             
         except Exception as e:
-            logger.error(f"MCP 客户端管理器初始化失败: {e}")
+            logger.error(f"Inisialisasi manajer klien MCP gagal: {e}")
             raise
 
     
@@ -54,7 +54,7 @@ class MCPClientManager:
             try:
                 await self._connect_server(server_name, server_config)
             except Exception as e:
-                logger.error(f"连接到 MCP 服务器 {server_name} 失败: {e}")
+                logger.error(f"Gagal terhubung ke server MCP {server_name}: {e}")
                 # 继续连接其他服务器
                 continue
     
@@ -70,10 +70,10 @@ class MCPClientManager:
             elif transport_type == 'streamable-http':
                 await self._connect_streamable_http_server(server_name, server_config)
             else:
-                logger.error(f"不支持的传输类型: {transport_type}")
+                logger.error(f"Tipe transport tidak didukung: {transport_type}")
                 
         except Exception as e:
-            logger.error(f"连接 MCP 服务器 {server_name} 失败: {e}")
+            logger.error(f"Gagal terhubung ke server MCP {server_name}: {e}")
             raise
     
     async def _connect_stdio_server(self, server_name: str, server_config: MCPServerConfig):
@@ -83,7 +83,7 @@ class MCPClientManager:
         env = server_config.env or {}
         
         if not command:
-            raise ValueError(f"服务器 {server_name} 缺少 command 配置")
+            raise ValueError(f"Server {server_name} tidak memiliki konfigurasi command")
         
 
         # 创建服务器参数（路径处理已在配置提供者中完成）
@@ -114,17 +114,17 @@ class MCPClientManager:
             # 获取并缓存工具列表
             await self._cache_server_tools(server_name, session)
             
-            logger.info(f"成功连接到 stdio MCP 服务器: {server_name}")
+            logger.info(f"Berhasil terhubung ke server MCP stdio: {server_name}")
             
         except Exception as e:
-            logger.error(f"连接到 stdio MCP 服务器 {server_name} 失败: {e}")
+            logger.error(f"Gagal terhubung ke server MCP stdio {server_name}: {e}")
             raise
     
     async def _connect_http_server(self, server_name: str, server_config: MCPServerConfig):
         """连接到 HTTP MCP 服务器"""
         url = server_config.url
         if not url:
-            raise ValueError(f"服务器 {server_name} 缺少 url 配置")
+            raise ValueError(f"Server {server_name} tidak memiliki konfigurasi url")
         
         try:
             # 建立 SSE 连接
@@ -147,10 +147,10 @@ class MCPClientManager:
             # 获取并缓存工具列表
             await self._cache_server_tools(server_name, session)
             
-            logger.info(f"成功连接到 HTTP MCP 服务器: {server_name}")
+            logger.info(f"Berhasil terhubung ke server MCP HTTP: {server_name}")
             
         except Exception as e:
-            logger.error(f"连接到 HTTP MCP 服务器 {server_name} 失败: {e}")
+            logger.error(f"Gagal terhubung ke server MCP HTTP {server_name}: {e}")
             raise
     
     async def _connect_streamable_http_server(self, server_name: str, server_config: MCPServerConfig):
@@ -162,7 +162,7 @@ class MCPClientManager:
         """
         url = server_config.url
         if not url:
-            raise ValueError(f"服务器 {server_name} 缺少 url 配置")
+            raise ValueError(f"Server {server_name} tidak memiliki konfigurasi url")
         
         # 获取可选配置
         headers = server_config.headers or {}
@@ -200,10 +200,10 @@ class MCPClientManager:
             # 获取并缓存工具列表
             await self._cache_server_tools(server_name, session)
             
-            logger.info(f"成功连接到 streamable-http MCP 服务器: {server_name} ({url})")
+            logger.info(f"Berhasil terhubung ke server MCP streamable-http: {server_name} ({url})")
             
         except Exception as e:
-            logger.error(f"连接到 streamable-http MCP 服务器 {server_name} 失败: {e}")
+            logger.error(f"Gagal terhubung ke server MCP streamable-http {server_name}: {e}")
             raise
     
     async def _cache_server_tools(self, server_name: str, session: ClientSession):
@@ -212,10 +212,10 @@ class MCPClientManager:
             tools_response = await session.list_tools()
             tools = tools_response.tools if tools_response else []
             self._tools_cache[server_name] = tools
-            logger.info(f"服务器 {server_name} 提供 {len(tools)} 个工具")
+            logger.info(f"Server {server_name} menyediakan {len(tools)} alat")
             
         except Exception as e:
-            logger.error(f"获取服务器 {server_name} 工具列表失败: {e}")
+            logger.error(f"Gagal mengambil daftar alat server {server_name}: {e}")
             self._tools_cache[server_name] = []
     
     async def get_all_tools(self) -> List[Dict[str, Any]]:
@@ -259,14 +259,14 @@ class MCPClientManager:
                     break
             
             if not server_name or not original_tool_name:
-                raise ValueError(f"无法解析 MCP 工具名称: {tool_name}")
+                raise ValueError(f"Tidak dapat mengurai nama alat MCP: {tool_name}")
             
             # 获取客户端会话
             session = self._clients.get(server_name)
             if not session:
                 return ToolResult(
                     success=False,
-                    message=f"MCP 服务器 {server_name} 未连接"
+                    message=f"Server MCP {server_name} tidak terhubung"
                 )
             
             # 调用工具
@@ -284,19 +284,19 @@ class MCPClientManager:
                 
                 return ToolResult(
                     success=True,
-                    data='\n'.join(content) if content else "工具执行成功"
+                    data='\n'.join(content) if content else "Alat berhasil dijalankan"
                 )
             else:
                 return ToolResult(
                     success=True,
-                    data="工具执行成功"
+                    data="Alat berhasil dijalankan"
                 )
                 
         except Exception as e:
-            logger.error(f"调用 MCP 工具 {tool_name} 失败: {e}")
+            logger.error(f"Pemanggilan alat MCP {tool_name} gagal: {e}")
             return ToolResult(
                 success=False,
-                message=f"调用 MCP 工具失败: {str(e)}"
+                message=f"Gagal memanggil alat MCP: {str(e)}"
             )
 
     async def cleanup(self):
@@ -306,10 +306,10 @@ class MCPClientManager:
             self._clients.clear()
             self._tools_cache.clear()
             self._initialized = False
-            logger.info("MCP 客户端管理器已清理")
+            logger.info("Manajer klien MCP telah dibersihkan")
             
         except Exception as e:
-            logger.error(f"清理 MCP 客户端管理器失败: {e}")
+            logger.error(f"Pembersihan manajer klien MCP gagal: {e}")
 
 
 class MCPToolkit(BaseToolkit):
