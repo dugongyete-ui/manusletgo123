@@ -33,6 +33,7 @@ from app.domain.models.event import (
     StepStatus,
 )
 from app.domain.services.flows.plan_act import PlanActFlow
+from app.domain.services.agents.zip_delivery import drop_zip_member_attachments
 from app.domain.external.sandbox import Sandbox
 from app.domain.external.browser import Browser
 from app.domain.external.search import SearchEngine
@@ -225,10 +226,26 @@ class AgentTaskRunner(TaskRunner):
                 return
             if not (result and result.success and result.data):
                 return
-            entries = getattr(result.data, "entries", None) or []
-            for entry in entries:
-                name = getattr(entry, "name", "")
-                is_dir = getattr(entry, "type", "") == "dir"
+            # result.data arrives as a DICT from the sandbox HTTP API
+            # (ToolResult.data) — getattr() would look for an *attribute*
+            # named "entries" and always miss the dict key, silently
+            # disabling the whole artifact scan (shell-created files never
+            # reached the user). Access both shapes defensively.
+            data = result.data
+            raw_entries = (
+                data.get("entries")
+                if isinstance(data, dict)
+                else getattr(data, "entries", None)
+            ) or []
+            for entry in raw_entries:
+                if isinstance(entry, dict):
+                    name = entry.get("name") or ""
+                    is_dir = entry.get("type") == "dir"
+                    size = entry.get("size") or 0
+                else:
+                    name = getattr(entry, "name", "")
+                    is_dir = getattr(entry, "type", "") == "dir"
+                    size = getattr(entry, "size", 0) or 0
                 if not name or name.startswith("."):
                     continue
                 child = f"{path.rstrip('/')}/{name}"
@@ -237,7 +254,7 @@ class AgentTaskRunner(TaskRunner):
                         continue
                     await _walk(child, depth + 1)
                 else:
-                    found[child] = getattr(entry, "size", 0) or 0
+                    found[child] = size or 0
 
         await _walk(home, 0)
         return found
@@ -706,6 +723,26 @@ class AgentTaskRunner(TaskRunner):
                         ):
                             known_paths.add(f.file_path)
                             merged.append(f)
+                    # ── ZIP-only delivery ─────────────────────────────────────
+                    # The artifact sweep above re-adds every file the tools
+                    # wrote — including the individual html/css/js sources
+                    # that are already bundled inside a delivered .zip. Drop
+                    # them: when an archive is delivered, the user receives
+                    # ONLY the archive.
+                    try:
+                        if self._sandbox and any(
+                            (f.file_path or "").lower().endswith(".zip")
+                            for f in merged
+                        ):
+                            merged = await drop_zip_member_attachments(
+                                self._sandbox, merged
+                            )
+                    except Exception as exc:
+                        logger.warning(
+                            "ZIP-only delivery filter failed (delivering "
+                            "unfiltered list): %s",
+                            exc,
+                        )
                     event.attachments = merged or None
                     if len(merged) != len(files_written) or files_written:
                         logger.info(

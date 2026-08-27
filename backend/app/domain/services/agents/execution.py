@@ -384,7 +384,13 @@ class ExecutionAgent(BaseAgent):
 
                 step.success = new_step.success
                 step.result = new_step.result
-                step.attachments = new_step.attachments
+                # Normalize: models occasionally emit the attachments array as
+                # a JSON-encoded string or mix junk into the list.
+                from app.domain.services.agents.attachment_paths import (
+                    normalize_attachment_paths,
+                )
+
+                step.attachments = normalize_attachment_paths(new_step.attachments)
                 yield StepEvent(status=StepStatus.COMPLETED, step=step)
                 return
 
@@ -406,10 +412,15 @@ class ExecutionAgent(BaseAgent):
                     if event.status == ToolStatus.CALLING:
                         raw_att = event.function_args.get("attachments")
                         if raw_att:
-                            att_list = (
-                                [raw_att] if isinstance(raw_att, str) else list(raw_att)
+                            # Models sometimes emit attachments as a JSON-
+                            # encoded string ('["/home/.../x.zip"]') instead of
+                            # a real array — normalize so the zip path cannot
+                            # turn into one broken blob path.
+                            from app.domain.services.agents.attachment_paths import (
+                                normalize_attachment_paths,
                             )
-                            att_list = [p for p in att_list if p]
+
+                            att_list = normalize_attachment_paths(raw_att)
                             # Files are NEVER delivered mid-task anymore — every
                             # path is deferred and delivered exactly ONCE with
                             # the final summary (user requirement: files created
@@ -804,6 +815,39 @@ class ExecutionAgent(BaseAgent):
             logger.warning("Could not create summary .md file: %s", exc)
             return []
 
+    async def _drop_zip_member_attachments(
+        self, attachments: List[FileInfo]
+    ) -> List[FileInfo]:
+        """ZIP-only delivery safety net for the model's own attachment list.
+
+        When a .zip deliverable is present, drop the sibling attachments that
+        are already bundled inside the archive — the user receives only the
+        zip. See agents.zip_delivery for the matching rules; the AgentTaskRunner
+        applies the same filter to its artifact-sweep merge, so both delivery
+        paths stay ZIP-only.
+        """
+        zip_paths = [
+            a.file_path
+            for a in attachments
+            if a.file_path and a.file_path.lower().endswith(".zip")
+        ]
+        if not zip_paths:
+            return attachments
+
+        from app.domain.services.agents.zip_delivery import (
+            drop_zip_member_attachments,
+        )
+        from app.domain.services.tools.file import FileToolkit
+
+        file_toolkit = next(
+            (tk for tk in self.toolkits if isinstance(tk, FileToolkit)), None
+        )
+        if not file_toolkit:
+            return attachments
+        return await drop_zip_member_attachments(
+            file_toolkit.sandbox, attachments
+        )
+
     async def summarize(
         self, step_attachments: Optional[List[str]] = None
     ) -> AsyncGenerator[BaseEvent, None]:
@@ -814,6 +858,16 @@ class ExecutionAgent(BaseAgent):
                 step's result JSON — delivered ONCE here, with this final
                 summary message (never mid-task).
         """
+        from app.domain.services.agents.attachment_paths import (
+            normalize_attachment_paths,
+        )
+
+        # Normalize both model-facing inputs: step JSON attachments and
+        # deferred notify attachments can carry JSON-string junk.
+        step_attachments = normalize_attachment_paths(step_attachments)
+        self._deferred_attachments = normalize_attachment_paths(
+            self._deferred_attachments
+        )
         await self._ensure_memory()
         context = list(self.memory.get_messages())
 
@@ -852,6 +906,9 @@ class ExecutionAgent(BaseAgent):
                     if p and p not in already_listed:
                         already_listed.add(p)
                         attachments.append(FileInfo(file_path=p))
+                # ZIP-only delivery: when an archive is among the deliverables,
+                # drop the individual files already bundled inside it.
+                attachments = await self._drop_zip_member_attachments(attachments)
                 yield MessageEvent(
                     message=clean_text,
                     attachments=attachments if attachments else None,
@@ -880,12 +937,17 @@ class ExecutionAgent(BaseAgent):
                 # the model's own attachments + step deliverables + files
                 # deferred from mid-task notifications.
                 paths: List[str] = []
-                for fp in list(msg_obj.attachments) + list(
-                    step_attachments or []
-                ) + list(self._deferred_attachments):
+                for fp in list(
+                    normalize_attachment_paths(msg_obj.attachments)
+                ) + list(step_attachments or []) + list(
+                    self._deferred_attachments
+                ):
                     if fp and fp not in paths:
                         paths.append(fp)
                 attachments = [FileInfo(file_path=fp) for fp in paths]
+                # ZIP-only delivery: when an archive is among the deliverables,
+                # drop the individual files already bundled inside it.
+                attachments = await self._drop_zip_member_attachments(attachments)
                 yield MessageEvent(
                     message=msg_obj.message,
                     attachments=attachments if attachments else None,

@@ -152,6 +152,18 @@ So:
 - Only list real output files for the user (e.g. /home/runner/report.pdf),
   never intermediate scripts or temp files.
 
+PACKAGING RULES — what the user receives at the end:
+1. Information gathering / research task → save the findings as ONE
+   well-formatted .md (or .txt) document and list that single file.
+2. Multi-file deliverable (website, app, script project, data + code —
+   anything where 2+ files belong together) → bundle them into ONE .zip
+   archive first, then list ONLY the .zip path. NEVER list the individual
+   files (index.html, style.css, app.js, ...) next to the archive — they
+   are already inside it, and sending both duplicates every file.
+   To bundle: shell `cd <project_dir> && zip -r <home>/<name>.zip .`
+   then verify with `unzip -l <home>/<name>.zip` before finishing.
+3. Single-file deliverable → deliver the file itself, no archive needed.
+
 Creating files — one honest rule:
 - When the step's goal is to CREATE a file (code, document, spreadsheet,
   config, anything), create it with file_write. Not with shell heredocs
@@ -161,6 +173,8 @@ Creating files — one honest rule:
   for making things. List every file you created in "attachments" — the
   file must actually exist on disk BEFORE you emit the final JSON, so write
   first, verify with a quick file_read or ls, then finish the step.
+- When you deliver a .zip, "attachments" contains ONLY the .zip — the
+  individual bundled files are not attachments anymore.
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 FINAL OUTPUT — HOW EVERY STEP ENDS
@@ -264,6 +278,9 @@ Rules:
 - If the executor already delivered a final output file during execution, do NOT
   deliver it again here — files already sent are automatically excluded. Only list
   deliverable files that have NOT been delivered yet.
+- If a .zip archive was created during the task, the "attachments" array must
+  contain ONLY the .zip path — NEVER the individual files inside it (html, css,
+  js, etc.), they are already bundled in the archive.
 
 Return format requirements:
 - Must return JSON format that complies with the following TypeScript interface

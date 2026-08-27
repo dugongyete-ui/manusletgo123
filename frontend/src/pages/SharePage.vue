@@ -219,11 +219,32 @@ interface MessageGroup {
   kind: 'single' | 'timeline';
   messages: Message[];
   startIndex: number;
+  /** True when the previous RENDERED element is also an assistant bubble, so
+   *  this group continues it and skips its own avatar header. */
+  hideHeader?: boolean;
 }
 const messageGroups = computed<MessageGroup[]>(() => {
   const groups: MessageGroup[] = [];
   const msgs = messages.value;
   let timeline: MessageGroup | null = null;
+  // A message renders as an assistant bubble (with the Dzeck avatar header)
+  // when it stands alone — narrations absorbed into a timeline do NOT count:
+  // they render inside the timeline rail, invisible to header suppression.
+  const isAssistantBubble = (m: Message) =>
+    m.type === 'assistant' ||
+    (m.type === 'attachments' && (m.content as AttachmentsContent).role === 'assistant');
+  const pushSingle = (m: Message, i: number) => {
+    const prev = groups.length ? groups[groups.length - 1] : null;
+    const prevIsAssistantBubble = !!(
+      prev && prev.kind === 'single' && isAssistantBubble(prev.messages[0])
+    );
+    groups.push({
+      kind: 'single',
+      messages: [m],
+      startIndex: i,
+      hideHeader: isAssistantBubble(m) && prevIsAssistantBubble,
+    });
+  };
   for (let i = 0; i < msgs.length; i++) {
     const m = msgs[i];
     if (m.type === 'step') {
@@ -238,35 +259,34 @@ const messageGroups = computed<MessageGroup[]>(() => {
     if (m.type === 'assistant') {
       const mc = m.content as MessageContent;
       if (mc.is_final || mc.is_question) {
-        // Summary / question — standalone, ends the timeline.
-        groups.push({ kind: 'single', messages: [m], startIndex: i });
+        // Summary / question — standalone, ends the timeline. It always gets
+        // its own avatar header (Manus-style): the narration lines before it
+        // rendered INSIDE the timeline, not as an assistant bubble.
+        pushSingle(m, i);
         timeline = null;
       } else if (timeline) {
         // Mid-task narration → inside the timeline, beside the rail.
         timeline.messages.push(m);
       } else {
         // Ack / pre-plan text — standalone (no timeline started yet).
-        groups.push({ kind: 'single', messages: [m], startIndex: i });
+        pushSingle(m, i);
       }
       continue;
     }
     // user / tool / attachments — standalone, timeline ends.
-    groups.push({ kind: 'single', messages: [m], startIndex: i });
+    pushSingle(m, i);
     timeline = null;
   }
   return groups;
 });
 
-// Consecutive-assistant header suppression, evaluated on the underlying
-// message array (groups hide the grouping from the check).
+// Consecutive-assistant header suppression, evaluated on RENDERED groups
+// (SYNCED with production ChatPage): the header is hidden only when the
+// previous rendered group is itself a standalone assistant bubble. A summary
+// following the tool timeline always keeps its Dzeck avatar header.
 const isGroupHideHeader = (group: MessageGroup): boolean => {
   if (group.kind !== 'single') return false;
-  const idx = group.startIndex;
-  if (idx <= 0) return false;
-  const isAst = (m: Message) =>
-    m.type === 'assistant' ||
-    (m.type === 'attachments' && (m.content as AttachmentsContent).role === 'assistant');
-  return isAst(messages.value[idx]) && isAst(messages.value[idx - 1]);
+  return !!group.hideHeader;
 };
 
 const getLastStep = (): StepContent | undefined => {

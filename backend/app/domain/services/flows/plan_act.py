@@ -434,11 +434,17 @@ class PlanActFlow(BaseFlow):
                 logger.info(f"Agent {self._agent_id} started summarizing")
                 # Collect the final deliverable file paths recorded by every
                 # step's result JSON — delivered once, here, in the summary.
+                from app.domain.services.agents.attachment_paths import (
+                    normalize_attachment_paths,
+                )
+
                 step_attachments: list = []
                 seen_paths: set = set()
                 if self.plan is not None:
                     for s in self.plan.steps or []:
-                        for fp in getattr(s, "attachments", None) or []:
+                        for fp in normalize_attachment_paths(
+                            getattr(s, "attachments", None)
+                        ):
                             if fp and fp not in seen_paths:
                                 seen_paths.add(fp)
                                 step_attachments.append(fp)
