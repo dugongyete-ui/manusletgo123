@@ -334,9 +334,10 @@ const handleToolEvent = (toolData: ToolEventData) => {
   }
   if (toolContent.name !== 'message') {
     lastNoMessageTool.value = toolContent;
-    if (realTime.value) {
-      toolPanel.value?.showToolPanel(toolContent, false);
-    }
+    // Do NOT auto-open the tool panel — SYNCED with production ChatPage.
+    // During replay the visitor stays in the chat view (timeline); the panel
+    // opens only when a tool pill is clicked manually, so at the end of the
+    // replay the timeline is fully visible instead of being covered.
   }
 }
 
