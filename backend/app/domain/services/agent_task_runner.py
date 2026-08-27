@@ -683,9 +683,21 @@ class AgentTaskRunner(TaskRunner):
         pausing it would break every other user on the same container.
         Failures are logged, never raised: a quota-saving optimisation must
         not be able to fail a task that already succeeded.
+
+        Skipped while a live-view (takeover) viewer is connected: pausing
+        freezes every process in the VM, which would kill the user's screen
+        mid-view. The viewer-disconnect hook re-pauses a few minutes after
+        the last viewer leaves (E2BSandbox._repause_when_idle).
         """
         pause = getattr(self._sandbox, "pause", None)
         if not callable(pause):
+            return
+        has_viewers = getattr(self._sandbox, "has_vnc_viewers", None)
+        if callable(has_viewers) and has_viewers():
+            logger.info(
+                f"Agent {self._agent_id} run finished — sandbox pause deferred: "
+                "live-view viewer still connected (re-pauses after they leave)"
+            )
             return
         try:
             paused = await pause()

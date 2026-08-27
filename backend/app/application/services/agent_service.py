@@ -186,21 +186,46 @@ class AgentService:
     async def get_vnc_url(self, session_id: str) -> str:
         """Get VNC URL for a session, ensuring it belongs to the user"""
         logger.info(f"Getting VNC URL for session {session_id}")
-        
+
         session = await self._session_repository.find_by_id(session_id)
         if not session:
             logger.error(f"Session {session_id} not found")
             raise RuntimeError("Session not found")
-        
+
         if not session.sandbox_id:
             raise RuntimeError("Session has no sandbox environment")
-        
+
         # Get sandbox and return VNC URL
         sandbox = await self._sandbox_cls.get(session.sandbox_id)
         if not sandbox:
             raise RuntimeError("Sandbox environment not found")
-        
+
         return sandbox.vnc_url
+
+    async def get_vnc_sandbox(self, session_id: str):
+        """Get the sandbox object backing a session's live view (takeover).
+
+        Reconnecting auto-resumes a paused E2B sandbox and re-bootstraps its
+        VNC stack, so the user's takeover screen comes alive even after the
+        post-summary quota-saver pause. Returns the sandbox itself (not just
+        the URL) so the VNC websocket route can attach viewer accounting —
+        while a viewer is connected the sandbox must not be paused.
+        """
+        logger.info(f"Getting VNC sandbox for session {session_id}")
+
+        session = await self._session_repository.find_by_id(session_id)
+        if not session:
+            logger.error(f"Session {session_id} not found")
+            raise RuntimeError("Session not found")
+
+        if not session.sandbox_id:
+            raise RuntimeError("Session has no sandbox environment")
+
+        sandbox = await self._sandbox_cls.get(session.sandbox_id)
+        if not sandbox:
+            raise RuntimeError("Sandbox environment not found")
+
+        return sandbox
 
     async def file_view(self, session_id: str, file_path: str, user_id: str) -> FileViewResponse:
         """View file content, ensuring session belongs to the user"""

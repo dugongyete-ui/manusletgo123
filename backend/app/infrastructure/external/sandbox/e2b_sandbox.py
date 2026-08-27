@@ -38,6 +38,15 @@ Key engineering notes (all verified empirically against e2b SDK 2.x):
    `vnc_url` returns the E2B-proxied wss URL; the backend VNC websocket pipes
    it to the noVNC frontend, so the mouse-icon takeover works exactly like on
    Replit. Verified live at ~290/478 MB RAM with all services running.
+   CRITICAL: the Xvfb screen must be depth 24. noVNC ALWAYS sends
+   SetPixelFormat requesting a 24bpp truecolor client format, and x11vnc
+   (Debian build) silently never answers framebuffer-update requests when it
+   would have to convert from a 16bpp display to that client format — the
+   viewer then shows a black screen forever (verified empirically; the
+   handshake still succeeds, so probes pass while the screen stays black).
+   Depth 24 makes the client format the native one and updates flow.
+   `ensure_sandbox()` therefore also checks the root depth of a running Xvfb
+   and replaces depth-16 servers left by older bootstraps.
 
 5. Fallback contract — every public method may raise; the
    HybridSandboxFactory catches failures (quota/auth/network) and transparently
@@ -48,6 +57,7 @@ import asyncio
 import io
 import logging
 import re
+import time
 from typing import Optional, BinaryIO
 
 import httpx
@@ -106,15 +116,87 @@ class E2BSandbox:
     _registry: dict[str, "E2BSandbox"] = {}
     _registry_lock = asyncio.Lock()
 
+    # ------------------------------------------------------------------
+    # Live-view (takeover) viewer accounting.
+    # While a user is watching the takeover screen the VM must NOT be
+    # paused (pause freezes every process → the screen dies mid-view). The
+    # VNC websocket route marks viewer connect/disconnect here; the task
+    # runner skips its post-run pause while viewers are connected, and the
+    # last viewer leaving schedules a delayed re-pause so quota is not
+    # burned by an abandoned live view.
+    # ------------------------------------------------------------------
+    _vnc_viewers: dict[str, int] = {}   # raw sandbox id -> viewer count
+    _ACTIVITY_WINDOW = 180.0            # every tool call keeps the VM "busy" this long
+    _REPAUSE_POLL = 15.0                # idle-poll interval after the last viewer leaves
+    _REPAUSE_GIVEUP = 900.0             # never poll longer than 15 minutes
+
     def __init__(self, sbx) -> None:
         self._sbx = sbx
         self._raw_id = sbx.sandbox_id
         self._id = f"e2b:{self._raw_id}"
         self._bootstrap_lock = asyncio.Lock()
         self._bootstrapped = False
+        self._activity_until = 0.0
         # session_id -> {handle, started_at}
         self._shell_sessions: dict[str, dict] = {}
         self._http = httpx.AsyncClient(timeout=30)
+
+    # ------------------------------------------------------------------
+    # Live-view viewer hooks (called by the VNC websocket route)
+    # ------------------------------------------------------------------
+
+    def has_vnc_viewers(self) -> bool:
+        """True while at least one takeover viewer is connected."""
+        return E2BSandbox._vnc_viewers.get(self._raw_id, 0) > 0
+
+    def vnc_viewer_connected(self) -> None:
+        E2BSandbox._vnc_viewers[self._raw_id] = (
+            E2BSandbox._vnc_viewers.get(self._raw_id, 0) + 1
+        )
+        logger.info(
+            "E2B live view: viewer connected to %s (total %d)",
+            self.id,
+            E2BSandbox._vnc_viewers[self._raw_id],
+        )
+
+    async def vnc_viewer_disconnected(self) -> None:
+        remaining = E2BSandbox._vnc_viewers.get(self._raw_id, 0) - 1
+        if remaining > 0:
+            E2BSandbox._vnc_viewers[self._raw_id] = remaining
+            logger.info(
+                "E2B live view: viewer left %s (%d remain)", self.id, remaining
+            )
+            return
+        E2BSandbox._vnc_viewers.pop(self._raw_id, None)
+        logger.info(
+            "E2B live view: last viewer left %s — re-pause scheduled", self.id
+        )
+        asyncio.create_task(E2BSandbox._repause_when_idle(self._raw_id))
+
+    @classmethod
+    async def _repause_when_idle(cls, raw_id: str) -> None:
+        """Pause the VM shortly after the last live-view viewer leaves.
+
+        Waits until agent activity ceases (every tool call refreshes
+        ``_activity_until``) so a running task is never frozen mid-flight —
+        its own post-run pause handles the final state. Gives up after 15
+        minutes so a stuck task can never pin this loop forever.
+        """
+        deadline = time.monotonic() + cls._REPAUSE_GIVEUP
+        while time.monotonic() < deadline:
+            await asyncio.sleep(cls._REPAUSE_POLL)
+            if cls._vnc_viewers.get(raw_id, 0) > 0:
+                return  # a viewer came back
+            wrapper = cls._registry.get(raw_id)
+            if wrapper is None:
+                return  # already paused / removed
+            if time.monotonic() >= wrapper._activity_until:
+                await wrapper.pause()
+                logger.info(
+                    "E2B live view: sandbox e2b:%s re-paused after viewer left",
+                    raw_id,
+                )
+                return
 
     # ------------------------------------------------------------------
     # Factory / lifecycle
@@ -192,6 +274,9 @@ class E2BSandbox:
     # ------------------------------------------------------------------
 
     async def ensure_sandbox(self) -> None:
+        # Heartbeat: while the agent actively uses tools the VM counts as busy,
+        # so the post-viewer re-pause never freezes a task mid-flight.
+        self._activity_until = time.monotonic() + self._ACTIVITY_WINDOW
         async with self._bootstrap_lock:
             if self._bootstrapped:
                 # keepalive only — cheap
@@ -247,14 +332,37 @@ class E2BSandbox:
                 raise RuntimeError("apt install chromium/nginx/vnc failed")
             await self._cmd(f"echo ready > {_SETUP_FLAG}")
 
-        # 3. Xvfb virtual display up? (GUI Chromium renders into it and the
-        #    VNC server shares it — one display serves both CDP tools and the
-        #    live-view / takeover screen). Guard with `pgrep -x` so the check
-        #    never matches its own sh -c wrapper.
-        xvfb_up = await self._cmd("pgrep -x Xvfb >/dev/null && echo UP || echo DOWN")
-        if "UP" not in xvfb_up:
+        # 3. Xvfb virtual display up AND at depth 24? (GUI Chromium renders
+        #    into it and the VNC server shares it — one display serves both CDP
+        #    tools and the live-view / takeover screen). Guard with `pgrep -x`
+        #    so the check never matches its own sh -c wrapper.
+        #    Depth MUST be 24: noVNC always requests a 24bpp client pixel
+        #    format and x11vnc silently drops framebuffer updates when it
+        #    would have to convert from a 16bpp display — black takeover
+        #    screen. See module docstring note 4.
+        depth = (
             await self._cmd(
-                f"nohup Xvfb {_X_DISPLAY} -screen 0 1024x768x16 -nolisten tcp "
+                f"DISPLAY={_X_DISPLAY} xdpyinfo 2>/dev/null "
+                "| grep -m1 'depth of root window' | grep -o '[0-9]*'"
+            )
+        ).strip()
+        xvfb_up = await self._cmd("pgrep -x Xvfb >/dev/null && echo UP || echo DOWN")
+        if "UP" not in xvfb_up or depth != "24":
+            if "UP" in xvfb_up:
+                logger.info(
+                    "E2B: replacing depth-%s Xvfb with depth-24 server (%s)",
+                    depth or "?",
+                    self.id,
+                )
+            # Killing X also kills chromium + x11vnc (they exit when the
+            # display dies); the checks below relaunch them on the fresh
+            # display. `; true` keeps pkill's exit code from failing the cmd.
+            await self._cmd(
+                "pkill -x Xvfb; pkill -x x11vnc; pkill -x chromium; true"
+            )
+            await asyncio.sleep(1)
+            await self._cmd(
+                f"nohup Xvfb {_X_DISPLAY} -screen 0 1024x768x24 -nolisten tcp "
                 ">/tmp/xvfb.log 2>&1 & echo LAUNCHED"
             )
             await asyncio.sleep(1)
@@ -268,12 +376,18 @@ class E2BSandbox:
         )
         if "UP" not in chrome_up:
             await self._cmd(
+                # --restore-last-session: after a pause/resume cycle chromium
+                # reopens the tabs the agent was working on, so the takeover
+                # view shows the real pages instead of about:blank.
+                "rm -f /home/user/chrome-profile/SingletonLock "
+                "/home/user/chrome-profile/SingletonCookie "
+                "/home/user/chrome-profile/SingletonSocket; "
                 f"env DISPLAY={_X_DISPLAY} nohup chromium --no-sandbox --disable-gpu "
                 "--disable-dev-shm-usage --renderer-process-limit=4 "
-                "--window-size=1024,768 "
+                "--window-size=1024,768 --restore-last-session "
                 f"--remote-debugging-port={_CHROME_DEBUG_PORT} "
                 "--remote-debugging-address=127.0.0.1 --remote-allow-origins=* "
-                "--user-data-dir=/home/user/chrome-profile about:blank "
+                "--user-data-dir=/home/user/chrome-profile "
                 ">/tmp/chrome.log 2>&1 & echo LAUNCHED"
             )
             # wait for CDP to answer (bounded)

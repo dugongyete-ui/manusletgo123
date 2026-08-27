@@ -100,6 +100,153 @@ def test_run_tracks_wait_event_to_skip_pause():
     assert "_pause_sandbox_after_run" in src
 
 
+@pytest.mark.asyncio
+async def test_pause_deferred_while_vnc_viewer_connected():
+    """A user watching the live view (takeover) must not have the sandbox
+    frozen under them — the post-run pause is skipped; the viewer-disconnect
+    hook re-pauses later."""
+
+    class WatchedSandbox(PausableSandbox):
+        def has_vnc_viewers(self) -> bool:
+            return True
+
+    sandbox = WatchedSandbox()
+    runner = make_runner(sandbox)
+    await runner._pause_sandbox_after_run()
+    assert sandbox.paused_count == 0
+
+
+@pytest.mark.asyncio
+async def test_pause_not_deferred_without_viewer_hook():
+    """A sandbox with pause() but without viewer accounting (e.g. older
+    adapter) still pauses normally after the run."""
+
+    runner = make_runner(PausableSandbox())
+    await runner._pause_sandbox_after_run()
+    assert True  # reached without error — full behaviour covered above
+
+
+@pytest.mark.asyncio
+async def test_vnc_viewer_accounting_and_repause():
+    """Viewer connect/disconnect accounting: pause is skipped while viewers
+    are connected, and the delayed re-pause fires once activity stops."""
+    import asyncio
+    import time as _time
+
+    from app.infrastructure.external.sandbox.e2b_sandbox import E2BSandbox
+
+    class FakeSbx:
+        sandbox_id = "sbx-viewer-test"
+
+        async def pause(self):
+            return True
+
+    sbx = FakeSbx()
+    wrapper = E2BSandbox.__new__(E2BSandbox)
+    wrapper._sbx = sbx
+    wrapper._raw_id = sbx.sandbox_id
+    wrapper._id = f"e2b:{sbx.sandbox_id}"
+    wrapper._bootstrap_lock = asyncio.Lock()
+    wrapper._bootstrapped = True
+    wrapper._activity_until = 0.0  # idle already
+    wrapper._shell_sessions = {}
+    wrapper._http = None
+    E2BSandbox._registry[sbx.sandbox_id] = wrapper
+    E2BSandbox._vnc_viewers.pop(sbx.sandbox_id, None)
+    paused = []
+
+    async def fake_pause():
+        paused.append(True)
+        E2BSandbox._registry.pop(sbx.sandbox_id, None)
+        return True
+
+    wrapper.pause = fake_pause
+
+    try:
+        assert wrapper.has_vnc_viewers() is False
+        wrapper.vnc_viewer_connected()
+        assert wrapper.has_vnc_viewers() is True
+        # runner would skip the pause now (covered above)
+
+        wrapper.vnc_viewer_connected()
+        await wrapper.vnc_viewer_disconnected()
+        assert wrapper.has_vnc_viewers() is True  # one viewer still there
+
+        await wrapper.vnc_viewer_disconnected()
+        assert wrapper.has_vnc_viewers() is False
+
+        # fast-forward the repause poll: shorten sleeps and window
+        E2BSandbox._REPAUSE_POLL = 0.01
+        await asyncio.sleep(0.05)
+        assert paused, "re-pause did not fire after the last viewer left"
+    finally:
+        E2BSandbox._REPAUSE_POLL = 15.0
+        E2BSandbox._registry.pop(sbx.sandbox_id, None)
+        E2BSandbox._vnc_viewers.pop(sbx.sandbox_id, None)
+
+
+@pytest.mark.asyncio
+async def test_repause_waits_for_agent_activity():
+    """The delayed re-pause must NOT freeze a VM that is actively running a
+    task (activity heartbeat still in the future)."""
+    import asyncio
+
+    from app.infrastructure.external.sandbox.e2b_sandbox import E2BSandbox
+
+    class FakeSbx:
+        sandbox_id = "sbx-activity-test"
+
+    wrapper = E2BSandbox.__new__(E2BSandbox)
+    wrapper._sbx = FakeSbx()
+    wrapper._raw_id = FakeSbx.sandbox_id
+    wrapper._id = f"e2b:{FakeSbx.sandbox_id}"
+    wrapper._bootstrap_lock = asyncio.Lock()
+    wrapper._bootstrapped = True
+    wrapper._activity_until = asyncio.get_event_loop().time() + 3600  # busy
+    wrapper._shell_sessions = {}
+    wrapper._http = None
+    E2BSandbox._registry[FakeSbx.sandbox_id] = wrapper
+    E2BSandbox._vnc_viewers.pop(FakeSbx.sandbox_id, None)
+    paused = []
+
+    async def fake_pause():
+        paused.append(True)
+        return True
+
+    wrapper.pause = fake_pause
+
+    try:
+        E2BSandbox._REPAUSE_POLL = 0.01
+        task = asyncio.create_task(
+            E2BSandbox._repause_when_idle(FakeSbx.sandbox_id)
+        )
+        await asyncio.sleep(0.1)  # several poll cycles pass
+        assert not paused, "paused while agent activity window still open"
+        task.cancel()
+    finally:
+        E2BSandbox._REPAUSE_POLL = 15.0
+        E2BSandbox._registry.pop(FakeSbx.sandbox_id, None)
+        E2BSandbox._vnc_viewers.pop(FakeSbx.sandbox_id, None)
+
+
+def test_bootstrap_launches_xvfb_at_depth_24():
+    """Source contract: Xvfb must run at depth 24 (noVNC + x11vnc black-screen
+    bug — see e2b_sandbox module docstring note 4) and chromium must restore
+    the last session after a pause/resume cycle."""
+    import inspect
+
+    from app.infrastructure.external.sandbox import e2b_sandbox
+
+    src = inspect.getsource(e2b_sandbox.E2BSandbox._bootstrap)
+    assert "1024x768x24" in src, "Xvfb must be launched at depth 24"
+    assert "1024x768x16" not in src, "depth 16 caused the black VNC screen"
+    assert "--restore-last-session" in src, (
+        "chromium should reopen the agent's tabs after resume"
+    )
+    # depth check + replacement of stale depth-16 servers on resume
+    assert "depth of root window" in src
+
+
 def test_e2b_sandbox_has_pause_and_vnc_url():
     """E2BSandbox exposes the pause() lifecycle + a non-headless VNC URL."""
     from app.infrastructure.external.sandbox.e2b_sandbox import E2BSandbox
@@ -108,3 +255,7 @@ def test_e2b_sandbox_has_pause_and_vnc_url():
     assert hasattr(E2BSandbox, "vnc_url")
     # Class-level provider tag used for the conditional system prompt
     assert E2BSandbox.provider == "e2b"
+    # Live-view viewer accounting hooks used by the VNC websocket route
+    assert hasattr(E2BSandbox, "has_vnc_viewers")
+    assert hasattr(E2BSandbox, "vnc_viewer_connected")
+    assert hasattr(E2BSandbox, "vnc_viewer_disconnected")

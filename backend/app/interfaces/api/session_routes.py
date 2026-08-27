@@ -228,13 +228,27 @@ async def vnc_websocket(
     
     await websocket.accept(subprotocol="binary")
     logger.info(f"Accepted WebSocket connection for session {session_id}")
-    
+
+    # Live-view viewer accounting: while this websocket is open the sandbox
+    # must stay un-paused (pause freezes the VM → the user's screen dies).
+    # E2B sandboxes expose vnc_viewer_connected/disconnected hooks; the
+    # disconnect hook schedules a delayed re-pause to save quota after the
+    # last viewer leaves. Non-E2B sandboxes simply don't expose the hooks.
+    vnc_sandbox = None
+    viewer_registered = False
     try:
-        # Get sandbox environment address with user validation
-        sandbox_ws_url = await agent_service.get_vnc_url(session_id)
+        # Get sandbox (auto-resumes a paused E2B VM and re-bootstraps its
+        # VNC stack) with user validation
+        vnc_sandbox = await agent_service.get_vnc_sandbox(session_id)
+        sandbox_ws_url = vnc_sandbox.vnc_url
+
+        on_connect = getattr(vnc_sandbox, "vnc_viewer_connected", None)
+        if callable(on_connect):
+            on_connect()
+            viewer_registered = True
 
         logger.info(f"Connecting to VNC WebSocket at {sandbox_ws_url}")
-    
+
         # Connect to sandbox WebSocket (binary subprotocol required by noVNC/websockify)
         # ws://localhost connections do not require SSL
         ssl_context = None
@@ -255,7 +269,7 @@ async def vnc_websocket(
                     pass
                 except Exception as e:
                     logger.error(f"Error forwarding data to sandbox: {e}")
-            
+
             async def forward_from_sandbox():
                 try:
                     while True:
@@ -269,11 +283,11 @@ async def vnc_websocket(
                     pass
                 except Exception as e:
                     logger.error(f"Error forwarding data from sandbox: {e}")
-            
+
             # Run two forwarding tasks concurrently
             forward_task1 = asyncio.create_task(forward_to_sandbox())
             forward_task2 = asyncio.create_task(forward_from_sandbox())
-            
+
             # Wait for either task to complete (meaning connection has closed)
             done, pending = await asyncio.wait(
                 [forward_task1, forward_task2],
@@ -281,17 +295,25 @@ async def vnc_websocket(
             )
 
             logger.info("WebSocket connection closed")
-            
+
             # Cancel pending tasks
             for task in pending:
                 task.cancel()
-    
+
     except ConnectionError as e:
         logger.error(f"Unable to connect to sandbox environment: {str(e)}")
         await websocket.close(code=1011, reason=f"Unable to connect to sandbox environment: {str(e)}")
     except Exception as e:
         logger.error(f"WebSocket error: {str(e)}")
         await websocket.close(code=1011, reason=f"WebSocket error: {str(e)}")
+    finally:
+        if viewer_registered and vnc_sandbox is not None:
+            on_disconnect = getattr(vnc_sandbox, "vnc_viewer_disconnected", None)
+            if callable(on_disconnect):
+                try:
+                    await on_disconnect()
+                except Exception as exc:
+                    logger.warning(f"VNC viewer disconnect hook failed: {exc}")
 
 @router.get("/{session_id}/files")
 async def get_session_files(
