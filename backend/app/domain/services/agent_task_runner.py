@@ -183,7 +183,111 @@ class AgentTaskRunner(TaskRunner):
             await self._session_repository.add_file(self._session_id, file_info)
             return file_info
         except Exception as e:
-            logger.exception(f"Agent {self._agent_id} failed to sync file: {e}")
+            # Concise one-line warning — a full traceback here floods the
+            # console and looks broken to users watching the logs. Missing
+            # files are common when the model *claims* an output before the
+            # command that creates it has run; the path is retried later at
+            # step completion / final summary (see _sync_run_artifacts).
+            logger.warning(
+                "Agent %s could not sync %s yet (%s) — will retry at the "
+                "next sync point",
+                self._agent_id, file_path, type(e).__name__,
+            )
+
+    # ── User-home artifact scan ────────────────────────────────────────────────
+    # Shell-created files (`cat > index.html <<EOF`, scripts, exports…) are
+    # invisible to the file_write tracking above, and models sometimes CLAIM
+    # an output file before actually creating it. Scanning the user's home
+    # directory and diffing against a baseline taken at task start makes
+    # delivery deterministic: whatever actually exists at the end gets
+    # delivered with the summary — no matter how it was created.
+    _SCAN_MAX_DEPTH = 3
+    _SCAN_MAX_ENTRIES = 400
+
+    async def _scan_user_home_files(self) -> dict:
+        """Recursively map {absolute_path: size} for files under the user home.
+
+        Skips the upload/ landing zone (files the user sent — already in
+        storage) and dotfiles. Returns {} when the sandbox has no user_home
+        concept or the directory is not listable — never raises.
+        """
+        home = getattr(self._sandbox, "user_home", None)
+        if not home:
+            return {}
+        found: dict = {}
+
+        async def _walk(path: str, depth: int) -> None:
+            if depth > self._SCAN_MAX_DEPTH or len(found) >= self._SCAN_MAX_ENTRIES:
+                return
+            try:
+                result = await self._sandbox.file_list(path)
+            except Exception:
+                return
+            if not (result and result.success and result.data):
+                return
+            entries = getattr(result.data, "entries", None) or []
+            for entry in entries:
+                name = getattr(entry, "name", "")
+                is_dir = getattr(entry, "type", "") == "dir"
+                if not name or name.startswith("."):
+                    continue
+                child = f"{path.rstrip('/')}/{name}"
+                if is_dir:
+                    if name == "upload":
+                        continue
+                    await _walk(child, depth + 1)
+                else:
+                    found[child] = getattr(entry, "size", 0) or 0
+
+        await _walk(home, 0)
+        return found
+
+    async def _sync_run_artifacts(
+        self,
+        baseline: dict,
+        files_written: List[FileInfo],
+        pending: set,
+    ) -> None:
+        """Sync every new/changed file in the user home + retry pending paths.
+
+        Called at each step completion and right before the final summary is
+        assembled — the moments when the shell has usually finished writing.
+        Files already tracked in files_written keep their latest synced
+        version only when the on-disk size changed.
+        """
+        candidates: List[str] = []
+
+        current = await self._scan_user_home_files()
+        if current:
+            tracked_sizes = {
+                fw.file_path: None for fw in files_written
+            }  # presence only; size of the synced copy is unknown
+            for path, size in current.items():
+                base_size = baseline.get(path)
+                if base_size is None or base_size != size:
+                    if path not in tracked_sizes or base_size is not None:
+                        candidates.append(path)
+        # Retry paths that failed earlier (claimed before they existed).
+        candidates.extend(p for p in pending if p not in candidates)
+
+        for path in candidates:
+            try:
+                file_info = await self._sync_file_to_storage(path)
+            except Exception as e:
+                logger.warning("Artifact sync failed for %s: %s", path, e)
+                continue
+            if file_info:
+                pending.discard(path)
+                baseline[path] = current.get(path, file_info.size or 0)
+                files_written[:] = [
+                    f for f in files_written if f.file_path != file_info.file_path
+                ]
+                files_written.append(file_info)
+                logger.info(
+                    "Agent %s artifact delivered: %s", self._agent_id, path
+                )
+            else:
+                pending.add(path)
     
     async def _sync_file_to_sandbox(self, file_id: str) -> Optional[FileInfo]:
         """Download file from storage to sandbox.
@@ -531,6 +635,15 @@ class AgentTaskRunner(TaskRunner):
         # File paths already attached to ANY message in this run. Guarantees
         # each file is delivered to the user EXACTLY ONCE.
         delivered_paths: set = set()
+        # Baseline snapshot of the user's sandbox home at task start. Diffing
+        # against it at sync points reveals files created by ANY means —
+        # shell heredocs (`cat > file <<EOF`), scripts the agent ran, or tools
+        # — so every real artifact reaches the summary without depending on
+        # the model remembering to claim it.
+        home_baseline: dict = await self._scan_user_home_files()
+        # Paths that were claimed but did not exist yet — retried at every
+        # sync point until they appear (or the task ends).
+        pending_sync: set = set()
 
         def _is_generator_script(fi: FileInfo) -> bool:
             name = fi.filename or fi.file_path or ""
@@ -559,13 +672,23 @@ class AgentTaskRunner(TaskRunner):
                                 logger.info(
                                     f"Agent {self._agent_id} synced step attachment: {attachment_path}"
                                 )
+                            else:
+                                pending_sync.add(attachment_path)
                         except Exception as e:
                             logger.warning(
                                 f"Agent {self._agent_id} failed to sync step attachment {attachment_path}: {e}"
                             )
+                # Artifact scan: catch everything the shell actually created
+                # in this step (heredocs, generated scripts, exports) — the
+                # deterministic path to "hasil selalu sampai ke user".
+                await self._sync_run_artifacts(home_baseline, files_written, pending_sync)
             elif isinstance(event, MessageEvent):
                 if event.is_final:
                     # ── Final summary message — THE single delivery point ─────
+                    # Last artifact sweep before assembling the summary: the
+                    # shell may still have been writing a moment ago (files
+                    # claimed early, created late) — retry everything now.
+                    await self._sync_run_artifacts(home_baseline, files_written, pending_sync)
                     # Attach everything the task produced that has not been
                     # delivered yet: the model's own attachments + every file
                     # written by tools during the run (minus generator scripts

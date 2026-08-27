@@ -78,28 +78,30 @@ class ExecutionAgent(BaseAgent):
     # ── Deterministic tool-progress narration ──────────────────────────────────
     # Plain, professional status lines derived from the tool itself — no
     # emojis, no raw tool names, no internal jargon (Manus-style narration).
+    # Each line tells the user WHAT is being worked on right now, in natural
+    # human language, with the concrete detail (command, filename, site).
     _TOOL_NARRATIONS = {
         "en": {
             "info_search_web": "Searching the web for \"{q}\"",
             "browser_navigate": "Opening {q}",
             "browser_view": "Reading the page content",
-            "browser_click": "Interacting with the page",
-            "file_write": "Writing file {q}",
-            "file_str_replace": "Updating file {q}",
-            "file_read": "Reading file {q}",
-            "shell_exec": "Running shell command",
+            "browser_click": "Clicking an element on the page",
+            "file_write": "Writing {q}",
+            "file_str_replace": "Editing {q}",
+            "file_read": "Reading {q}",
+            "shell_exec": "Running `{q}`",
             "image_search_web": "Searching for images: {q}",
-            "image_download": "Downloading image",
+            "image_download": "Downloading an image",
         },
         "id": {
-            "info_search_web": "Mencari di web: {q}",
+            "info_search_web": "Mencari di web: \"{q}\"",
             "browser_navigate": "Membuka {q}",
             "browser_view": "Membaca isi halaman",
-            "browser_click": "Berinteraksi dengan halaman",
-            "file_write": "Menulis file {q}",
-            "file_str_replace": "Memperbarui file {q}",
-            "file_read": "Membaca file {q}",
-            "shell_exec": "Menjalankan perintah shell",
+            "browser_click": "Mengeklik elemen di halaman",
+            "file_write": "Menulis {q}",
+            "file_str_replace": "Menyunting {q}",
+            "file_read": "Membaca {q}",
+            "shell_exec": "Menjalankan `{q}`",
             "image_search_web": "Mencari gambar: {q}",
             "image_download": "Mengunduh gambar",
         },
@@ -121,24 +123,28 @@ class ExecutionAgent(BaseAgent):
                 return host
             except Exception:
                 return url
-        for key in ("query", "file", "cmd"):
+        for key in ("query", "file", "cmd", "command"):
             val = str(args.get(key, "")).strip()
             if val:
                 if key == "file":
                     val = val.rstrip("/").split("/")[-1]
-                if key == "cmd":
-                    val = val.replace("\n", " ")
-                return val[:60] + ("…" if len(val) > 60 else "")
+                if key in ("cmd", "command"):
+                    # First line of the command only — heredocs and long
+                    # pipelines get truncated, the user just needs the gist.
+                    val = val.splitlines()[0] if val else val
+                return val[:48] + ("…" if len(val) > 48 else "")
         return ""
 
     def _tool_progress_narration(self, event: "ToolEvent") -> Optional[str]:
         """Deterministic one-line status for a completed tool call.
 
-        Narrates once per KIND of work within the current step (search →
-        browse → read → write file → shell…), throttled to at most one line
-        per _TOOL_NARRATION_MIN_INTERVAL seconds so rapid tool bursts stay
-        quiet.  Independent of message_notify_user — the chat stream is never
-        silent while the agent works.
+        Narrates the CURRENT kind of work (search → browse → read → write →
+        shell…), throttled to at most one line per
+        _TOOL_NARRATION_MIN_INTERVAL seconds so rapid tool bursts stay quiet.
+        Shell commands are the exception: each DISTINCT command gets its own
+        line (that is what the user actually watches), still throttled.
+        Independent of message_notify_user — the chat stream is never silent
+        while the agent works.
         """
         import time as _time
 
@@ -148,8 +154,12 @@ class ExecutionAgent(BaseAgent):
         )
         if fn not in table:
             return None
-        # Already narrated this kind of work in this step — stay quiet.
-        if fn in self._step_narrated_functions:
+        # Dedup key: shell commands dedupe per-command, everything else per
+        # kind of work — one "Membuka wikipedia.org" is enough per step.
+        arg = self._narration_arg(event) or ""
+        dedup_key = f"{fn}:{arg}" if fn == "shell_exec" else fn
+        # Already narrated this exact line of work in this step — stay quiet.
+        if dedup_key in self._step_narrated_functions:
             return None
         now = _time.monotonic()
         # First narration of the step always goes out; later ones need a gap.
@@ -158,10 +168,10 @@ class ExecutionAgent(BaseAgent):
             and (now - self._last_tool_narration_ts) < self._TOOL_NARRATION_MIN_INTERVAL
         ):
             return None
-        self._step_narrated_functions.add(fn)
+        self._step_narrated_functions.add(dedup_key)
         self._last_narrated_function = fn
         self._last_tool_narration_ts = now
-        return table[fn].format(q=self._narration_arg(event) or "")
+        return table[fn].format(q=arg)
 
     @staticmethod
     def _normalize_narration(text: str) -> str:

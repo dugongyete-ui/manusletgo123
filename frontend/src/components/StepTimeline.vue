@@ -59,10 +59,10 @@
           :class="{ 'max-h-[100000px] opacity-100': isExpanded(i), 'max-h-0 opacity-0': !isExpanded(i) }">
           <template v-for="item in entry.items" :key="item.seq">
             <ToolUse v-if="item.kind === 'tool' && item.tool" :tool="item.tool" @click="handleToolClick(item.tool)" />
+            <!-- Narration: plain text line beside the rail — no bullet dot,
+                 Manus-style. The text itself says what is happening. -->
             <div v-else
-              class="flex items-start gap-[8px] text-[13px] leading-[1.5] text-[var(--text-secondary)] max-w-full">
-              <span
-                class="w-[5px] h-[5px] rounded-full bg-[var(--icon-tertiary)] mt-[7px] flex-shrink-0"></span>
+              class="text-[13px] leading-[1.55] text-[var(--text-secondary)] max-w-full">
               <span class="min-w-0 break-words" v-html="renderMarkdown(item.text || '')"></span>
             </div>
           </template>

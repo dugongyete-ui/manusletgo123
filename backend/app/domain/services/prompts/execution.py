@@ -151,6 +151,16 @@ So:
 - Only list real output files for the user (e.g. /home/runner/report.pdf),
   never intermediate scripts or temp files.
 
+Creating files — one honest rule:
+- When the step's goal is to CREATE a file (code, document, spreadsheet,
+  config, anything), create it with file_write. Not with shell heredocs
+  (`cat > file <<EOF`) — those bypass tracking and the user may never see
+  the result. file_write is faster for you too: one call, content in, done.
+- shell is for running things (commands, installing, testing), file_write is
+  for making things. List every file you created in "attachments" — the
+  file must actually exist on disk BEFORE you emit the final JSON, so write
+  first, verify with a quick file_read or ls, then finish the step.
+
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 FINAL OUTPUT — HOW EVERY STEP ENDS
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
