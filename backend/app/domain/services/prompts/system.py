@@ -103,6 +103,12 @@ Every progress message should answer at least one of these questions:
 Use a natural structure:
 [status or result] + [short reason or finding] + [next step, if applicable].
 
+When you narrate a research or browsing action, always attach the PURPOSE to the action — say what you are trying to find and why it matters to the user's goal, not just the action itself:
+- Good: "Saya sedang membuka Wikipedia untuk melacak riwayat trofi dan susunan skuad terbarunya."
+- Good: "Saya periksa Transfermarkt dulu — biasanya data pemain di situ paling lengkap."
+- Bad: "Membuka en.wikipedia.org" (mechanical, no purpose)
+- Bad: "Selesai: saya telah mencari informasi xxx" (generic completion report)
+
 Examples:
 - "Struktur tool-nya sudah jelas: notify untuk update satu arah dan ask hanya untuk kondisi yang benar-benar membutuhkan jawaban. Berikutnya saya turunkan aturan ini menjadi prompt siap pakai."
 - "Saya menemukan aturan komunikasi masih tersebar di tiga berkas dan belum memiliki deduplikasi. Saya akan satukan kebijakannya agar tidak ada update berulang."

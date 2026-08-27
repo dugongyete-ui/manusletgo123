@@ -160,11 +160,78 @@ class BaseAgent(ABC):
         prompt_value = self._JSON_PARSE_PROMPT.format_prompt(input=text)
         return await self._json_output_parser.aparse_with_prompt(text, prompt_value)
     
+    @staticmethod
+    def _normalize_tool_name(name: str) -> str:
+        """Clean a tool name polluted with model-generation junk.
+
+        Free-tier models occasionally emit tool calls whose NAME field carries
+        fragments of the surrounding syntax — observed in production:
+        ``"browser_view\\n</parameter"`` (a stray XML closing tag glued onto
+        the function name), names wrapped in stray quotes, or names followed
+        by markdown/xml separators. Strategy: keep the first line only, cut at
+        the first XML-ish character, strip quotes and whitespace.
+        """
+        if not name:
+            return ""
+        raw = str(name)
+        # First non-empty line only — junk always arrives after a newline.
+        first_line = next(
+            (ln.strip() for ln in raw.splitlines() if ln.strip()), ""
+        )
+        # Cut at the first XML/markdown separator character if present.
+        for sep in ("<", ">", "`", "|"):
+            idx = first_line.find(sep)
+            if idx > 0:
+                first_line = first_line[:idx].strip()
+        return first_line.strip("'\" \t").strip()
+
     def get_tool(self, name: str) -> Optional[Tool]:
-        """Get specified tool"""
+        """Get specified tool.
+
+        Resolution order:
+        1. Exact name match.
+        2. Normalized name (handles junk like ``"browser_view\\n</parameter"``).
+        3. Boundary-aware containment: a registered tool name appearing inside
+           the polluted name as a whole token (longest match wins).
+        """
+        import re as _re
+
+        # 1. Exact match.
         for toolkit in self.toolkits:
             tool = toolkit.get_tool(name)
             if tool:
+                return tool
+
+        raw = str(name or "")
+        if not raw.strip():
+            return None
+
+        # 2. Normalized name match.
+        normalized = self._normalize_tool_name(raw)
+        if normalized and normalized != raw:
+            for toolkit in self.toolkits:
+                tool = toolkit.get_tool(normalized)
+                if tool:
+                    logger.info(
+                        "Resolved polluted tool name %r -> %r", raw, tool.name
+                    )
+                    return tool
+
+        # 3. Boundary-aware containment (last resort): the polluted string
+        #    contains a registered tool name as a whole identifier.
+        candidates = sorted(
+            (t for tk in self.toolkits for t in tk.get_tools()),
+            key=lambda t: -len(t.name),
+        )
+        for tool in candidates:
+            if tool.name and _re.search(
+                rf"(?<![A-Za-z0-9_]){_re.escape(tool.name)}(?![A-Za-z0-9_])",
+                raw,
+            ):
+                logger.info(
+                    "Resolved polluted tool name %r -> %r (containment)",
+                    raw, tool.name,
+                )
                 return tool
         return None
 
@@ -239,8 +306,40 @@ class BaseAgent(ABC):
                 
                 tool = self.get_tool(function_name)
                 if not tool:
-                    yield ErrorEvent(error=f"Unknown tool: {function_name}")
+                    # The tool could not be resolved even after name
+                    # normalization. Two things must happen:
+                    #   a) the USER sees a clean single-line error (raw names
+                    #      can contain newlines / XML junk), and
+                    #   b) the MODEL receives a ToolMessage for this call —
+                    #      otherwise the tool_calls list in the conversation
+                    #      is left dangling without a matching ToolMessage,
+                    #      which some providers reject with HTTP 400, and the
+                    #      model never learns the call failed.
+                    clean_name = self._normalize_tool_name(function_name) or str(function_name).splitlines()[0]
+                    yield ErrorEvent(error=f"Unknown tool: {clean_name}")
+                    available = ", ".join(t.name for t in self.get_tools())
+                    tool_responses.append(ToolMessage(
+                        tool_call_id=tool_call_id,
+                        name=clean_name,
+                        content=(
+                            f"Error: the tool '{clean_name}' does not exist. "
+                            f"Available tools: {available}. "
+                            "Re-issue the action using one of the tools above "
+                            "with the correct tool name."
+                        ),
+                    ))
                     continue
+
+                # Canonicalise the name after resolution — a polluted name
+                # (e.g. "browser_view\n</parameter") must not leak into
+                # ToolEvents, the frontend, or the narration lookup tables.
+                if function_name != tool.name:
+                    logger.info(
+                        "Canonicalised tool name %r -> %r",
+                        function_name, tool.name,
+                    )
+                    function_name = tool.name
+                    tool_call["name"] = tool.name
 
                 # Generate event before tool call
                 yield ToolEvent(

@@ -74,36 +74,123 @@ class ExecutionAgent(BaseAgent):
         self._last_narrated_function: Optional[str] = None
         self._last_tool_narration_ts: float = 0.0
         self._step_narrated_functions: set = set()
+        # How many times each function has been narrated so far — drives the
+        # template rotation so consecutive steps never repeat the same
+        # phrasing (persists ACROSS steps on purpose; per-step dedup is
+        # handled separately by _step_narrated_functions).
+        self._narration_variants_used: dict = {}
 
     # ── Deterministic tool-progress narration ──────────────────────────────────
     # Plain, professional status lines derived from the tool itself — no
     # emojis, no raw tool names, no internal jargon (Manus-style narration).
-    # Each line tells the user WHAT is being worked on right now, in natural
-    # human language, with the concrete detail (command, filename, site).
+    # Each line tells the user WHAT the agent is doing AND WHY (the purpose
+    # behind the action), in natural first-person language, with the concrete
+    # detail (command, filename, site). Variants rotate per narration so the
+    # stream never sounds like a looped recording.
     _TOOL_NARRATIONS = {
         "en": {
-            "info_search_web": "Searching the web for \"{q}\"",
-            "browser_navigate": "Opening {q}",
-            "browser_view": "Reading the page content",
-            "browser_click": "Clicking an element on the page",
-            "file_write": "Writing {q}",
-            "file_str_replace": "Editing {q}",
-            "file_read": "Reading {q}",
-            "shell_exec": "Running `{q}`",
-            "image_search_web": "Searching for images: {q}",
-            "image_download": "Downloading an image",
+            "info_search_web": [
+                "I'm searching the web for information on \"{q}\".",
+                "Let me look up \"{q}\" online first.",
+                "Starting with a web search for \"{q}\".",
+            ],
+            "browser_navigate": [
+                "I'm opening {q} to gather the information needed.",
+                "Let me open {q} to check the source directly.",
+                "Moving on to {q} for more complete data.",
+            ],
+            "browser_view": [
+                "I'm reading through the page to pull out the key points.",
+                "Let me go over the content so nothing important gets missed.",
+                "Checking the page for the details that matter.",
+            ],
+            "browser_click": [
+                "I'm clicking through this section to keep the search going.",
+                "Let me open this part for more specific details.",
+                "Clicking this element to dig a little deeper.",
+            ],
+            "file_write": [
+                "I'm writing {q}.",
+                "Putting the work together into {q}.",
+                "Preparing {q} now.",
+            ],
+            "file_str_replace": [
+                "I'm editing {q}.",
+                "Updating part of {q}.",
+                "Making a small revision to {q}.",
+            ],
+            "file_read": [
+                "I'm reading {q}.",
+                "Let me check the contents of {q}.",
+                "Opening {q} to see what's inside.",
+            ],
+            "shell_exec": [
+                "I'm running `{q}`.",
+                "Executing `{q}` in the terminal.",
+                "Running `{q}` now.",
+            ],
+            "image_search_web": [
+                "I'm searching for images related to \"{q}\".",
+                "Let me find supporting visuals for \"{q}\".",
+                "Looking up pictures for \"{q}\".",
+            ],
+            "image_download": [
+                "I'm downloading that image first.",
+                "Saving the selected image.",
+                "Downloading the image now.",
+            ],
         },
         "id": {
-            "info_search_web": "Mencari di web: \"{q}\"",
-            "browser_navigate": "Membuka {q}",
-            "browser_view": "Membaca isi halaman",
-            "browser_click": "Mengeklik elemen di halaman",
-            "file_write": "Menulis {q}",
-            "file_str_replace": "Menyunting {q}",
-            "file_read": "Membaca {q}",
-            "shell_exec": "Menjalankan `{q}`",
-            "image_search_web": "Mencari gambar: {q}",
-            "image_download": "Mengunduh gambar",
+            "info_search_web": [
+                "Saya sedang mencari informasi tentang \"{q}\" di web.",
+                "Saya cari dulu referensi tentang \"{q}\" lewat pencarian web.",
+                "Saya mulai dari pencarian web untuk \"{q}\".",
+            ],
+            "browser_navigate": [
+                "Saya sedang membuka {q} untuk mencari informasi yang dibutuhkan.",
+                "Saya buka {q} untuk melihat sumbernya secara langsung.",
+                "Saya lanjut ke {q} supaya datanya lebih lengkap.",
+            ],
+            "browser_view": [
+                "Saya sedang membaca isi halamannya untuk mengambil poin-poin penting.",
+                "Saya baca dulu isinya supaya detail yang dibutuhkan tidak terlewat.",
+                "Saya periksa isi halaman untuk informasi yang relevan.",
+            ],
+            "browser_click": [
+                "Saya mengeklik bagian halaman ini untuk melanjutkan pencarian.",
+                "Saya buka bagian ini untuk melihat detail yang lebih spesifik.",
+                "Saya klik elemen di halaman untuk mendapatkan data lebih lanjut.",
+            ],
+            "file_write": [
+                "Saya sedang menulis {q}.",
+                "Saya susun hasil kerjanya ke {q}.",
+                "Saya siapkan {q} sekarang.",
+            ],
+            "file_str_replace": [
+                "Saya sedang menyunting {q}.",
+                "Saya perbarui sebagian isi {q}.",
+                "Saya revisi sedikit bagian dari {q}.",
+            ],
+            "file_read": [
+                "Saya sedang membaca {q}.",
+                "Saya periksa dulu isi {q}.",
+                "Saya buka {q} untuk melihat isinya.",
+            ],
+            "shell_exec": [
+                "Saya menjalankan `{q}`.",
+                "Saya eksekusi `{q}` di terminal.",
+                "Menjalankan `{q}` sekarang.",
+            ],
+            "image_search_web": [
+                "Saya mencari gambar terkait \"{q}\".",
+                "Saya cari dulu gambar pendukung untuk \"{q}\".",
+                "Mencari visual untuk \"{q}\".",
+            ],
+            "image_download": [
+                "Saya mengunduh gambarnya terlebih dahulu.",
+                "Saya simpan dulu gambar yang dipilih.",
+                "Mengunduh gambarnya sekarang.",
+            ],
         },
     }
 
@@ -141,8 +228,12 @@ class ExecutionAgent(BaseAgent):
         Narrates the CURRENT kind of work (search → browse → read → write →
         shell…), throttled to at most one line per
         _TOOL_NARRATION_MIN_INTERVAL seconds so rapid tool bursts stay quiet.
-        Shell commands are the exception: each DISTINCT command gets its own
-        line (that is what the user actually watches), still throttled.
+        Exceptions: each DISTINCT shell command gets its own line (that is
+        what the user actually watches), and each DISTINCT site navigated to
+        gets its own line ("membuka wikipedia…" then "lanjut ke transfermarkt…"
+        reads naturally), still throttled.
+        Template variants rotate per function so consecutive steps never
+        repeat the same phrasing.
         Independent of message_notify_user — the chat stream is never silent
         while the agent works.
         """
@@ -154,10 +245,14 @@ class ExecutionAgent(BaseAgent):
         )
         if fn not in table:
             return None
-        # Dedup key: shell commands dedupe per-command, everything else per
-        # kind of work — one "Membuka wikipedia.org" is enough per step.
+        # Dedup key: shell commands dedupe per-command, navigation dedupes
+        # per-site (a new site is a newsworthy action), everything else per
+        # kind of work — one "membuka wikipedia.org" is enough per step.
         arg = self._narration_arg(event) or ""
-        dedup_key = f"{fn}:{arg}" if fn == "shell_exec" else fn
+        if fn in ("shell_exec", "browser_navigate"):
+            dedup_key = f"{fn}:{arg}"
+        else:
+            dedup_key = fn
         # Already narrated this exact line of work in this step — stay quiet.
         if dedup_key in self._step_narrated_functions:
             return None
@@ -171,7 +266,12 @@ class ExecutionAgent(BaseAgent):
         self._step_narrated_functions.add(dedup_key)
         self._last_narrated_function = fn
         self._last_tool_narration_ts = now
-        return table[fn].format(q=arg)
+        # Rotate variants so the stream never repeats itself verbatim.
+        variants = table[fn]
+        count = self._narration_variants_used.get(fn, 0)
+        self._narration_variants_used[fn] = count + 1
+        template = variants[count % len(variants)]
+        return template.format(q=arg)
 
     @staticmethod
     def _normalize_narration(text: str) -> str:
@@ -672,12 +772,17 @@ class ExecutionAgent(BaseAgent):
             if not filename.endswith(".md"):
                 filename += ".md"
 
+            # Write into the USER's isolated home (user_home on
+            # UserScopedSandbox), NOT a hard-coded /home/runner — files
+            # outside the user home cannot be synced back to storage, so the
+            # summary .md would silently never reach the user (observed:
+            # file_write "succeeded" per log, file_download 404 afterwards).
             sandbox_home = getattr(
-                file_toolkit.sandbox, "_sandbox_home", "/home/runner"
+                file_toolkit.sandbox, "user_home", "/home/runner"
             )
             sandbox_path = f"{sandbox_home}/{filename}"
 
-            await file_toolkit.sandbox.file_write(
+            write_result = await file_toolkit.sandbox.file_write(
                 file=sandbox_path,
                 content=summary_text,
                 append=False,
@@ -685,6 +790,13 @@ class ExecutionAgent(BaseAgent):
                 trailing_newline=True,
                 sudo=False,
             )
+            if not (write_result and getattr(write_result, "success", False)):
+                logger.warning(
+                    "Summary .md write FAILED at %s: %s",
+                    sandbox_path,
+                    getattr(write_result, "message", None) or "unknown error",
+                )
+                return []
             logger.info("Research summary .md saved: %s", sandbox_path)
             return [FileInfo(file_path=sandbox_path)]
 

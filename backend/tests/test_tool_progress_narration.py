@@ -6,6 +6,8 @@
 2. Repeated calls of the SAME kind within a step stay quiet (no spam).
 3. Rapid different-kind bursts are throttled by the minimum interval.
 4. Narration text contains no emojis and no raw tool names.
+5. Template variants rotate so consecutive narrations never repeat verbatim.
+6. Navigation narrates per DISTINCT site (new site → new line).
 """
 
 import pytest
@@ -23,6 +25,7 @@ def make_executor() -> ExecutionAgent:
     agent._last_narrated_function = None
     agent._last_tool_narration_ts = 0.0
     agent._step_narrated_functions = set()
+    agent._narration_variants_used = {}
     return agent
 
 
@@ -40,7 +43,7 @@ def test_first_tool_of_each_kind_narrates_with_is_progress():
     agent = make_executor()
     ev = tool_event("info_search_web", tool_name="search", query="Persib Bandung")
     text = agent._tool_progress_narration(ev)
-    assert text == 'Mencari di web: "Persib Bandung"'
+    assert text == 'Saya sedang mencari informasi tentang "Persib Bandung" di web.'
     # is_progress is set at the emission site — verify the marker here so the
     # frontend timeline grouping stays in sync with the backend contract.
     msg = MessageEvent(role="assistant", message=text, is_progress=True)
@@ -52,9 +55,22 @@ def test_same_kind_repeats_stay_quiet():
     first = agent._tool_progress_narration(
         tool_event("browser_view")
     )
-    assert first == "Membaca isi halaman"
+    assert first == "Saya sedang membaca isi halamannya untuk mengambil poin-poin penting."
     second = agent._tool_progress_narration(tool_event("browser_view"))
     assert second is None
+
+
+def test_narration_carries_purpose_not_bare_action():
+    """The narration must explain WHY (purpose-bearing), not just the action —
+    "Saya sedang membuka X untuk mencari informasi yang dibutuhkan", never a
+    bare "Membuka X"."""
+    agent = make_executor()
+    text = agent._tool_progress_narration(
+        tool_event("browser_navigate", url="https://id.wikipedia.org/wiki/Persib_Bandung")
+    )
+    assert "id.wikipedia.org" in text
+    assert text.startswith("Saya ")
+    assert "untuk" in text  # purpose clause present
 
 
 def test_navigate_narration_shows_domain_only():
@@ -62,7 +78,44 @@ def test_navigate_narration_shows_domain_only():
     text = agent._tool_progress_narration(
         tool_event("browser_navigate", url="https://id.wikipedia.org/wiki/Persib_Bandung")
     )
-    assert text == "Membuka id.wikipedia.org"
+    assert text == "Saya sedang membuka id.wikipedia.org untuk mencari informasi yang dibutuhkan."
+    # Full URL must not leak — only the host.
+    assert "https://" not in text
+
+
+def test_navigate_new_site_narrates_again_same_site_stays_quiet():
+    """Navigation dedups per DISTINCT site: a second site is newsworthy, a
+    re-navigation to the same site is not."""
+    agent = make_executor()
+    first = agent._tool_progress_narration(
+        tool_event("browser_navigate", url="https://en.wikipedia.org/wiki/X")
+    )
+    assert first is not None
+    agent._last_tool_narration_ts = 0.0  # reset throttle for the test
+    same_again = agent._tool_progress_narration(
+        tool_event("browser_navigate", url="https://en.wikipedia.org/wiki/X")
+    )
+    assert same_again is None  # same site → quiet
+    agent._last_tool_narration_ts = 0.0
+    other = agent._tool_progress_narration(
+        tool_event("browser_navigate", url="https://www.transfermarkt.us/verein/14105")
+    )
+    assert other is not None and other != first
+
+
+def test_variant_rotation_between_narrations():
+    """Consecutive narrations of the same function must rotate templates so
+    the stream never repeats itself verbatim (variant 0 → variant 1)."""
+    agent = make_executor()
+    first = agent._tool_progress_narration(tool_event("browser_view"))
+    # Simulate a new step: per-step dedup resets, rotation counter persists.
+    agent._step_narrated_functions = set()
+    agent._last_tool_narration_ts = 0.0
+    second = agent._tool_progress_narration(tool_event("browser_view"))
+    assert first is not None and second is not None
+    assert first != second
+    assert first == "Saya sedang membaca isi halamannya untuk mengambil poin-poin penting."
+    assert second == "Saya baca dulu isinya supaya detail yang dibutuhkan tidak terlewat."
 
 
 def test_rapid_different_kinds_are_throttled():
@@ -81,7 +134,7 @@ def test_narrations_have_no_emoji_and_no_tool_names():
     text = agent._tool_progress_narration(
         tool_event("file_write", tool_name="file", file="/home/runner/report.md")
     )
-    assert text == "Writing report.md"
+    assert text == "I'm writing report.md."
     for ch in text:
         # Emoji live outside the Basic Multilingual Plane / symbol blocks.
         assert not (ord(ch) > 0x2000 and ord(ch) not in (0x2014, 0x2026)), f"unexpected symbol: {ch!r}"
@@ -98,14 +151,15 @@ def test_shell_narration_shows_the_actual_command():
                    exec_dir="/home/runner/users/x",
                    command="cat > index.html << 'EOF'\n<!DOCTYPE html>\nEOF")
     )
-    assert text == "Menjalankan `cat > index.html << 'EOF'`"
-    # A different command still narrates (per-command dedup)…
+    assert text == "Saya menjalankan `cat > index.html << 'EOF'`."
+    # A different command still narrates (per-command dedup) — with the
+    # ROTATED variant, since shell_exec was already narrated once above.
     agent._last_tool_narration_ts = 0.0  # reset throttle for the test
     text2 = agent._tool_progress_narration(
         tool_event("shell_exec", tool_name="shell", id="1",
                    exec_dir="/home/runner/users/x", command="ls -la")
     )
-    assert text2 == "Menjalankan `ls -la`"
+    assert text2 == "Saya eksekusi `ls -la` di terminal."
     # …the same command again stays quiet.
     agent._last_tool_narration_ts = 0.0
     assert agent._tool_progress_narration(
@@ -121,5 +175,5 @@ def test_long_commands_are_truncated():
         tool_event("shell_exec", tool_name="shell", id="1",
                    exec_dir="/d", command=long_cmd)
     )
-    assert text.startswith("Menjalankan `python3 xxx")
-    assert len(text) <= len("Menjalankan ` ") + 48 + 2  # template + 48-char cmd + ellipsis/backtick
+    assert text.startswith("Saya menjalankan `python3 xxx")
+    assert len(text) <= len("Saya menjalankan ` ") + 48 + 2  # template + 48-char cmd + ellipsis/backtick
