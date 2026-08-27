@@ -61,7 +61,7 @@ class AgentDomainService:
         logger.info("All agents closed successfully")
 
     async def warmup_sandbox(self, session_id: str) -> None:
-        """Warm up the Replit sandbox eagerly in the background right after
+        """Warm up the sandbox eagerly in the background right after
         session creation so the first chat message is not blocked by the
         sandbox readiness check.  Uses a per-session lock to avoid racing
         with _create_task."""
@@ -80,9 +80,13 @@ class AgentDomainService:
                 logger.info("[Warmup] Sandbox %s created for session %s — running ensure_sandbox…", sandbox.id, session_id)
                 await sandbox.ensure_sandbox()
                 logger.info("[Warmup] Sandbox %s fully ready for session %s", sandbox.id, session_id)
-                # Create user-scoped home directory for this user
-                user_sandbox = UserScopedSandbox(sandbox, session.user_id)
-                await user_sandbox.setup_user_home()
+                # Shared sandboxes (Replit) get per-user directory isolation;
+                # dedicated sandboxes (E2B) are already fully isolated.
+                if getattr(sandbox, "shared", False):
+                    user_sandbox = UserScopedSandbox(sandbox, session.user_id)
+                    await user_sandbox.setup_user_home()
+                elif hasattr(sandbox, "setup_user_home"):
+                    await sandbox.setup_user_home()
                 # Pre-install all common packages in the background so the
                 # agent never wastes task time on pip/apt installs.
                 if hasattr(sandbox, "warmup_packages"):
@@ -113,11 +117,17 @@ class AgentDomainService:
                 await self._session_repository.save(session)
                 await sandbox.ensure_sandbox()
 
-            # Wrap the shared singleton with per-user filesystem isolation.
-            # Each user operates in /home/runner/users/{user_id}/ so their
-            # files, scripts, and uploads never overlap with other users.
-            user_sandbox = UserScopedSandbox(sandbox, session.user_id)
-            await user_sandbox.setup_user_home()
+            # Shared sandboxes (Replit singleton) are wrapped with per-user
+            # filesystem isolation: each user operates in
+            # /home/runner/users/{user_id}/ with hard path validation so files,
+            # scripts, and uploads never overlap with other users.
+            # Dedicated sandboxes (E2B microVM) are already fully isolated
+            # per user — use them directly.
+            if getattr(sandbox, "shared", False):
+                sandbox = UserScopedSandbox(sandbox, session.user_id)
+                await sandbox.setup_user_home()
+            elif hasattr(sandbox, "setup_user_home"):
+                await sandbox.setup_user_home()
 
             browser = await sandbox.get_browser()
             if not browser:
@@ -130,7 +140,7 @@ class AgentDomainService:
                 session_id=session.id,
                 agent_id=session.agent_id,
                 user_id=session.user_id,
-                sandbox=user_sandbox,
+                sandbox=sandbox,
                 browser=browser,
                 file_storage=self._file_storage,
                 search_engine=self._search_engine,

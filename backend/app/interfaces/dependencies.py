@@ -19,7 +19,7 @@ from app.application.services.email_service import EmailService
 from app.infrastructure.external.cache import get_cache
 
 # Import all required dependencies for agent service
-from app.infrastructure.external.sandbox.replit_sandbox import ReplitSandbox
+from app.infrastructure.external.sandbox.sandbox_factory import HybridSandboxFactory
 from app.infrastructure.external.task.redis_task import RedisStreamTask
 from app.infrastructure.repositories.mongo_agent_repository import MongoAgentRepository
 from app.infrastructure.repositories.mongo_session_repository import MongoSessionRepository
@@ -45,7 +45,9 @@ def get_agent_service() -> AgentService:
     # Create all dependencies
     agent_repository = MongoAgentRepository()
     session_repository = MongoSessionRepository()
-    sandbox_cls = ReplitSandbox
+    # Hybrid provider: E2B per-user microVM when configured, automatic
+    # fallback to the shared Replit-local sandbox (never crashes sessions).
+    sandbox_cls = HybridSandboxFactory
     task_cls = RedisStreamTask
     file_storage = get_file_storage()
     search_engine = get_search_engine()

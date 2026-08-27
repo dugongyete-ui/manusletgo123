@@ -26,7 +26,14 @@ class ReplitSandbox(Sandbox):
 
     This is a singleton: create() and get() both return the same global instance.
     There are no remote tunnels — all URLs point to localhost.
+
+    `shared = True` marks this sandbox as a single shared environment for all
+    users — the domain service wraps it with UserScopedSandbox (path-validated
+    isolation) before handing it to the agent. E2B sandboxes (shared = False)
+    are already per-user isolated and skip the wrapper.
     """
+
+    shared = True
 
     _instance: Optional["ReplitSandbox"] = None
     _instance_lock: asyncio.Lock = asyncio.Lock()

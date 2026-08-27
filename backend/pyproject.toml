@@ -28,6 +28,7 @@ dependencies = [
     "openai>=2.8.0",
     # ── Sandbox / browser / search ───────────────────────────────────────────
     "browser-use>=0.12.1",
+    "e2b>=2.0.0",
     "playwright>=1.42.0",
     "psutil>=5.9.0",
     "tavily-python>=0.5.0",

@@ -68,6 +68,18 @@ class Settings(BaseSettings):
     # /home/runner cannot be created) can override it via USER_HOME_ROOT.
     user_home_root: str = "/home/runner/users"
 
+    # ── Sandbox provider selection ─────────────────────────────────────────
+    # "auto"    → prefer E2B (per-user isolated cloud sandbox), fall back to
+    #             the shared Replit-local sandbox on any E2B failure/quota.
+    # "e2b"     → same as auto (fallback always keeps the app alive).
+    # "replit"  → always use the shared local sandbox (E2B disabled).
+    sandbox_provider: str = "auto"
+    # E2B API key (https://e2b.dev). When None, E2B is skipped entirely.
+    e2b_api_key: str | None = None
+    # Seconds before an idle E2B sandbox is paused (paused sandboxes keep
+    # their filesystem and are resumed automatically on the next turn).
+    e2b_sandbox_timeout: int = 3600
+
     # Vision model configuration (optional, for browser screenshot analysis)
     vision_model_name: str | None = None
     vision_model_provider: str | None = None
