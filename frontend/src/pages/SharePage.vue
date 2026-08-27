@@ -29,9 +29,15 @@
       </header>
       <div class="mx-auto w-full max-w-full sm:max-w-[768px] sm:min-w-[390px] flex flex-col flex-1">
         <div class="flex flex-col w-full gap-[12px] pb-[80px] pt-[12px] flex-1 overflow-y-auto">
-          <ChatMessage v-for="(message, index) in messages" :key="index" :message="message"
-            :hideHeader="isConsecutiveAssistant(messages, index)"
-            @toolClick="handleToolClick" />
+          <!-- Unified step timeline (SYNCED with production ChatPage): consecutive
+               step messages plus their progress narrations render as ONE connected
+               block with a continuous rail — not one detached block per step. -->
+          <template v-for="group in messageGroups" :key="group.startIndex">
+            <StepTimeline v-if="group.kind === 'timeline'" :messages="group.messages"
+              @toolClick="handleToolClick" />
+            <ChatMessage v-else :message="group.messages[0]" :hideHeader="isGroupHideHeader(group)"
+              @toolClick="handleToolClick" />
+          </template>
 
           <!-- Loading indicator -->
           <LoadingIndicator v-if="isLoading" :text="$t('Thinking')" />
@@ -96,8 +102,9 @@ import { ref, onMounted, onUnmounted, watch, nextTick, reactive, toRefs, compute
 import { useRouter } from 'vue-router';
 import { useI18n } from 'vue-i18n';
 import ChatMessage from '../components/ChatMessage.vue';
+import StepTimeline from '../components/StepTimeline.vue';
 import * as agentApi from '../api/agent';
-import { Message, MessageContent, ToolContent, StepContent, AttachmentsContent, isConsecutiveAssistant } from '../types/message';
+import { Message, MessageContent, ToolContent, StepContent, AttachmentsContent } from '../types/message';
 import {
   StepEventData,
   ToolEventData,
@@ -198,6 +205,69 @@ watch(messages, async () => {
 
 
 
+// ── Message grouping (SYNCED with production ChatPage) ─────────────────────
+// Manus-style: ONE task run = ONE connected timeline. From the first step
+// message, every mid-task element — subsequent steps, progress narrations
+// (is_progress), the model's own inline narration text — renders INSIDE the
+// timeline, beside the continuous rail. Only these break the timeline back
+// into standalone chat bubbles:
+//   • the final summary (is_final)      • agent questions (is_question)
+//   • user / error / attachment messages
+// The ack (before the first step) naturally stays standalone.
+interface MessageGroup {
+  kind: 'single' | 'timeline';
+  messages: Message[];
+  startIndex: number;
+}
+const messageGroups = computed<MessageGroup[]>(() => {
+  const groups: MessageGroup[] = [];
+  const msgs = messages.value;
+  let timeline: MessageGroup | null = null;
+  for (let i = 0; i < msgs.length; i++) {
+    const m = msgs[i];
+    if (m.type === 'step') {
+      if (timeline) {
+        timeline.messages.push(m);
+      } else {
+        timeline = { kind: 'timeline', messages: [m], startIndex: i };
+        groups.push(timeline);
+      }
+      continue;
+    }
+    if (m.type === 'assistant') {
+      const mc = m.content as MessageContent;
+      if (mc.is_final || mc.is_question) {
+        // Summary / question — standalone, ends the timeline.
+        groups.push({ kind: 'single', messages: [m], startIndex: i });
+        timeline = null;
+      } else if (timeline) {
+        // Mid-task narration → inside the timeline, beside the rail.
+        timeline.messages.push(m);
+      } else {
+        // Ack / pre-plan text — standalone (no timeline started yet).
+        groups.push({ kind: 'single', messages: [m], startIndex: i });
+      }
+      continue;
+    }
+    // user / tool / attachments — standalone, timeline ends.
+    groups.push({ kind: 'single', messages: [m], startIndex: i });
+    timeline = null;
+  }
+  return groups;
+});
+
+// Consecutive-assistant header suppression, evaluated on the underlying
+// message array (groups hide the grouping from the check).
+const isGroupHideHeader = (group: MessageGroup): boolean => {
+  if (group.kind !== 'single') return false;
+  const idx = group.startIndex;
+  if (idx <= 0) return false;
+  const isAst = (m: Message) =>
+    m.type === 'assistant' ||
+    (m.type === 'attachments' && (m.content as AttachmentsContent).role === 'assistant');
+  return isAst(messages.value[idx]) && isAst(messages.value[idx - 1]);
+};
+
 const getLastStep = (): StepContent | undefined => {
   return messages.value.filter(message => message.type === 'step').pop()?.content as StepContent;
 }
@@ -223,6 +293,25 @@ const handleMessageEvent = (messageData: MessageEventData) => {
 
 // Handle tool event
 const handleToolEvent = (toolData: ToolEventData) => {
+  // Message-tool events (message_notify_user) are progress narrations, not
+  // tool pills: render them as narration text INSIDE the unified timeline
+  // (beside the rail) — SYNCED with production ChatPage. The CALLED event
+  // carries the same text and is skipped to avoid duplicates.
+  if (toolData.name === 'message') {
+    const text = (toolData.args as any)?.text
+    if (toolData.status === 'calling' && text) {
+      messages.value.push({
+        type: 'assistant',
+        content: {
+          content: text,
+          timestamp: toolData.timestamp,
+          is_progress: true,
+        } as MessageContent,
+      })
+    }
+    return
+  }
+
   const lastStep = getLastStep();
   let toolContent: ToolContent = {
     ...toolData
@@ -230,7 +319,10 @@ const handleToolEvent = (toolData: ToolEventData) => {
   if (lastTool.value && lastTool.value.tool_call_id === toolContent.tool_call_id) {
     Object.assign(lastTool.value, toolContent);
   } else {
-    if (lastStep?.status === 'running') {
+    if (lastStep) {
+      // Attach to the last step EVEN WHEN COMPLETED — SYNCED with ChatPage.
+      // Tools arriving after a step's final JSON still belong inside the
+      // timeline; detached tool messages would break the continuous rail.
       lastStep.tools.push(toolContent);
     } else {
       messages.value.push({

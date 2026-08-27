@@ -466,7 +466,11 @@ const handleToolEvent = (toolData: ToolEventData) => {
   if (lastTool.value && lastTool.value.tool_call_id === toolContent.tool_call_id) {
     Object.assign(lastTool.value, toolContent);
   } else {
-    if (lastStep?.status === 'running') {
+    if (lastStep) {
+      // Attach to the last step EVEN WHEN COMPLETED — tools that arrive after
+      // a step's final JSON (late file writes, delivery syncs fired at step
+      // completion) still belong to that step's work. Rendering them as
+      // detached tool messages would break the continuous timeline rail.
       lastStep.tools.push(toolContent);
     } else {
       messages.value.push({
