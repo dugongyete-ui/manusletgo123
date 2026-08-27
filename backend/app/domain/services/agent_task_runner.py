@@ -521,6 +521,10 @@ class AgentTaskRunner(TaskRunner):
     async def run(self, task: Task) -> None:
         """Process agent's message queue and run the agent's flow"""
         self._active_task = task
+        # True when the run ended with a WaitEvent (agent asked the user a
+        # question) — in that case the sandbox must stay warm for the answer,
+        # so the post-run quota-saving pause is skipped.
+        waited_for_user = False
         try:
             logger.info(f"Agent {self._agent_id} message processing task started")
 
@@ -634,6 +638,7 @@ class AgentTaskRunner(TaskRunner):
                         await self._session_repository.increment_unread_message_count(self._session_id)
                     elif isinstance(event, WaitEvent):
                         await self._session_repository.update_status(self._session_id, SessionStatus.WAITING)
+                        waited_for_user = True
                         return
                     if not await task.input_stream.is_empty():
                         break
@@ -657,9 +662,42 @@ class AgentTaskRunner(TaskRunner):
             await self._put_and_add_event(task, ErrorEvent(error=_friendly_task_error(e)))
             await self._session_repository.update_status(self._session_id, SessionStatus.COMPLETED)
         finally:
+            # ── E2B quota saver ────────────────────────────────────────────
+            # The run has fully finished: the final summary was delivered and
+            # there are no more queued user messages. Pause the E2B microVM so
+            # it stops burning compute quota while idle — files and processes
+            # survive (freeze/thaw) and the next message auto-resumes it in
+            # seconds. Skipped while the agent waits for a user answer, and
+            # silently skipped for sandboxes without pause() (shared Replit).
+            if not waited_for_user:
+                await self._pause_sandbox_after_run()
             # Never leave a stale Task reference behind — a notice fired after
             # run() finished must not write into a dead output stream.
             self._active_task = None
+
+    async def _pause_sandbox_after_run(self) -> None:
+        """Pause the session sandbox after a finished run to save E2B quota.
+
+        Duck-typed: only sandboxes exposing an async ``pause()`` (E2B) are
+        paused. The shared Replit sandbox has no pause() and keeps running —
+        pausing it would break every other user on the same container.
+        Failures are logged, never raised: a quota-saving optimisation must
+        not be able to fail a task that already succeeded.
+        """
+        pause = getattr(self._sandbox, "pause", None)
+        if not callable(pause):
+            return
+        try:
+            paused = await pause()
+            if paused:
+                logger.info(
+                    f"Agent {self._agent_id} run finished — sandbox paused to "
+                    "save E2B quota (auto-resumes on the next message)"
+                )
+        except Exception as exc:
+            logger.warning(
+                f"Agent {self._agent_id} post-run sandbox pause failed: {exc}"
+            )
 
     async def _run_flow(self, message: Message, sandbox_task=None, mcp_task=None) -> AsyncGenerator[BaseEvent, None]:
         """Process a single message through the agent's flow and yield events.

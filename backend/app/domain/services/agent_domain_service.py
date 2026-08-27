@@ -91,6 +91,17 @@ class AgentDomainService:
                 # agent never wastes task time on pip/apt installs.
                 if hasattr(sandbox, "warmup_packages"):
                     asyncio.ensure_future(sandbox.warmup_packages())
+                # E2B quota saver: pause the freshly warmed VM immediately.
+                # The (expensive) first-boot install already happened in the
+                # background, and the first message auto-resumes the paused VM
+                # in seconds — so a session that sits idle (or is abandoned
+                # without any message) burns no compute quota.
+                pause = getattr(sandbox, "pause", None)
+                if callable(pause):
+                    try:
+                        await pause()
+                    except Exception as e:
+                        logger.warning("[Warmup] post-warmup pause failed for session %s: %s", session_id, e)
             except Exception as e:
                 logger.warning("[Warmup] Background sandbox warmup failed for session %s: %s", session_id, e)
 

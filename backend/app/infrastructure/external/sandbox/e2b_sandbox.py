@@ -25,13 +25,21 @@ Key engineering notes (all verified empirically against e2b SDK 2.x):
    /json/version through the proxy ourselves and re-bind the returned path to
    the public `wss://{port-host}` URL before handing it to playwright.
 
-3. Pause/resume — an idle sandbox is paused after `e2b_sandbox_timeout`
-   seconds. Disk state (apt packages, files) survives; processes and kernel
-   sysctls do NOT. `ensure_sandbox()` is therefore a cheap idempotent
-   bootstrap that re-applies the sysctl, re-launches nginx + Chromium and only
-   apt-installs once per sandbox lifetime (flag file on disk).
+3. Pause/resume — a paused sandbox stops consuming compute quota. Empirically
+   pause behaves like a freeze/thaw: disk AND the process tree (Chromium, Xvfb,
+   x11vnc, websockify) survive. `ensure_sandbox()` is still an idempotent
+   bootstrap that re-applies the sysctl, verifies every service and relaunches
+   whatever is missing — so both freeze-style and kill-style pauses are safe.
+   The task runner pauses the VM after the final summary (quota saver) and the
+   next message auto-resumes via get() → AsyncSandbox.connect().
 
-4. Fallback contract — every public method may raise; the
+4. Live view / takeover — GUI Chromium renders into an Xvfb display; x11vnc
+   shares that display and websockify bridges RFB to WebSocket on port 6080.
+   `vnc_url` returns the E2B-proxied wss URL; the backend VNC websocket pipes
+   it to the noVNC frontend, so the mouse-icon takeover works exactly like on
+   Replit. Verified live at ~290/478 MB RAM with all services running.
+
+5. Fallback contract — every public method may raise; the
    HybridSandboxFactory catches failures (quota/auth/network) and transparently
    falls back to the shared Replit sandbox so user tasks never crash.
 """
@@ -55,6 +63,9 @@ logger = logging.getLogger(__name__)
 # Internal ports inside the E2B VM
 _CHROME_DEBUG_PORT = 9222
 _CDP_PROXY_PORT = 9223  # nginx Host-rewrite proxy → chrome
+_VNC_RFB_PORT = 5900   # x11vnc RFB port (local only)
+_VNC_WS_PORT = 6080    # websockify — VNC over WebSocket, exposed via E2B proxy
+_X_DISPLAY = ":99"     # Xvfb virtual display for GUI Chromium + VNC
 
 _SETUP_FLAG = "/home/user/.dzeck_env_ready"
 
@@ -84,6 +95,11 @@ class E2BSandbox:
     """
 
     shared = False
+
+    # Which execution provider this sandbox runs on — drives the provider-
+    # conditional system prompt ("e2b" vs "replit") so the agent is always
+    # told the truth about its environment (OS, user, paths, tools).
+    provider = "e2b"
 
     # Cache wrappers by raw sandbox id so repeated get() calls reuse the same
     # shell-session bookkeeping within a backend process.
@@ -152,6 +168,25 @@ class E2BSandbox:
         self._registry.pop(self._raw_id, None)
         return True
 
+    async def pause(self) -> bool:
+        """Pause the microVM so it stops consuming E2B compute quota.
+
+        Empirically (verified live): pause acts like a freeze/thaw — the full
+        process tree (Chromium, Xvfb, x11vnc, websockify) and every file on
+        disk survive. The next E2BSandbox.get() reconnects, which auto-resumes
+        the VM in a few seconds. The wrapper is dropped from the registry so
+        the reconnect builds a fresh one instead of touching a stale handle.
+        """
+        try:
+            await self._sbx.pause()
+        except Exception as exc:
+            logger.warning("E2BSandbox.pause(%s) failed: %s", self.id, exc)
+            return False
+        self._registry.pop(self._raw_id, None)
+        self._bootstrapped = False
+        logger.info("E2BSandbox paused (quota saver): %s", self.id)
+        return True
+
     # ------------------------------------------------------------------
     # Idempotent bootstrap (safe after every pause/resume)
     # ------------------------------------------------------------------
@@ -198,24 +233,44 @@ class E2BSandbox:
         # 2. One-time package install (survives pause via disk flag).
         flag = await self._cmd(f"test -f {_SETUP_FLAG} && echo YES || echo NO")
         if "YES" not in flag:
-            logger.info("E2B: installing chromium + nginx (first boot of %s)…", self.id)
+            logger.info(
+                "E2B: installing chromium + nginx + VNC stack (first boot of %s)…",
+                self.id,
+            )
             install = await self._cmd(
                 "sudo apt-get update -qq && sudo apt-get install -y -qq "
-                "chromium nginx-light zip unzip >/dev/null 2>&1; echo OK",
+                "chromium nginx-light zip unzip xvfb x11vnc websockify "
+                ">/dev/null 2>&1; echo OK",
                 timeout=420,
             )
             if "OK" not in install:
-                raise RuntimeError("apt install chromium/nginx failed")
+                raise RuntimeError("apt install chromium/nginx/vnc failed")
             await self._cmd(f"echo ready > {_SETUP_FLAG}")
 
-        # 3. Chromium up? (processes die on pause — relaunch when needed)
+        # 3. Xvfb virtual display up? (GUI Chromium renders into it and the
+        #    VNC server shares it — one display serves both CDP tools and the
+        #    live-view / takeover screen). Guard with `pgrep -x` so the check
+        #    never matches its own sh -c wrapper.
+        xvfb_up = await self._cmd("pgrep -x Xvfb >/dev/null && echo UP || echo DOWN")
+        if "UP" not in xvfb_up:
+            await self._cmd(
+                f"nohup Xvfb {_X_DISPLAY} -screen 0 1024x768x16 -nolisten tcp "
+                ">/tmp/xvfb.log 2>&1 & echo LAUNCHED"
+            )
+            await asyncio.sleep(1)
+
+        # 4. Chromium up? (relaunch when needed — processes may not survive
+        #    every pause edge case). GUI mode on the Xvfb display: the SAME
+        #    instance serves the agent's CDP tools, browser_view screenshots
+        #    AND the user's VNC takeover — verified live, RAM ≈ 290/478 MB.
         chrome_up = await self._cmd(
-            f"curl -s --max-time 3 http://127.0.0.1:{_CHROME_DEBUG_PORT}/json/version >/dev/null && echo UP || echo DOWN"
+            f"curl -sf --max-time 3 http://127.0.0.1:{_CHROME_DEBUG_PORT}/json/version >/dev/null && echo UP || echo DOWN"
         )
         if "UP" not in chrome_up:
             await self._cmd(
-                "nohup chromium --headless=new --no-sandbox --disable-gpu "
+                f"env DISPLAY={_X_DISPLAY} nohup chromium --no-sandbox --disable-gpu "
                 "--disable-dev-shm-usage --renderer-process-limit=4 "
+                "--window-size=1024,768 "
                 f"--remote-debugging-port={_CHROME_DEBUG_PORT} "
                 "--remote-debugging-address=127.0.0.1 --remote-allow-origins=* "
                 "--user-data-dir=/home/user/chrome-profile about:blank "
@@ -224,7 +279,7 @@ class E2BSandbox:
             # wait for CDP to answer (bounded)
             for _ in range(20):
                 up = await self._cmd(
-                    f"curl -s --max-time 2 http://127.0.0.1:{_CHROME_DEBUG_PORT}/json/version >/dev/null && echo UP || echo DOWN"
+                    f"curl -sf --max-time 2 http://127.0.0.1:{_CHROME_DEBUG_PORT}/json/version >/dev/null && echo UP || echo DOWN"
                 )
                 if "UP" in up:
                     break
@@ -232,9 +287,27 @@ class E2BSandbox:
             else:
                 raise RuntimeError("Chromium CDP did not come up inside E2B VM")
 
-        # 4. nginx Host-rewrite proxy up?
+        # 5. VNC server + WebSocket bridge up? (live view / user takeover)
+        x11vnc_up = await self._cmd("pgrep -x x11vnc >/dev/null && echo UP || echo DOWN")
+        if "UP" not in x11vnc_up:
+            await self._cmd(
+                f"nohup x11vnc -display {_X_DISPLAY} -rfbport {_VNC_RFB_PORT} "
+                "-nopw -shared -forever -quiet >/tmp/x11vnc.log 2>&1 & echo LAUNCHED"
+            )
+            await asyncio.sleep(1)
+        ws_up = await self._cmd(
+            f"ss -ltn | grep -q ':{_VNC_WS_PORT} ' && echo UP || echo DOWN"
+        )
+        if "UP" not in ws_up:
+            await self._cmd(
+                f"nohup websockify {_VNC_WS_PORT} localhost:{_VNC_RFB_PORT} "
+                ">/tmp/websockify.log 2>&1 & echo LAUNCHED"
+            )
+            await asyncio.sleep(1)
+
+        # 6. nginx Host-rewrite proxy up?
         proxy_up = await self._cmd(
-            f"curl -s --max-time 3 http://127.0.0.1:{_CDP_PROXY_PORT}/json/version >/dev/null && echo UP || echo DOWN"
+            f"curl -sf --max-time 3 http://127.0.0.1:{_CDP_PROXY_PORT}/json/version >/dev/null && echo UP || echo DOWN"
         )
         if "UP" not in proxy_up:
             conf = _NGINX_CDP_CONF.format(
@@ -248,7 +321,7 @@ class E2BSandbox:
             )
             for _ in range(10):
                 up = await self._cmd(
-                    f"curl -s --max-time 2 http://127.0.0.1:{_CDP_PROXY_PORT}/json/version >/dev/null && echo UP || echo DOWN"
+                    f"curl -sf --max-time 2 http://127.0.0.1:{_CDP_PROXY_PORT}/json/version >/dev/null && echo UP || echo DOWN"
                 )
                 if "UP" in up:
                     break
@@ -256,7 +329,7 @@ class E2BSandbox:
             else:
                 raise RuntimeError("nginx CDP proxy did not come up inside E2B VM")
 
-        # 5. Working dirs for the agent.
+        # 7. Working dirs for the agent.
         await self._cmd("mkdir -p /home/user/upload && chmod 700 /home/user")
 
         logger.info("E2B sandbox ready: %s", self.id)
@@ -753,6 +826,16 @@ class E2BSandbox:
 
     @property
     def vnc_url(self) -> str:
-        # E2B phase 1 runs headless Chromium — live VNC view is not available;
-        # the agent's browser_view screenshots still work via CDP.
-        return ""
+        """VNC-over-WebSocket URL for the live view / user takeover screen.
+
+        The VM runs x11vnc (sharing the Xvfb display that GUI Chromium renders
+        into) bridged to WebSocket by websockify on _VNC_WS_PORT. The backend
+        /sessions/{id}/vnc endpoint connects to this wss URL through the E2B
+        public proxy and pipes RFB bytes to the noVNC frontend. Verified live:
+        RFB 003.008 handshake + framebuffer survive pause/resume.
+        """
+        try:
+            host = self._sbx.get_host(_VNC_WS_PORT)
+            return f"wss://{host}"
+        except Exception:
+            return ""

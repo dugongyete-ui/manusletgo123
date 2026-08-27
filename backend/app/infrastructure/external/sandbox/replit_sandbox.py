@@ -35,6 +35,11 @@ class ReplitSandbox(Sandbox):
 
     shared = True
 
+    # Which execution provider this sandbox runs on — drives the provider-
+    # conditional system prompt ("replit" vs "e2b") so the agent is always
+    # told the truth about its environment (OS, user, paths, tools).
+    provider = "replit"
+
     _instance: Optional["ReplitSandbox"] = None
     _instance_lock: asyncio.Lock = asyncio.Lock()
 

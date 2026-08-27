@@ -9,16 +9,6 @@
         {{ fileName }}
       </div>
     </div>
-    <button
-      v-if="filePath"
-      @click="downloadFile"
-      :disabled="isDownloading"
-      class="flex items-center gap-1 px-2 py-1 rounded text-xs text-[var(--text-brand)] hover:bg-[var(--fill-tsp-white-main)] transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex-shrink-0"
-      :title="'Download ' + fileName"
-    >
-      <Download :size="14" />
-      <span>{{ isDownloading ? '...' : 'Download' }}</span>
-    </button>
   </div>
   <div class="flex-1 min-h-0 w-full overflow-y-auto">
     <div
@@ -66,7 +56,6 @@ import { ToolContent } from "@/types/message";
 import { viewFile } from "@/api/agent";
 import MonacoEditor from "@/components/ui/MonacoEditor.vue";
 import { useTheme } from "@/composables/useTheme";
-import { Download } from "lucide-vue-next";
 //import { showErrorToast } from "../utils/toast";
 //import { useI18n } from "vue-i18n";
 
@@ -89,29 +78,6 @@ const monacoTheme = computed(() => theme.value === 'dark' ? 'vs-dark' : 'vs');
 
 const fileContent = ref("");
 const refreshTimer = ref<ReturnType<typeof setInterval> | null>(null);
-const isDownloading = ref(false);
-
-const downloadFile = async () => {
-  if (!filePath.value || !props.sessionId) return;
-  isDownloading.value = true;
-  try {
-    const content = fileContent.value || (await viewFile(props.sessionId, filePath.value)).content;
-    const name = fileName.value || filePath.value.split("/").pop() || "file";
-    const blob = new Blob([content], { type: "text/plain;charset=utf-8" });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = name;
-    document.body.appendChild(a);
-    a.click();
-    document.body.removeChild(a);
-    URL.revokeObjectURL(url);
-  } catch (e) {
-    console.error("Failed to download file:", e);
-  } finally {
-    isDownloading.value = false;
-  }
-};
 
 const filePath = computed(() => {
   if (props.toolContent && props.toolContent.args.file) {

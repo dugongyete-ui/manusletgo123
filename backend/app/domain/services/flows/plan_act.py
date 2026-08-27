@@ -152,9 +152,16 @@ class PlanActFlow(BaseFlow):
         # Build a user-specific system prompt so the agent works inside
         # the correct isolated home directory (UserScopedSandbox provides
         # user_home / upload_dir; fall back to shared defaults otherwise).
+        # The environment description must match the sandbox provider that
+        # actually serves this session (E2B Debian microVM vs shared Replit
+        # Ubuntu container) — a mismatched prompt makes the agent emit
+        # commands and paths that cannot work.
         user_home = getattr(sandbox, 'user_home', '/home/runner')
         upload_dir = getattr(sandbox, 'upload_dir', '/home/runner/upload')
-        base_prompt = get_system_prompt(user_home=user_home, upload_dir=upload_dir)
+        environment = getattr(sandbox, 'provider', 'replit')
+        base_prompt = get_system_prompt(
+            user_home=user_home, upload_dir=upload_dir, environment=environment
+        )
 
         # Create planner and execution agents
         self.planner = PlannerAgent(

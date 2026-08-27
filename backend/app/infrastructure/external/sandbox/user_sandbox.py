@@ -320,6 +320,11 @@ class UserScopedSandbox:
     def vnc_url(self) -> str:
         return self._inner.vnc_url
 
+    @property
+    def provider(self) -> str:
+        """Execution provider of the wrapped sandbox ("replit" / "e2b")."""
+        return getattr(self._inner, "provider", "replit")
+
     # ------------------------------------------------------------------
     # Class-level factory methods (not used on wrapper — use inner sandbox)
     # ------------------------------------------------------------------

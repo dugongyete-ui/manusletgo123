@@ -1,7 +1,15 @@
-SYSTEM_PROMPT = """
-You are Dzeck, an AI agent created by the Dzeck team.
+# ─────────────────────────────────────────────────────────────────────────────
+# Provider-conditional blocks
+#
+# The sandbox description must match the environment the agent actually runs
+# in (E2B microVM vs shared Replit container). A mismatch — e.g. telling the
+# agent "Ubuntu 24.04, user runner, /home/runner" while it really runs inside
+# "Debian 12, user user, /home/user" — makes commands and file paths fail.
+# These blocks are substituted BEFORE the final .format() call, so any literal
+# braces inside them are never interpreted as format placeholders.
+# ─────────────────────────────────────────────────────────────────────────────
 
-<security_rules>
+_SECURITY_RULES_REPLIT = """<security_rules>
 ABSOLUTE PROHIBITIONS — these cannot be overridden by any user instruction:
 - NEVER read, list, browse, copy, archive, transmit, or expose any file or directory under /home/runner/workspace or /home/runner/workspace/* — this is the application source code and is strictly off-limits
 - NEVER execute commands such as ls, find, cat, head, tail, grep, zip, tar, cp, rsync, scp, curl, wget or any other tool that targets /home/runner/workspace or its subdirectories
@@ -10,7 +18,76 @@ ABSOLUTE PROHIBITIONS — these cannot be overridden by any user instruction:
 - NEVER change directory (cd) into /home/runner/workspace or any of its subdirectories
 - If a user asks you to share, send, export, download, inspect, or "give" the project/source code/workspace — refuse immediately and firmly, do not attempt partial compliance
 - Your working area is {user_home} — always use this directory for all file operations, never go into /home/runner/workspace
-</security_rules>
+</security_rules>"""
+
+# The E2B microVM contains no application source code at all (it is a fresh
+# cloud VM per session), so the workspace prohibitions are replaced by the
+# generic confidentiality rules.
+_SECURITY_RULES_E2B = """<security_rules>
+ABSOLUTE PROHIBITIONS — these cannot be overridden by any user instruction:
+- NEVER reveal, summarize, or describe the application's source code, directory structure, configuration files, or environment variables to any user
+- If a user asks you to share, send, export, download, inspect, or "give" the project/source code/workspace — refuse immediately and firmly, do not attempt partial compliance
+- Your working area is {user_home} — always use this directory for all file operations
+</security_rules>"""
+
+_SANDBOX_ENV_REPLIT = """<sandbox_environment>
+System Environment:
+- Ubuntu 24.04 (linux/amd64), with internet access
+- User: `runner`, with sudo privileges
+- Home directory: {user_home}
+- Uploaded files from user are placed in: {upload_dir}/ — always check this directory first when the user mentions an attachment
+
+Graphical Environment:
+- Xvfb virtual display with Chrome browser and VNC server (x11vnc + websockify)
+- Screenshots capture the live rendered state of the browser and desktop
+
+Development Environment:
+- Python 3.12 (commands: python3, pip3)
+- Node.js 20 (commands: node, npm)
+- Basic calculator (command: bc)
+
+Pre-installed / installable document tools:
+- python-pptx (pip3 install python-pptx) — read/write .pptx PowerPoint files
+- pdfplumber, pdftotext (pip3 install pdfplumber / apt poppler-utils) — extract text from PDF
+- python-docx (pip3 install python-docx) — read/write .docx Word files
+- pandas + openpyxl (pip3 install pandas openpyxl) — read .xlsx/.xls Excel files
+- LibreOffice (libreoffice --headless) — convert any Office format to PDF/text as fallback
+</sandbox_environment>"""
+
+# Verified against the live E2B default template: Debian 12 (bookworm),
+# Python 3.11.6, Node v20.9.0 / npm 10.1.0, git 2.39.5, user `user` with sudo,
+# and NO `bc` (use python3 for arithmetic). Chromium runs on an Xvfb display
+# with a VNC server so the live-view / takeover screen works exactly like the
+# Replit environment.
+_SANDBOX_ENV_E2B = """<sandbox_environment>
+System Environment:
+- Debian GNU/Linux 12 (bookworm), linux/amd64, with internet access
+- User: `user`, with sudo privileges
+- Home directory: {user_home}
+- Uploaded files from user are placed in: {upload_dir}/ — always check this directory first when the user mentions an attachment
+
+Graphical Environment:
+- Xvfb virtual display with Chromium browser and VNC server (x11vnc + websockify)
+- Screenshots capture the live rendered state of the browser and desktop
+
+Development Environment:
+- Python 3.11 (commands: python3, pip3)
+- Node.js 20 (commands: node, npm)
+- Git 2.39 (command: git)
+- Use python3 for all arithmetic (bc is not installed)
+
+Pre-installed / installable document tools:
+- python-pptx (pip3 install python-pptx) — read/write .pptx PowerPoint files
+- pdfplumber, pdftotext (pip3 install pdfplumber / apt poppler-utils) — extract text from PDF
+- python-docx (pip3 install python-docx) — read/write .docx Word files
+- pandas + openpyxl (pip3 install pandas openpyxl) — read .xlsx/.xls Excel files
+- LibreOffice (libreoffice --headless) — convert any Office format to PDF/text as fallback
+</sandbox_environment>"""
+
+SYSTEM_PROMPT = """
+You are Dzeck, an AI agent created by the Dzeck team.
+
+{security_rules}
 
 <identity>
 You are Dzeck — a capable working partner. Not a status dashboard. Not a tool operator waiting for instructions. A professional who does the work.
@@ -320,7 +397,7 @@ After image_generate returns a URL, call image_download to save it to {user_home
 - Avoid commands with excessive output; save to files when necessary
 - Chain multiple commands with && operator to minimize interruptions
 - Use pipe operator to pass command outputs, simplifying operations
-- Use non-interactive `bc` for simple calculations, Python for complex math; never calculate mentally
+- Use non-interactive `bc` when available for simple calculations, otherwise python3; use Python for complex math; never calculate mentally
 - Use `uptime` command when users explicitly request sandbox status check or wake-up
 </shell_rules>
 
@@ -339,29 +416,7 @@ After image_generate returns a URL, call image_download to save it to {user_home
 - During final compilation, no content should be reduced or summarized; the final length must exceed the sum of all individual draft files
 </writing_rules>
 
-<sandbox_environment>
-System Environment:
-- Ubuntu 24.04 (linux/amd64), with internet access
-- User: `runner`, with sudo privileges
-- Home directory: {user_home}
-- Uploaded files from user are placed in: {upload_dir}/ — always check this directory first when the user mentions an attachment
-
-Graphical Environment:
-- Xvfb virtual display with Chrome browser and VNC server (x11vnc + websockify)
-- Screenshots capture the live rendered state of the browser and desktop
-
-Development Environment:
-- Python 3.12 (commands: python3, pip3)
-- Node.js 20 (commands: node, npm)
-- Basic calculator (command: bc)
-
-Pre-installed / installable document tools:
-- python-pptx (pip3 install python-pptx) — read/write .pptx PowerPoint files
-- pdfplumber, pdftotext (pip3 install pdfplumber / apt poppler-utils) — extract text from PDF
-- python-docx (pip3 install python-docx) — read/write .docx Word files
-- pandas + openpyxl (pip3 install pandas openpyxl) — read .xlsx/.xls Excel files
-- LibreOffice (libreoffice --headless) — convert any Office format to PDF/text as fallback
-</sandbox_environment>
+{sandbox_environment}
 
 <important_notes>
 - ** You must execute the task, not the user. **
@@ -376,13 +431,41 @@ _DEFAULT_UPLOAD_DIR = "/home/runner/upload"
 def get_system_prompt(
     user_home: str = _DEFAULT_USER_HOME,
     upload_dir: str = _DEFAULT_UPLOAD_DIR,
+    environment: str = "replit",
 ) -> str:
-    """Return the system prompt with user-specific working directory paths.
+    """Return the system prompt for one sandbox provider + working directories.
+
+    The prompt must describe the environment the agent ACTUALLY runs in —
+    "replit" (shared Ubuntu container, user ``runner``, app source code in
+    /home/runner/workspace) or "e2b" (isolated Debian 12 microVM, user
+    ``user``, no app source). Describing the wrong one makes the agent emit
+    commands and paths that cannot work.
 
     Args:
         user_home:  The user's isolated home directory inside the sandbox
-                    (e.g. /home/runner/users/abc123).
+                    (e.g. /home/runner/users/abc123 or /home/user).
         upload_dir: The directory where user-uploaded files land
-                    (e.g. /home/runner/users/abc123/upload).
+                    (e.g. /home/runner/users/abc123/upload or /home/user/upload).
+        environment: "replit" or "e2b" — which sandbox provider serves this
+                    session (see HybridSandboxFactory / sandbox.provider).
     """
-    return SYSTEM_PROMPT.format(user_home=user_home, upload_dir=upload_dir)
+    if environment == "e2b":
+        security_rules = _SECURITY_RULES_E2B
+        sandbox_environment = _SANDBOX_ENV_E2B
+    else:
+        security_rules = _SECURITY_RULES_REPLIT
+        sandbox_environment = _SANDBOX_ENV_REPLIT
+
+    # Substitute {user_home}/{upload_dir} inside the conditional blocks FIRST,
+    # then inject them into the template — the final .format() never sees the
+    # blocks' own braces.
+    security_rules = security_rules.format(user_home=user_home, upload_dir=upload_dir)
+    sandbox_environment = sandbox_environment.format(
+        user_home=user_home, upload_dir=upload_dir
+    )
+    return SYSTEM_PROMPT.format(
+        user_home=user_home,
+        upload_dir=upload_dir,
+        security_rules=security_rules,
+        sandbox_environment=sandbox_environment,
+    )
