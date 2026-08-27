@@ -353,6 +353,11 @@ class ExecutionAgent(BaseAgent):
     # result (high salience, exactly where the model's attention sits) reliably
     # triggers narration, without the cost of a full correction retry.
     _NUDGE_AFTER_SILENT_ROUNDS = 2
+    # Ghost-success / plain-text correction rounds: after the initial model
+    # round, rerun the step up to this many times with an escalating mandatory
+    # tool-usage prompt. A round that STILL returns a fabricated completion
+    # after all corrections is marked FAILED — never a false checkmark.
+    _GHOST_MAX_CORRECTIONS = 2
     _NARRATION_NUDGE = (
         "\n\n[SYSTEM REQUIREMENT — NARRATION] Your last responses contained tool "
         "calls but NO message_notify_user call. The user is watching a silent "
@@ -419,7 +424,22 @@ class ExecutionAgent(BaseAgent):
     async def _handle_execution_events(
         self, step: Step, content
     ) -> AsyncGenerator[BaseEvent, None]:
+        # ── Ghost-success gate ─────────────────────────────────────────────
+        # Count REAL actions (tools that actually do work) this round. When the
+        # model returns a completion JSON with success=True but never called a
+        # real tool, the result is FABRICATED ("ghost success"): do NOT emit
+        # StepEvent(COMPLETED) — the step must not get a checkmark it did not
+        # earn. Instead flag the round so execute_step runs a correction round
+        # while the UI honestly keeps the step spinner.
+        self._round_needs_correction = None
+        real_actions = 0
         async for event in self.execute(content):
+            if (
+                isinstance(event, ToolEvent)
+                and event.status == ToolStatus.CALLING
+                and self._counts_as_real_action(event)
+            ):
+                real_actions += 1
             if isinstance(event, ErrorEvent):
                 # Tool lookup errors are handled by LLM retry (base.py appends a
                 # ToolMessage so the LLM can adapt). Do not fail the step here.
@@ -437,7 +457,10 @@ class ExecutionAgent(BaseAgent):
                     step.success = False
                     step.result = event.message or "No result returned."
                     step.error = "LLM returned a non-JSON response."
-                    yield StepEvent(status=StepStatus.COMPLETED, step=step)
+                    # Plain-text round: suppress the completed event so
+                    # execute_step can retry with a correction prompt — the
+                    # user should not see a failed chip that may still recover.
+                    self._round_needs_correction = "plain"
                     return
 
                 if isinstance(parsed_response, list):
@@ -447,6 +470,9 @@ class ExecutionAgent(BaseAgent):
                     )
                     step.success = True
                     step.result = json.dumps(parsed_response, ensure_ascii=False)
+                    if real_actions == 0:
+                        self._round_needs_correction = "ghost"
+                        return
                     yield StepEvent(status=StepStatus.COMPLETED, step=step)
                     return
 
@@ -462,6 +488,9 @@ class ExecutionAgent(BaseAgent):
                         if not isinstance(parsed_response, str)
                         else parsed_response
                     )
+                    if real_actions == 0:
+                        self._round_needs_correction = "ghost"
+                        return
                     yield StepEvent(status=StepStatus.COMPLETED, step=step)
                     return
 
@@ -474,6 +503,14 @@ class ExecutionAgent(BaseAgent):
                 )
 
                 step.attachments = normalize_attachment_paths(new_step.attachments)
+                if step.success and real_actions == 0:
+                    # success=True with zero real tools = fabricated result.
+                    logger.warning(
+                        "Ghost success: model reported success with no real tool "
+                        "calls (result=%.80s)", str(step.result)[:80],
+                    )
+                    self._round_needs_correction = "ghost"
+                    return
                 yield StepEvent(status=StepStatus.COMPLETED, step=step)
                 return
 
@@ -570,6 +607,41 @@ class ExecutionAgent(BaseAgent):
                         role="assistant", message=narration, is_progress=True
                     )
 
+    def _correction_prompt(self, reason: str, round_no: int) -> str:
+        """Escalating correction appended to the step prompt on retry rounds.
+
+        ``reason`` is either ``"ghost"`` (model fabricated success without
+        calling tools) or ``"plain"`` (model answered in plain text instead
+        of calling tools). The final round adds an explicit warning that a
+        repeat offense fails the step.
+        """
+        if reason == "ghost":
+            base = (
+                "\n\n[CORRECTION — MANDATORY]: Your previous response reported "
+                "this step as complete WITHOUT calling any tools. That result "
+                "was fabricated and has been DISCARDED. You MUST actually call "
+                "the required tools now (file, shell, browser, or search tools "
+                "as the step requires) to do the real work. Start by calling "
+                "message_notify_user to narrate your approach, then call the "
+                "tools one by one. Only after the tools have produced real "
+                "results may you return the final JSON result."
+            )
+        else:
+            base = (
+                "\n\n[CORRECTION — MANDATORY]: Your previous response was plain "
+                "text instead of tool calls. You MUST begin by calling "
+                "message_notify_user with your opening narration, then call the "
+                "required tools one by one. Do NOT write a text response — call "
+                "tools first. Only return the final JSON result after completing "
+                "all tool calls."
+            )
+        if round_no >= self._GHOST_MAX_CORRECTIONS:
+            base += (
+                " This is your FINAL attempt: if you return a result without "
+                "calling the tools, the step will be marked as FAILED."
+            )
+        return base
+
     async def execute_step(
         self, plan: Plan, step: Step, message: Message
     ) -> AsyncGenerator[BaseEvent, None]:
@@ -578,6 +650,7 @@ class ExecutionAgent(BaseAgent):
         self._step_narrated_functions = set()
         self._last_narrated_function = None
         self._silent_rounds = 0
+        self._round_needs_correction = None
         _lang = (getattr(plan, "language", None) or "").lower()
         self._narration_lang = "id" if _lang.startswith("id") or "indonesia" in _lang or "bahasa" in _lang else "en"
 
@@ -598,21 +671,24 @@ class ExecutionAgent(BaseAgent):
         content = vision_content if vision_content else prompt
         retry_text_only = False
 
-        # Track whether any real (non-message) tool was called.
-        # When the LLM skips all tool calls and fabricates a success JSON
-        # ("ghost success"), this stays False so we can retry.
-        real_tools_called = False
         # Track whether the LLM sent at least one user-visible narration.
         # If the step fails with no narration the user sees a silent failure.
         narration_sent = False
 
+        async def _run_round(round_content):
+            """Consume one model round, tracking narration along the way."""
+            nonlocal narration_sent
+            async for event in self._handle_execution_events(step, round_content):
+                if (
+                    isinstance(event, ToolEvent)
+                    and event.status == ToolStatus.CALLING
+                    and event.function_name == "message_notify_user"
+                ):
+                    narration_sent = True
+                yield event
+
         try:
-            async for event in self._handle_execution_events(step, content):
-                if isinstance(event, ToolEvent) and event.status == ToolStatus.CALLING:
-                    if self._counts_as_real_action(event):
-                        real_tools_called = True
-                    if event.function_name == "message_notify_user":
-                        narration_sent = True
+            async for event in _run_round(content):
                 yield event
         except Exception as e:
             error_str = str(e).lower()
@@ -635,104 +711,66 @@ class ExecutionAgent(BaseAgent):
 
         if retry_text_only:
             logger.info("Retrying execute_step without vision images")
-            real_tools_called = False
             narration_sent = False
-            async for event in self._handle_execution_events(step, prompt):
-                if isinstance(event, ToolEvent) and event.status == ToolStatus.CALLING:
-                    if event.tool_name != "message":
-                        real_tools_called = True
-                    if event.function_name == "message_notify_user":
-                        narration_sent = True
+            async for event in _run_round(prompt):
                 yield event
 
-        # ── Case 1: LLM returned plain text with no tool calls at all ─────────
-        # Detected when _parse_json returned None (non-JSON plain text).
-        _is_skipped_tools = (
-            not retry_text_only
-            and not step.success
-            and step.status == ExecutionStatus.COMPLETED
-            and step.error == "LLM returned a non-JSON response."
-        )
-        if _is_skipped_tools:
+        # ── Correction loop: ghost success / plain-text rounds ──────────────
+        # _handle_execution_events suppresses the completed event for rounds
+        # that ended in a fabricated completion ("ghost") or plain text
+        # ("plain") and flags them here. Rerun such rounds with an escalating
+        # mandatory tool-usage correction — the step keeps its RUNNING spinner
+        # in the UI the whole time (no false checkmark), and the tools of the
+        # correction round stream into the step's timeline where they belong.
+        for _round_no in range(1, self._GHOST_MAX_CORRECTIONS + 1):
+            _reason = getattr(self, "_round_needs_correction", None)
+            if _reason is None:
+                break
             logger.warning(
-                f"Step {step.id} completed with no tool calls (LLM returned plain "
-                "text). Retrying once with a correction prompt."
+                f"Step {step.id} round {_round_no}/{self._GHOST_MAX_CORRECTIONS} "
+                f"ended in a {_reason} response — rerunning with mandatory "
+                "tool usage."
             )
-            step.status = ExecutionStatus.RUNNING
-            step.result = None
-            step.error = None
-            step.success = False
-            real_tools_called = False
-            narration_sent = False
-
-            correction_content = (
-                prompt
-                + "\n\n[CORRECTION — MANDATORY]: Your previous response was plain text "
-                "instead of tool calls. You MUST begin by calling message_notify_user "
-                "with your opening narration, then call the required tools one by one. "
-                "Do NOT write a text response — call tools first. "
-                "Only return the final JSON result after completing all tool calls."
-            )
-            try:
-                async for event in self._handle_execution_events(
-                    step, correction_content
-                ):
-                    if isinstance(event, ToolEvent) and event.status == ToolStatus.CALLING:
-                        if self._counts_as_real_action(event):
-                            real_tools_called = True
-                        if event.function_name == "message_notify_user":
-                            narration_sent = True
-                    yield event
-            except Exception as retry_err:
-                logger.error(
-                    f"Retry of step {step.id} also raised: {retry_err}"
-                )
-
-        # ── Case 2: Ghost success ─────────────────────────────────────────────
-        # LLM returned valid JSON {"success": true} but never called any real
-        # tool. This happens when accumulated context causes the model to
-        # fabricate a completion instead of actually using tools.
-        _is_ghost_success = (
-            not retry_text_only
-            and not _is_skipped_tools
-            and step.success
-            and step.status == ExecutionStatus.COMPLETED
-            and not real_tools_called
-        )
-        if _is_ghost_success:
-            logger.warning(
-                f"Step {step.id} reported success but called no real tools "
-                "(ghost success — LLM fabricated result). Retrying once."
-            )
+            # The previous round never really finished: rewind the step so a
+            # later completion event reflects the REAL outcome only.
             step.status = ExecutionStatus.RUNNING
             step.result = None
             step.error = None
             step.success = False
             narration_sent = False
+            self._round_needs_correction = None
 
-            correction_content = (
-                prompt
-                + "\n\n[CORRECTION — MANDATORY]: You reported this step as complete "
-                "without calling any tools. You MUST actually call the required tools "
-                "to complete the task — do NOT fabricate or assume results. "
-                "Start by calling message_notify_user to narrate your approach, then "
-                "call the tools one by one. "
-                "Only return the final JSON result after completing all tool calls."
-            )
             try:
-                async for event in self._handle_execution_events(
-                    step, correction_content
+                async for event in _run_round(
+                    prompt + self._correction_prompt(_reason, _round_no)
                 ):
-                    if isinstance(event, ToolEvent) and event.status == ToolStatus.CALLING:
-                        if self._counts_as_real_action(event):
-                            real_tools_called = True
-                        if event.function_name == "message_notify_user":
-                            narration_sent = True
                     yield event
             except Exception as retry_err:
                 logger.error(
-                    f"Ghost-success retry of step {step.id} also raised: {retry_err}"
+                    f"Correction round {_round_no} of step {step.id} raised: "
+                    f"{retry_err}"
                 )
+                break
+
+        # ── Persistent ghost/plain after all correction rounds ──────────────
+        # The model refused to do real work even after the escalating
+        # corrections. Mark the step FAILED — an honest failure chip beats a
+        # false checkmark — and emit the completed event that was withheld.
+        if getattr(self, "_round_needs_correction", None) is not None:
+            _reason = self._round_needs_correction
+            self._round_needs_correction = None
+            step.status = ExecutionStatus.COMPLETED
+            step.success = False
+            if _reason == "ghost":
+                step.error = "Model reported success without executing any tools."
+            else:
+                step.error = step.error or "LLM returned a non-JSON response."
+            logger.error(
+                f"Step {step.id} still {_reason} after "
+                f"{self._GHOST_MAX_CORRECTIONS} correction rounds — marking the "
+                "step FAILED (no false completion)."
+            )
+            yield StepEvent(status=StepStatus.COMPLETED, step=step)
 
         # ── Fallback: step failed with no user-visible narration ──────────────
         # If the step ended in failure and the LLM never called
@@ -752,6 +790,17 @@ class ExecutionAgent(BaseAgent):
                 _reason_id = (
                     "Model AI menghasilkan teks biasa alih-alih memanggil tools — "
                     "ini biasanya terjadi saat konteks percakapan sudah terlalu panjang."
+                )
+            elif "without executing any tools" in _error:
+                _reason_en = (
+                    "The AI model claimed the step was complete without actually "
+                    "running any tools (fabricated result). The step is marked "
+                    "failed so the plan continues with real data only."
+                )
+                _reason_id = (
+                    "Model AI mengklaim langkah selesai tanpa benar-benar menjalankan "
+                    "tools (hasil fabrikasi). Langkah ditandai gagal supaya rencana "
+                    "hanya melanjutkan dengan data nyata."
                 )
             elif _error:
                 _reason_en = f"Recorded error: {_error}"

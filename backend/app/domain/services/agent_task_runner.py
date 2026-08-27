@@ -124,6 +124,33 @@ class AgentTaskRunner(TaskRunner):
             self._mcp_tool,
             self._search_engine,
         )
+        # The Task currently being pumped by run(). The rate-limit notice
+        # callback (fired from inside the agents' retry loops) needs it to
+        # stream "waiting for the provider" messages into the chat.
+        self._active_task = None
+        # Wire the agents' patient-retry notices into the chat stream so a
+        # multi-minute provider rate limit shows as a friendly waiting
+        # message instead of a frozen screen.
+        for _agent in (self._flow.planner, self._flow.executor):
+            _agent.rate_limit_notice = self._emit_rate_limit_notice
+
+    async def _emit_rate_limit_notice(self, text: str) -> None:
+        """User-facing notice while the agent waits out a provider rate limit.
+
+        Called (and awaited) from BaseAgent's patient 429 retry loop. Emits a
+        progress message into the live chat stream and persists it, so both
+        live viewers and replay users see that the task is waiting, not dead.
+        Best-effort: a failure here must never break the retry loop itself.
+        """
+        task = self._active_task
+        if task is None:
+            return
+        try:
+            await self._put_and_add_event(
+                task, MessageEvent(role="assistant", message=text, is_progress=True)
+            )
+        except Exception:
+            logger.debug("rate-limit notice could not be emitted", exc_info=True)
 
     async def _put_and_add_event(self, task: Task, event: AgentEvent) -> None:
         event_id = await task.output_stream.put(event.model_dump_json())
@@ -493,6 +520,7 @@ class AgentTaskRunner(TaskRunner):
 
     async def run(self, task: Task) -> None:
         """Process agent's message queue and run the agent's flow"""
+        self._active_task = task
         try:
             logger.info(f"Agent {self._agent_id} message processing task started")
 
@@ -628,7 +656,11 @@ class AgentTaskRunner(TaskRunner):
             
             await self._put_and_add_event(task, ErrorEvent(error=_friendly_task_error(e)))
             await self._session_repository.update_status(self._session_id, SessionStatus.COMPLETED)
-    
+        finally:
+            # Never leave a stale Task reference behind — a notice fired after
+            # run() finished must not write into a dead output stream.
+            self._active_task = None
+
     async def _run_flow(self, message: Message, sandbox_task=None, mcp_task=None) -> AsyncGenerator[BaseEvent, None]:
         """Process a single message through the agent's flow and yield events.
 

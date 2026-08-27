@@ -85,6 +85,20 @@ class BaseAgent(ABC):
     retry_interval: float = 5.0
     tool_choice: Optional[str] = None
 
+    # ── Patient rate-limit retry ─────────────────────────────────────────────
+    # Rate limits are usually SHORT per-provider windows (per-minute quotas).
+    # Killing a whole task after ~2.5 min of 429s wastes work that auto-resumes
+    # a few minutes later. Limit errors therefore get an EXTENDED attempt
+    # budget with capped back-off (~11 min total patience with the default
+    # max_retries=6: 5+10+20+40+80+90*6 = 695s) and provider rotation, so the
+    # task resumes automatically when the window clears.
+    _RATE_LIMIT_EXTRA_ATTEMPTS: int = 6
+    _RATE_LIMIT_WAIT_CAP: float = 90.0
+    # User-facing "waiting" notice: only announce waits >= this many seconds,
+    # and at most once per throttle window (avoids chat spam while retrying).
+    _RATE_LIMIT_NOTICE_MIN_WAIT: float = 20.0
+    _RATE_LIMIT_NOTICE_THROTTLE: float = 180.0
+
     _JSON_PARSE_PROMPT = PromptTemplate.from_template(
         "Extract or repair the JSON from the following LLM output.\n\n{input}"
     )
@@ -99,6 +113,10 @@ class BaseAgent(ABC):
         self._agent_id = agent_id
         self._repository = agent_repository
         self._model = _build_chat_model(prefer_fallback=False)
+        # Remember the primary provider so limit-error rotation can alternate
+        # primary <-> fallback (each provider gets time to clear its window).
+        self._primary_model = self._model
+        self._primary_auth_failed = False
         self._json_output_parser = RetryWithErrorOutputParser.from_llm(
             parser=JsonOutputParser(),
             llm=self._model,
@@ -109,6 +127,11 @@ class BaseAgent(ABC):
         # Fallback provider state — switched on automatically when the primary
         # provider hits rate limits / quota / auth errors.
         self._using_fallback = False
+        # Optional async callback ``rate_limit_notice(text)`` — set by the task
+        # runner so the user SEES that the agent is patiently waiting out a
+        # provider rate limit instead of staring at a frozen screen.
+        self.rate_limit_notice: Optional[Any] = None
+        self._last_rate_limit_notice_ts: float = 0.0
 
     def _switch_to_fallback_model(self, reason: str) -> bool:
         """Swap the agent's model to the fallback provider. Returns success."""
@@ -129,6 +152,85 @@ class BaseAgent(ABC):
             self._agent_id, type(self._model).__name__, reason,
         )
         return True
+
+    def _switch_to_primary_model(self, reason: str) -> bool:
+        """Rotate BACK to the primary provider (rate-limit recovery).
+
+        Used by the patient 429 loop: rate-limit windows are per-provider, so
+        alternating primary <-> fallback gives each pool time to clear instead
+        of hammering one provider against a wall. Never rotates back to a
+        primary that failed with an AUTH error — that key is simply invalid.
+        """
+        if self._primary_model is None or self._primary_auth_failed:
+            return False
+        if not self._using_fallback:
+            return False
+        self._model = self._primary_model
+        self._using_fallback = False
+        self._json_output_parser = RetryWithErrorOutputParser.from_llm(
+            parser=JsonOutputParser(),
+            llm=self._model,
+            max_retries=self.max_retries,
+        )
+        logger.warning(
+            "Agent %s rotating BACK to primary model provider: %s",
+            self._agent_id, reason,
+        )
+        return True
+
+    def _rotate_provider_for_limit(self, reason: str) -> bool:
+        """On a rate-limit error, alternate primary <-> fallback providers."""
+        if not self._using_fallback:
+            return self._switch_to_fallback_model(reason)
+        return self._switch_to_primary_model(reason)
+
+    def _limit_retry_wait(self, attempt: int) -> float:
+        """Back-off seconds before limit-error retry #``attempt``.
+
+        Exponential from ``retry_interval`` but capped at
+        ``_RATE_LIMIT_WAIT_CAP`` so the TOTAL patience across the extended
+        limit budget stays bounded (~11 min with defaults) instead of growing
+        without limit. Shared by the ask-with-messages loop and the streaming
+        loop so both paths wait on exactly the same schedule.
+        """
+        return min(self.retry_interval * (2 ** attempt), self._RATE_LIMIT_WAIT_CAP)
+
+    def _rate_limit_budget(self) -> int:
+        """Total attempts allowed while a provider is rate-limiting us."""
+        return self.max_retries + self._RATE_LIMIT_EXTRA_ATTEMPTS
+
+    async def _notify_rate_limit_wait(self, wait_seconds: float) -> None:
+        """Tell the user the agent is patiently waiting out a rate limit.
+
+        Without this, a multi-minute provider rate limit looks exactly like a
+        frozen/dead task. Throttled so a long retry sequence emits at most one
+        notice every few minutes.
+        """
+        import time as _time
+
+        cb = self.rate_limit_notice
+        if cb is None or wait_seconds < self._RATE_LIMIT_NOTICE_MIN_WAIT:
+            return
+        now = _time.monotonic()
+        if (
+            self._last_rate_limit_notice_ts
+            and now - self._last_rate_limit_notice_ts < self._RATE_LIMIT_NOTICE_THROTTLE
+        ):
+            return
+        self._last_rate_limit_notice_ts = now
+        text = (
+            "Provider model sedang membatasi permintaan (429) — saya menunggu "
+            f"±{int(wait_seconds)} detik dan akan melanjutkan otomatis, tugas "
+            "tidak hilang. / The model provider is rate-limiting requests — "
+            f"waiting about {int(wait_seconds)}s and resuming automatically; "
+            "your task is not lost."
+        )
+        try:
+            result = cb(text)
+            if asyncio.iscoroutine(result) or asyncio.isfuture(result):
+                await result
+        except Exception:
+            logger.debug("rate-limit notice callback failed", exc_info=True)
 
     @staticmethod
     def _is_limit_error(exc: Exception) -> bool:
@@ -429,49 +531,60 @@ class BaseAgent(ABC):
         )
 
         context = list(self.memory.get_messages())
-        for attempt in range(self.max_retries):
+        attempt = 0
+        while True:
             try:
                 message: AIMessage = await chain.ainvoke(context)
                 break
             except ToolCallParseError as e:
-                if attempt == self.max_retries - 1:
+                if attempt >= self.max_retries - 1:
                     raise
                 logger.warning(
                     "Attempt %d/%d: tool call JSON repair failed, retrying model",
                     attempt + 1, self.max_retries,
                 )
-                if attempt == 0:
-                    # Stage 4 (RetryOutputParser style): silent retry, same context.
-                    pass
-                else:
+                if attempt > 0:
                     # Stage 5 (RetryWithErrorOutputParser style): add error feedback.
                     context = e.make_retry_context(context)
+                attempt += 1
             except (openai.AuthenticationError, openai.PermissionDeniedError) as e:
                 # Invalid / exhausted primary key — retrying the same provider
                 # is pointless. Switch to the fallback provider when one is
                 # configured; otherwise surface the error immediately.
+                if not self._using_fallback:
+                    self._primary_auth_failed = True
                 if self._switch_to_fallback_model(str(e)):
                     chain = _build_chain()
                     continue
                 raise
             except _TRANSIENT_API_ERRORS as e:
-                # Primary key exhausted (rate limit / quota / auth) → switch to
-                # the fallback provider immediately instead of burning retries
-                # against a wall that backoff cannot fix.
-                if self._is_limit_error(e) and self._switch_to_fallback_model(str(e)):
-                    chain = _build_chain()
-                    continue
-                if attempt == self.max_retries - 1:
+                # Rate limits get the patient treatment: rotate provider (free —
+                # limit windows are per-provider, the OTHER provider may serve
+                # right away), then wait with capped back-off under an EXTENDED
+                # attempt budget so the task auto-resumes when the window
+                # clears instead of dying with a 429 error.
+                _is_limit = self._is_limit_error(e)
+                _budget = (
+                    self._rate_limit_budget() if _is_limit else self.max_retries
+                )
+                if attempt >= _budget - 1:
                     logger.error(
                         "LLM API error after %d attempts, giving up: %s",
-                        self.max_retries, e,
+                        attempt + 1, e,
                     )
                     raise
-                wait = self.retry_interval * (2 ** attempt)  # exponential back-off
+                if _is_limit:
+                    if self._rotate_provider_for_limit(str(e)):
+                        chain = _build_chain()
+                    wait = self._limit_retry_wait(attempt)
+                    await self._notify_rate_limit_wait(wait)
+                else:
+                    wait = self.retry_interval * (2 ** attempt)
                 logger.warning(
                     "Transient LLM API error (attempt %d/%d), retrying in %.1fs: %s",
-                    attempt + 1, self.max_retries, wait, type(e).__name__,
+                    attempt + 1, _budget, wait, type(e).__name__,
                 )
+                attempt += 1
                 await asyncio.sleep(wait)
             except ValueError as e:
                 # OpenRouter-style "HTTP 200 + error body" provider failures are
@@ -480,21 +593,29 @@ class BaseAgent(ABC):
                 # transient code (429 / 5xx / rate-limit wording).
                 if not self._transient_provider_error(e):
                     raise
-                if self._is_limit_error(e) and self._switch_to_fallback_model(str(e)):
-                    chain = _build_chain()
-                    continue
-                if attempt == self.max_retries - 1:
+                _is_limit = self._is_limit_error(e)
+                _budget = (
+                    self._rate_limit_budget() if _is_limit else self.max_retries
+                )
+                if attempt >= _budget - 1:
                     logger.error(
                         "Provider error after %d attempts, giving up: %s",
-                        self.max_retries, e,
+                        attempt + 1, e,
                     )
                     raise
-                wait = self.retry_interval * (2 ** attempt)
+                if _is_limit:
+                    if self._rotate_provider_for_limit(str(e)):
+                        chain = _build_chain()
+                    wait = self._limit_retry_wait(attempt)
+                    await self._notify_rate_limit_wait(wait)
+                else:
+                    wait = self.retry_interval * (2 ** attempt)
                 logger.warning(
                     "Transient provider error in 200-response body "
                     "(attempt %d/%d), retrying in %.1fs: %s",
-                    attempt + 1, self.max_retries, wait, e,
+                    attempt + 1, _budget, wait, e,
                 )
+                attempt += 1
                 await asyncio.sleep(wait)
             except openai.NotFoundError as e:
                 # OpenRouter free-tier models intermittently report
@@ -502,10 +623,10 @@ class BaseAgent(ABC):
                 # recycles — transient in practice, so retry with backoff.
                 if "no endpoints found" not in str(e).lower():
                     raise
-                if attempt == self.max_retries - 1:
+                if attempt >= self.max_retries - 1:
                     logger.error(
                         "Provider endpoints unavailable after %d attempts: %s",
-                        self.max_retries, e,
+                        attempt + 1, e,
                     )
                     raise
                 wait = self.retry_interval * (2 ** attempt)
@@ -514,6 +635,7 @@ class BaseAgent(ABC):
                     "retrying in %.1fs: %s",
                     attempt + 1, self.max_retries, wait, e,
                 )
+                attempt += 1
                 await asyncio.sleep(wait)
         logger.debug(f"Response from model: {message}")
 
@@ -524,12 +646,17 @@ class BaseAgent(ABC):
         """Collect the full streamed text from the model.
 
         On a limit/quota/auth error the request fails BEFORE any chunk is
-        produced, so it is safe to switch to the fallback provider and
-        retry the stream once. Used by the direct-astream call sites
-        (planner acknowledgement, executor summary) that bypass
-        ask_with_messages.
+        produced, so it is safe to rotate providers and retry. Used by the
+        direct-astream call sites (planner acknowledgement, executor summary)
+        that bypass ask_with_messages.
+
+        Rate limits use the same PATIENT schedule as ask_with_messages:
+        provider rotation + capped back-off + extended budget, so a long task
+        summarising at a rate-limit window auto-resumes instead of dying with
+        a 429 error after two attempts.
         """
-        for attempt in (0, 1):
+        attempt = 0
+        while True:
             try:
                 parts: list = []
                 async for chunk in self._model.astream(messages):
@@ -538,11 +665,41 @@ class BaseAgent(ABC):
                         parts.append(text)
                 return "".join(parts)
             except Exception as e:
-                if (
-                    attempt == 0
-                    and self._is_limit_error(e)
-                    and self._switch_to_fallback_model(str(e))
-                ):
+                _is_limit = self._is_limit_error(e)
+                _budget = (
+                    self._rate_limit_budget() if _is_limit else self.max_retries
+                )
+                if attempt >= _budget - 1:
+                    raise
+                if _is_limit:
+                    # Rotate provider immediately (free) — per-provider limit
+                    # windows mean the OTHER provider may serve right away —
+                    # then wait on the same capped schedule as the tool loop.
+                    self._rotate_provider_for_limit(str(e))
+                    wait = self._limit_retry_wait(attempt)
+                    await self._notify_rate_limit_wait(wait)
+                    logger.warning(
+                        "Rate limit while streaming (attempt %d/%d), "
+                        "retrying in %.1fs: %s",
+                        attempt + 1, _budget, wait, e,
+                    )
+                    attempt += 1
+                    await asyncio.sleep(wait)
+                    continue
+                # Transient non-limit errors (5xx / network) — short retry.
+                _transient = isinstance(
+                    e,
+                    (openai.InternalServerError, openai.APIConnectionError,
+                     openai.APITimeoutError),
+                ) or self._transient_provider_error(e)
+                if _transient:
+                    wait = self.retry_interval * (2 ** attempt)
+                    logger.warning(
+                        "Transient stream error (attempt %d/%d), retrying in %.1fs: %s",
+                        attempt + 1, self.max_retries, wait, e,
+                    )
+                    attempt += 1
+                    await asyncio.sleep(wait)
                     continue
                 raise
         return ""
