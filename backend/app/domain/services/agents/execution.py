@@ -65,14 +65,23 @@ class ExecutionAgent(BaseAgent):
         # completion (CALLED) events are dropped too so the duplicate text
         # can never reach the chat UI through the back door.
         self._suppressed_notify_ids: set = set()
-        # ── Deterministic tool-progress narration state ─────────────────────
-        # Keeps the chat stream alive while tools run: a compact, professional
-        # status line whenever the agent switches to a new kind of work
-        # (search → browse → write file → shell…), independent of whether the
-        # model calls message_notify_user on its own.
+        # ── Fallback tool-progress narration state ──────────────────────────
+        # Safety net for quiet models: when the model has NOT narrated via
+        # message_notify_user for a while, a compact status line keeps the
+        # stream alive. When the model narrates on its own, these templates
+        # stay completely silent (see _MODEL_NARRATION_SILENCE).
         self._narration_lang: str = "en"
         self._last_narrated_function: Optional[str] = None
         self._last_tool_narration_ts: float = 0.0
+        # Monotonic timestamp of the last message_notify_user the MODEL sent
+        # (any narration attempt, including duplicates). While the model keeps
+        # the user company on its own, the deterministic template narration
+        # stays completely silent — templates are a FALLBACK for models that
+        # go quiet, never a replacement for the model's own voice.
+        self._last_model_narration_ts: float = 0.0
+        # Consecutive tool-response rounds without a message_notify_user —
+        # drives the narration nudge (see ask_with_messages).
+        self._silent_rounds: int = 0
         self._step_narrated_functions: set = set()
         # How many times each function has been narrated so far — drives the
         # template rotation so consecutive steps never repeat the same
@@ -198,6 +207,13 @@ class ExecutionAgent(BaseAgent):
     # informative without becoming spammy on tool-heavy steps.
     _TOOL_NARRATION_MIN_INTERVAL = 3.0
 
+    # The deterministic templates only speak when the model has been silent
+    # (no message_notify_user) for at least this many seconds. The model's own
+    # narration (question before a tool, meaning after the result) is always
+    # richer than any template — templates exist so a quiet model never leaves
+    # a dead stream, nothing more.
+    _MODEL_NARRATION_SILENCE = 45.0
+
     @staticmethod
     def _narration_arg(event: "ToolEvent") -> str:
         """Extract a short human-readable argument from a tool call."""
@@ -223,19 +239,22 @@ class ExecutionAgent(BaseAgent):
         return ""
 
     def _tool_progress_narration(self, event: "ToolEvent") -> Optional[str]:
-        """Deterministic one-line status for a completed tool call.
+        """Fallback one-line status for a completed tool call.
 
-        Narrates the CURRENT kind of work (search → browse → read → write →
-        shell…), throttled to at most one line per
-        _TOOL_NARRATION_MIN_INTERVAL seconds so rapid tool bursts stay quiet.
-        Exceptions: each DISTINCT shell command gets its own line (that is
-        what the user actually watches), and each DISTINCT site navigated to
-        gets its own line ("membuka wikipedia…" then "lanjut ke transfermarkt…"
-        reads naturally), still throttled.
+        ONLY speaks when the model itself has not narrated
+        (message_notify_user) for _MODEL_NARRATION_SILENCE seconds. The model's
+        own narration is contextual (what it wants to know, what a result
+        means) — whenever it is present, templates add nothing but noise, so
+        they stay silent.
+
+        When the fallback IS active (quiet model), it narrates the CURRENT
+        kind of work (search → browse → read → write → shell…), throttled to
+        at most one line per _TOOL_NARRATION_MIN_INTERVAL seconds so rapid
+        tool bursts stay quiet. Exceptions: each DISTINCT shell command gets
+        its own line (that is what the user actually watches), and each
+        DISTINCT site navigated to gets its own line, still throttled.
         Template variants rotate per function so consecutive steps never
         repeat the same phrasing.
-        Independent of message_notify_user — the chat stream is never silent
-        while the agent works.
         """
         import time as _time
 
@@ -244,6 +263,10 @@ class ExecutionAgent(BaseAgent):
             self._narration_lang, self._TOOL_NARRATIONS["en"]
         )
         if fn not in table:
+            return None
+        now = _time.monotonic()
+        # Model is actively keeping the user company — templates stay quiet.
+        if now - self._last_model_narration_ts < self._MODEL_NARRATION_SILENCE:
             return None
         # Dedup key: shell commands dedupe per-command, navigation dedupes
         # per-site (a new site is a newsworthy action), everything else per
@@ -256,7 +279,6 @@ class ExecutionAgent(BaseAgent):
         # Already narrated this exact line of work in this step — stay quiet.
         if dedup_key in self._step_narrated_functions:
             return None
-        now = _time.monotonic()
         # First narration of the step always goes out; later ones need a gap.
         if (
             self._step_narrated_functions
@@ -323,6 +345,67 @@ class ExecutionAgent(BaseAgent):
         ):
             return True
         return False
+
+    # ── Narration nudge for silent models ────────────────────────────────────
+    # Free-tier models often go straight from tool call to tool call without
+    # ever calling message_notify_user — the user then sees a dead chat stream
+    # while the tool panel fills up. A short reminder prepended to the tool
+    # result (high salience, exactly where the model's attention sits) reliably
+    # triggers narration, without the cost of a full correction retry.
+    _NUDGE_AFTER_SILENT_ROUNDS = 2
+    _NARRATION_NUDGE = (
+        "\n\n[SYSTEM REQUIREMENT — NARRATION] Your last responses contained tool "
+        "calls but NO message_notify_user call. The user is watching a silent "
+        "screen and does not know what you are finding. Your NEXT response MUST "
+        "include a message_notify_user call (before or alongside your next tool "
+        "call): in the user's language, say what you just found — the actual "
+        "finding, not the action — and what you are doing next. Example shape: "
+        "\"Dari [sumber], saya menemukan bahwa [temuan konkret]. Selanjutnya "
+        "saya [tindakan berikutnya] karena [alasan].\" This is mandatory."
+    )
+
+    async def ask_with_messages(self, messages, format=None):
+        """Intercept tool-response rounds to nudge silent models into narrating.
+
+        Counts consecutive rounds whose tool responses contain NO
+        message_notify_user. After _NUDGE_AFTER_SILENT_ROUNDS silent rounds the
+        narration reminder is PREPENDED to the first tool result of the batch
+        (primacy — browser results are often tens of KB of page text, so a
+        suffix at the end of the last message is invisible to the model). A
+        narrated round resets the counter (the nudge never fires while the
+        model talks on its own).
+        """
+        narrated_this_round = False
+        for m in messages:
+            name = m.get("name") if isinstance(m, dict) else getattr(m, "name", "")
+            if name == "message_notify_user":
+                narrated_this_round = True
+                break
+        if narrated_this_round:
+            self._silent_rounds = 0
+        else:
+            self._silent_rounds = getattr(self, "_silent_rounds", 0) + 1
+            if self._silent_rounds >= self._NUDGE_AFTER_SILENT_ROUNDS and messages:
+                first = messages[0]
+                original = (
+                    first.get("content") if isinstance(first, dict) else first.content
+                ) or ""
+                combined = self._NARRATION_NUDGE + "\n\n" + original
+                try:
+                    if isinstance(first, dict):
+                        first["content"] = combined
+                    else:
+                        first.content = combined
+                    self._silent_rounds = 0  # nudge at most once per threshold
+                    logger.info(
+                        "Model silent for %s rounds — prepended narration nudge "
+                        "to tool result", self._NUDGE_AFTER_SILENT_ROUNDS,
+                    )
+                except Exception:
+                    # Message object immutable on this langchain version — skip
+                    # the nudge rather than break the tool loop.
+                    logger.debug("Could not prepend narration nudge", exc_info=True)
+        return await super().ask_with_messages(messages, format)
 
     def _build_vision_content(self, text: str, images: List[VisionImage]) -> list:
         content = [{"type": "text", "text": text}]
@@ -410,6 +493,13 @@ class ExecutionAgent(BaseAgent):
                     continue
                 elif event.function_name == "message_notify_user":
                     if event.status == ToolStatus.CALLING:
+                        # The model is narrating on its own — from this moment
+                        # the deterministic template narration stays silent
+                        # for _MODEL_NARRATION_SILENCE seconds. Recorded BEFORE
+                        # the duplicate check: even a suppressed duplicate
+                        # proves the model is in narration mode.
+                        import time as _time
+                        self._last_model_narration_ts = _time.monotonic()
                         raw_att = event.function_args.get("attachments")
                         if raw_att:
                             # Models sometimes emit attachments as a JSON-
@@ -465,10 +555,10 @@ class ExecutionAgent(BaseAgent):
             # ErrorEvents (logged above) and all non-message ToolEvents
             # (file/shell/browser/…) pass through unchanged.
             yield event
-            # Deterministic progress narration: after a non-message tool
-            # COMPLETES, emit a short status line when the agent moves to a
-            # new kind of work. Keeps the chat stream alive even when the
-            # model never calls message_notify_user by itself.
+            # Fallback progress narration: after a non-message tool COMPLETES,
+            # emit a short status line ONLY when the model has gone quiet for
+            # a while (see _MODEL_NARRATION_SILENCE). When the model narrates
+            # on its own, these templates never speak.
             if (
                 isinstance(event, ToolEvent)
                 and event.status == ToolStatus.CALLED
@@ -487,6 +577,7 @@ class ExecutionAgent(BaseAgent):
         # language so tool-progress lines are spoken in the user's language.
         self._step_narrated_functions = set()
         self._last_narrated_function = None
+        self._silent_rounds = 0
         _lang = (getattr(plan, "language", None) or "").lower()
         self._narration_lang = "id" if _lang.startswith("id") or "indonesia" in _lang or "bahasa" in _lang else "en"
 

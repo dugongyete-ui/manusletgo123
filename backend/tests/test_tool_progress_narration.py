@@ -1,13 +1,17 @@
-"""Unit tests for the deterministic tool-progress narration:
+"""Unit tests for the fallback tool-progress narration:
 
 1. A narration MessageEvent is emitted after the FIRST completed tool of each
    kind within a step (search → browse → write file…), marked is_progress=True
-   so the frontend renders it inside the unified step timeline.
+   so the frontend renders it inside the unified step timeline — but ONLY
+   while the model itself has been quiet (no message_notify_user within
+   _MODEL_NARRATION_SILENCE seconds).
 2. Repeated calls of the SAME kind within a step stay quiet (no spam).
 3. Rapid different-kind bursts are throttled by the minimum interval.
 4. Narration text contains no emojis and no raw tool names.
 5. Template variants rotate so consecutive narrations never repeat verbatim.
 6. Navigation narrates per DISTINCT site (new site → new line).
+7. While the model narrates on its own, the templates stay SILENT — the
+   model's contextual voice is the narration, templates are only a fallback.
 """
 
 import pytest
@@ -24,6 +28,8 @@ def make_executor() -> ExecutionAgent:
     agent._narration_lang = "id"
     agent._last_narrated_function = None
     agent._last_tool_narration_ts = 0.0
+    # 0.0 == "model never narrated" → templates act as fallback immediately.
+    agent._last_model_narration_ts = 0.0
     agent._step_narrated_functions = set()
     agent._narration_variants_used = {}
     return agent
@@ -177,3 +183,47 @@ def test_long_commands_are_truncated():
     )
     assert text.startswith("Saya menjalankan `python3 xxx")
     assert len(text) <= len("Saya menjalankan ` ") + 48 + 2  # template + 48-char cmd + ellipsis/backtick
+
+
+# ── Model-narration gating ──────────────────────────────────────────────────
+
+def test_template_silent_while_model_is_narrating():
+    """While the model keeps the user company (message_notify_user within the
+    silence window), the deterministic templates must stay COMPLETELY silent —
+    the model's contextual narration is the voice the user hears."""
+    import time as _time
+    agent = make_executor()
+    agent._last_model_narration_ts = _time.monotonic()  # model narrated just now
+    assert agent._tool_progress_narration(
+        tool_event("info_search_web", tool_name="search", query="x")
+    ) is None
+    assert agent._tool_progress_narration(
+        tool_event("browser_navigate", url="https://en.wikipedia.org/wiki/X")
+    ) is None
+
+
+def test_template_resumes_after_model_silence_window():
+    """After the model goes quiet for longer than _MODEL_NARRATION_SILENCE,
+    the fallback templates resume so the stream never goes dead."""
+    import time as _time
+    agent = make_executor()
+    agent._last_model_narration_ts = (
+        _time.monotonic() - ExecutionAgent._MODEL_NARRATION_SILENCE - 1.0
+    )
+    text = agent._tool_progress_narration(
+        tool_event("info_search_web", tool_name="search", query="x")
+    )
+    assert text is not None
+
+
+def test_model_narration_resets_silence_window():
+    """A fresh model narration inside the window re-silences the templates
+    even after they had already fired once."""
+    import time as _time
+    agent = make_executor()
+    # Templates fired long ago (model was quiet).
+    agent._last_tool_narration_ts = _time.monotonic() - 60
+    agent._step_narrated_functions = set()
+    # Model narrates now → templates silent again.
+    agent._last_model_narration_ts = _time.monotonic()
+    assert agent._tool_progress_narration(tool_event("browser_view")) is None
