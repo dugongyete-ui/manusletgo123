@@ -16,6 +16,7 @@ const props = defineProps<{
   sessionId: string;
   enabled?: boolean;
   viewOnly?: boolean;
+  retryToken?: number;
 }>();
 
 const emit = defineEmits<{
@@ -26,6 +27,7 @@ const emit = defineEmits<{
 
 const vncContainer = ref<HTMLDivElement | null>(null);
 let rfb: RFB | null = null;
+let initAttempts = 0;
 
 const initVNCConnection = async () => {
   if (!vncContainer.value || !props.enabled) return;
@@ -36,9 +38,25 @@ const initVNCConnection = async () => {
     rfb = null;
   }
 
-  try {
-    const wsUrl = await getVNCUrl(props.sessionId);
+  initAttempts = 0;
+  let wsUrl: string | null = null;
+  // Fetch the signed URL with a few retries — the backend may still be
+  // waking the sandbox services on the very first click.
+  while (initAttempts < 3 && !wsUrl) {
+    try {
+      wsUrl = await getVNCUrl(props.sessionId);
+    } catch (error) {
+      initAttempts++;
+      console.error(`Failed to get VNC URL (attempt ${initAttempts}/3):`, error);
+      if (initAttempts < 3) await new Promise(r => setTimeout(r, 2000));
+    }
+  }
+  if (!wsUrl) {
+    emit('disconnected', { detail: 'Could not obtain a VNC access URL for this session.' });
+    return;
+  }
 
+  try {
     // Create NoVNC connection
     rfb = new RFB(vncContainer.value, wsUrl, {
       credentials: { password: '' },
@@ -71,6 +89,7 @@ const initVNCConnection = async () => {
     });
   } catch (error) {
     console.error('Failed to initialize VNC connection:', error);
+    emit('disconnected', { detail: String(error) });
   }
 };
 
@@ -93,6 +112,13 @@ watch([() => props.sessionId, () => props.enabled], () => {
 // Watch for container availability
 watch(vncContainer, () => {
   if (vncContainer.value && props.enabled) {
+    initVNCConnection();
+  }
+});
+
+// Watch for manual retry
+watch(() => props.retryToken, () => {
+  if (props.enabled && vncContainer.value) {
     initVNCConnection();
   }
 });

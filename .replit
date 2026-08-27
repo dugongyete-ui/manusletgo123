@@ -186,6 +186,9 @@ SANDBOX_BASE_URL = "http://localhost:8080"
 SANDBOX_VNC_URL = "ws://localhost:5901"
 SSL_VERIFY = "false"
 GITHUB_TOKEN = "None"
+E2B_API_KEY = "e2b_964bede70ba199765e4a595b21500872375b03be"
+SANDBOX_PROVIDER = "auto"
+E2B_SANDBOX_TIMEOUT = "900"
 
 [postMerge]
 path = "scripts/post-merge.sh"
