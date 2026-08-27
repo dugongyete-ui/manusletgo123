@@ -91,10 +91,27 @@ const onInput = (event: Event) => {
     autoResize();
 };
 
+// Touch-primary devices (phones/tablets): virtual keyboards have no Shift key,
+// so Enter-to-send would make multi-line input impossible — Enter must insert
+// a newline there and sending happens via the send button (Manus/ChatGPT
+// mobile behaviour). Desktop keeps Enter=send, Shift+Enter=newline.
+const isTouchDevice: boolean = (() => {
+    if (typeof window === 'undefined' || typeof window.matchMedia !== 'function') return false;
+    try {
+        return window.matchMedia('(pointer: coarse)').matches;
+    } catch {
+        return false;
+    }
+})();
+
 const handleKeydown = (event: KeyboardEvent) => {
-    // Enter without any modifier → send
-    if (event.key === 'Enter' && !event.shiftKey && !event.ctrlKey && !event.altKey && !event.metaKey) {
-        if (isComposing.value) return;
+    if (event.key !== 'Enter' || isComposing.value) return;
+    if (isTouchDevice) {
+        // Enter → newline (default textarea behaviour); send via the button.
+        return;
+    }
+    // Desktop: Enter without any modifier → send
+    if (!event.shiftKey && !event.ctrlKey && !event.altKey && !event.metaKey) {
         event.preventDefault();
         if (sendEnabled.value) {
             handleSubmit();

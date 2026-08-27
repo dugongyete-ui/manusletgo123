@@ -12,7 +12,7 @@
               </div>
             </div>
             <div class="flex">
-              <Bot :size="30" />
+              <DzeckLogoMark :size="30" />
               <DzeckLogoTextIcon />
             </div>
           </div>
@@ -67,8 +67,9 @@ import { useI18n } from 'vue-i18n';
 import ChatBox from '../components/ChatBox.vue';
 import { createSession } from '../api/agent';
 import { showErrorToast } from '../utils/toast';
-import { Bot, PanelLeft } from 'lucide-vue-next';
+import { PanelLeft } from 'lucide-vue-next';
 import DzeckLogoTextIcon from '../components/icons/DzeckLogoTextIcon.vue';
+import DzeckLogoMark from '../components/icons/DzeckLogoMark.vue';
 import type { FileInfo } from '../api/file';
 import { useLeftPanel } from '../composables/useLeftPanel';
 import { useFilePanel } from '../composables/useFilePanel';

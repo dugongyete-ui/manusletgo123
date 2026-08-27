@@ -18,7 +18,7 @@
     <div v-if="!hideAssistantHeader" class="flex items-center justify-between h-7 group">
       <div class="flex items-center gap-[3px]">
         <component v-if="assistantIcon" :is="assistantIcon" :size="24" class="w-6 h-6" />
-        <Bot v-else :size="24" class="w-6 h-6" />
+        <DzeckLogoMark v-else :size="24" class="w-6 h-6" />
         <span v-if="assistantName" class="text-base text-[var(--text-primary)] tracking-tight leading-none ml-0.5">{{ assistantName }}</span>
         <DzeckTextIcon v-else-if="!assistantIcon" />
       </div>
@@ -77,7 +77,7 @@
     <div v-if="!hideAssistantHeader" class="flex items-center justify-between h-7 group">
       <div class="flex items-center gap-[3px]">
         <component v-if="assistantIcon" :is="assistantIcon" :size="24" class="w-6 h-6" />
-        <Bot v-else :size="24" class="w-6 h-6" />
+        <DzeckLogoMark v-else :size="24" class="w-6 h-6" />
         <span v-if="assistantName" class="text-base text-[var(--text-primary)] tracking-tight leading-none ml-0.5">{{ assistantName }}</span>
         <DzeckTextIcon v-else-if="!assistantIcon" />
       </div>
@@ -94,6 +94,7 @@
 
 <script setup lang="ts">
 import DzeckTextIcon from './icons/DzeckTextIcon.vue';
+import DzeckLogoMark from './icons/DzeckLogoMark.vue';
 import { Message, MessageContent, AttachmentsContent } from '../types/message';
 import ToolUse from './ToolUse.vue';
 import { marked } from 'marked';
@@ -104,7 +105,6 @@ import { CheckIcon } from 'lucide-vue-next';
 import { computed, ref, type Component } from 'vue';
 import { ToolContent, StepContent } from '../types/message';
 import { useRelativeTime } from '../composables/useTime';
-import { Bot } from 'lucide-vue-next';
 import AttachmentsMessage from './AttachmentsMessage.vue';
 import { viewFile } from '../api/agent';
 

@@ -5,7 +5,7 @@
       class="md:w-[221px] overflow-x-auto md:overflow-x-visible border-r border-[var(--border-main)] pb-2 md:pb-0 relative">
       <div class="items-center hidden px-5 pt-5 pb-3 md:flex">
         <div class="flex">
-          <Bot :size="30" />
+          <DzeckLogoMark :size="30" />
           <DzeckLogoTextIcon width="69.47368421052632" height="30" />
         </div>
       </div>
@@ -67,8 +67,9 @@
 <script setup lang="ts">
 import { ref, computed } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { Bot, ChevronLeft } from 'lucide-vue-next'
+import { ChevronLeft } from 'lucide-vue-next'
 import DzeckLogoTextIcon from '@/components/icons/DzeckLogoTextIcon.vue'
+import DzeckLogoMark from '@/components/icons/DzeckLogoMark.vue'
 
 export interface TabItem {
   id: string

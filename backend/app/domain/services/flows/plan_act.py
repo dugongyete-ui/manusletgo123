@@ -47,16 +47,32 @@ class AgentStatus(str, Enum):
 # Deterministic step-transition messages so the user ALWAYS sees progress in the
 # chat stream between steps, regardless of whether the model calls
 # message_notify_user on its own (free-tier models often skip it).
-# Kept compact and single-line (≤100 chars per segment) — professional,
-# Manus-style: a short status line, not an essay. No emojis — clean text only.
+# Templates read as spoken sentences (not "Status: label" prefixes): the step
+# description is folded into the sentence. Variants rotate by step index so
+# consecutive transitions never sound identical. Kept compact (≤100 chars per
+# segment), single-line, no emojis — clean text only.
 _NARRATION_TEMPLATES = {
     "en": {
-        "done": "Completed: {done} — next: {next}",
-        "failed": "Could not complete: {done} — next: {next}",
+        "done": [
+            "Done with {done} — moving on to {next}.",
+            "Finished {done}, now {next}.",
+            "That wraps up {done}. Next: {next}.",
+        ],
+        "failed": [
+            "{done} didn't work out — continuing with {next}.",
+            "That step hit a snag, so I'm moving on to {next}.",
+        ],
     },
     "id": {
-        "done": "Selesai: {done} — lanjut: {next}",
-        "failed": "Belum selesai: {done} — lanjut: {next}",
+        "done": [
+            "Sudah selesai {done}, sekarang lanjut {next}.",
+            "Oke, {done} sudah beres — lanjut {next}.",
+            "Selesai juga {done} — berikutnya {next}.",
+        ],
+        "failed": [
+            "{done} belum berhasil, saya lanjut dengan {next}.",
+            "Langkah tadi menemui kendala — lanjut ke {next}.",
+        ],
     },
 }
 
@@ -71,19 +87,33 @@ def _narration_lang(language: Optional[str]) -> str:
     return "en"
 
 
-def _step_transition_narration(done_step, next_step, language: Optional[str]) -> str:
-    """Build the chat message shown between two plan steps."""
+def _step_transition_narration(
+    done_step, next_step, language: Optional[str], step_index: int = 0
+) -> str:
+    """Build the natural chat message shown between two plan steps."""
     lang = _narration_lang(language)
     tpl = _NARRATION_TEMPLATES.get(lang, _NARRATION_TEMPLATES["en"])
     key = "failed" if (getattr(done_step, "success", None) is False) else "done"
+    variants = tpl[key]
+    template = variants[step_index % len(variants)]
 
     def _short(text: str, limit: int = 100) -> str:
         text = (text or "").strip().replace("\n", " ")
         return text if len(text) <= limit else text[: limit - 1].rstrip() + "…"
 
-    return tpl[key].format(
-        done=_short(getattr(done_step, "description", "")),
-        next=_short(getattr(next_step, "description", "")),
+    def _sentence(text: str) -> str:
+        # Fold the step description into the sentence so it reads naturally,
+        # e.g. "Mencari informasi X" -> "Sudah selesai mencari informasi X, ...".
+        # Keep the original case when it looks like an acronym/proper noun
+        # ("AI agent..." stays capitalised; "Mencari..." becomes "mencari...").
+        text = _short(text)
+        if len(text) >= 2 and text[0].isupper() and text[1].isupper():
+            return text
+        return text[:1].lower() + text[1:] if text else text
+
+    return template.format(
+        done=_sentence(getattr(done_step, "description", "")),
+        next=_sentence(getattr(next_step, "description", "")),
     )
 # ──────────────────────────────────────────────────────────────────────────────
 
@@ -361,7 +391,8 @@ class PlanActFlow(BaseFlow):
                 # (The first step is covered by the acknowledgement message.)
                 if _steps_executed > 0 and _last_completed_step is not None:
                     narration = _step_transition_narration(
-                        _last_completed_step, step, getattr(self.plan, "language", None)
+                        _last_completed_step, step, getattr(self.plan, "language", None),
+                        step_index=_steps_executed,
                     )
                     logger.info(
                         f"Agent {self._agent_id} step transition narration: "

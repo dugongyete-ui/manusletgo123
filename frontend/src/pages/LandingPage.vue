@@ -5,7 +5,7 @@
     <nav class="nav">
       <div class="nav-inner">
         <a href="/" class="nav-logo">
-          <Bot :size="22" />
+          <DzeckLogoMark :size="22" />
           <span class="nav-logo-text">Dzeck</span>
         </a>
         <div class="nav-right">
@@ -131,11 +131,12 @@
 import { ref, nextTick, markRaw } from 'vue'
 import { useRouter } from 'vue-router'
 import {
-  Bot, Sun, Moon, Plus, ArrowUp, ArrowUpRight, X,
+  Sun, Moon, Plus, ArrowUp, ArrowUpRight, X,
   Globe, Monitor, Terminal, Palette, MoreHorizontal,
   Presentation, ShoppingCart, LayoutDashboard, Image,
   Code2, FileSearch, Database, Smartphone, Cpu
 } from 'lucide-vue-next'
+import DzeckLogoMark from '@/components/icons/DzeckLogoMark.vue'
 import { useTheme } from '@/composables/useTheme'
 
 const { theme, toggleTheme } = useTheme()
