@@ -15,6 +15,7 @@ def get_search_engine() -> Optional[SearchEngine]:
     from app.infrastructure.external.search.baidu_web_search import BaiduWebSearchEngine
     from app.infrastructure.external.search.bing_search import BingSearchEngine
     from app.infrastructure.external.search.bing_web_search import BingWebSearchEngine
+    from app.infrastructure.external.search.bing_rss_search import BingRssSearchEngine
     from app.infrastructure.external.search.tavily_search import TavilySearchEngine
     
     settings = get_settings()
@@ -45,10 +46,42 @@ def get_search_engine() -> Optional[SearchEngine]:
     elif settings.search_provider == "bing_web":
         logger.info("Initializing Bing Web Search Engine (scraping)")
         return BingWebSearchEngine()
+    elif settings.search_provider == "bing_rss":
+        logger.info("Initializing Bing RSS Search Engine (web + news, no API key)")
+        return BingRssSearchEngine()
     elif settings.search_provider == "tavily":
         if settings.tavily_api_key:
-            logger.info("Initializing Tavily Search Engine")
-            return TavilySearchEngine(api_key=settings.tavily_api_key)
+            from app.infrastructure.external.search.fallback_search import FallbackSearchEngine
+
+            primary = TavilySearchEngine(api_key=settings.tavily_api_key)
+            # Tavily's edge (AWS WAF) blocks some datacenter IP ranges with a
+            # bare 403 before the key is even validated. Wrap it with an
+            # automatic scraping fallback so search works from every host:
+            # on networks where Tavily is reachable it serves every query,
+            # otherwise we transparently degrade to the fallback provider.
+            fallback_provider = (settings.search_fallback_provider or "bing_rss").strip().lower()
+            fallback = None
+            if fallback_provider == "bing_rss":
+                fallback = BingRssSearchEngine()
+            elif fallback_provider == "bing_web":
+                fallback = BingWebSearchEngine()
+            elif fallback_provider == "baidu_web":
+                from app.infrastructure.external.search.baidu_web_search import BaiduWebSearchEngine
+                fallback = BaiduWebSearchEngine()
+            if fallback is not None:
+                logger.info(
+                    "Initializing Tavily Search Engine (primary) with '%s' "
+                    "fallback (auto-used when Tavily is unreachable, e.g. "
+                    "datacenter IPs blocked by Tavily's WAF)", fallback_provider,
+                )
+                return FallbackSearchEngine(
+                    primary=primary,
+                    fallback=fallback,
+                    primary_name="tavily",
+                    fallback_name=fallback_provider,
+                )
+            logger.info("Initializing Tavily Search Engine (no fallback)")
+            return primary
         else:
             logger.warning("Tavily Search Engine not initialized: missing API key")
     else:

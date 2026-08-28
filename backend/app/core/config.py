@@ -93,7 +93,12 @@ class Settings(BaseSettings):
     browser_engine: str = "browser_use"  # "playwright" or "browser_use"
     
     # Search engine configuration
-    search_provider: str | None = "bing_web"  # "baidu", "baidu_web", "google", "bing", "bing_web", "tavily"
+    search_provider: str | None = "bing_web"  # "baidu", "baidu_web", "google", "bing", "bing_web", "bing_rss", "tavily"
+    # Automatic fallback provider used when the primary is unreachable (e.g.
+    # Tavily's WAF blocks datacenter IPs). Applied to the "tavily" provider.
+    # "bing_rss" merges Bing web+news RSS endpoints with lexical relevance
+    # ranking — best quality without an API key.
+    search_fallback_provider: str | None = "bing_rss"
     baidu_search_api_key: str | None = None
     bing_search_api_key: str | None = None
     google_search_api_key: str | None = None
