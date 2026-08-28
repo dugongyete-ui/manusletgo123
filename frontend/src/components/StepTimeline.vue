@@ -1,128 +1,78 @@
 <template>
-  <!-- Official Manus StepGroup shells, stacked with pb-0 when the next block is
-       also a step (isStepConnectedToNext). Each step is its own collapsible
-       group:
+  <div class="step-timeline relative flex flex-col w-full">
+    <!-- ONE continuous rail: a single unbroken dashed line from the first
+         step's node down through EVERY following step, narration and tool
+         row. The whole timeline shares ONE rail element, so the line can
+         never be cut between steps — no segment stitching, no gaps, no
+         restarts (Manus-style work loop). Status icons sit ON the line as
+         nodes (solid backgrounds) and all progress text renders BESIDE the
+         rail, indented right of it. -->
+    <div v-if="stepEntries.length"
+      class="absolute left-[7px] top-[10px] border-l border-dashed border-[var(--border-dark)] pointer-events-none"
+      :style="{ bottom: railBottom }"></div>
 
-       • default state  → COLLAPSED (ChevronRight)
-       • collapsed LIVE (running) → still shows lastToolItems (the current tool)
-       • collapsed DONE (completed/failed) → header only — no body, no line
-       • expanded       → precedingItems + lastToolItems (everything)
-
-       Progress narrations (message_notify_user) are NOT part of the step body —
-       they render as standalone chat messages BETWEEN the step groups, exactly
-       like the official chat timeline. -->
-  <div v-for="(entry, i) in stepEntries" :key="entry.step.id || i"
-    class="flex flex-col empty:pb-0"
-    :class="i < stepEntries.length - 1 ? 'pb-0' : 'pb-2'">
-    <div class="flex flex-col">
-      <!-- Step header — official: h-[28px] single line, text-secondary,
-           hover:text-primary, toggle only when rows are hidden while collapsed -->
-      <component
-        :is="entry.canToggle ? 'button' : 'div'"
-        :type="entry.canToggle ? 'button' : undefined"
-        class="relative flex h-[28px] w-full min-w-0 items-center overflow-hidden whitespace-nowrap text-[14px] font-normal text-[var(--text-secondary)]"
-        :class="entry.canToggle
-          ? 'group/header clickable hover:text-[var(--text-primary)] border-0 bg-transparent p-0 text-start'
-          : undefined"
-        @click="entry.canToggle ? toggleStep(entry) : undefined"
-      >
-        <div class="flex min-w-0 flex-1 flex-nowrap items-center gap-[4px] overflow-hidden">
-          <div class="flex size-[20px] flex-shrink-0 items-center justify-center rounded-[100px]">
-            <div
-              v-if="entry.completed"
-              class="bg-[var(--fill-tsp-white-dark)] rounded-full size-[17px] flex items-center justify-center"
-            >
-              <StepCheckIcon :size="9" class="text-[var(--icon-tertiary)]" />
-            </div>
-            <LiveStatusCanvas v-else :size="16" :active="entry.step.status === 'running'" />
+    <div v-for="(entry, i) in stepEntries" :key="entry.step.id || i" class="relative flex flex-col"
+      :class="i < stepEntries.length - 1 ? 'pb-[12px]' : ''">
+      <!-- Step header: status node + description + chevron -->
+      <div
+        class="text-sm w-full clickable flex gap-2 justify-between group/header truncate text-[var(--text-primary)]">
+        <div class="flex flex-row gap-2 justify-center items-center truncate" @click="toggle(i)">
+          <!-- status node — solid background so the rail passes BEHIND it -->
+          <div v-if="entry.step.status === 'completed'"
+            class="w-4 h-4 flex-shrink-0 flex items-center justify-center border-[var(--border-dark)] rounded-[15px] bg-[var(--text-disable)] dark:bg-[var(--fill-tsp-white-dark)] border-0">
+            <CheckIcon class="text-[var(--icon-white)] dark:text-[var(--icon-white-tsp)]" :size="10" />
           </div>
-          <div class="flex min-w-0 flex-1 items-center justify-start gap-[4px] overflow-hidden py-[4px]">
-            <span class="min-w-0 max-w-full overflow-hidden text-ellipsis whitespace-nowrap leading-[20px]">
-              {{ entry.step.description }}
-            </span>
-            <span
-              v-if="entry.canToggle"
-              class="hidden size-[16px] flex-shrink-0 items-center justify-center group-hover/header:flex"
-              :class="(!entry.completed || entry.expanded) ? 'flex' : undefined"
-            >
-              <ChevronDown v-if="entry.expanded" :size="16" color="currentColor" />
-              <ChevronRight v-else :size="16" color="currentColor" />
-            </span>
+          <div v-else-if="entry.step.status === 'failed'"
+            class="w-4 h-4 flex-shrink-0 flex items-center justify-center rounded-[15px] border-0"
+            style="background:#d92d20;">
+            <XIcon class="text-white" :size="10" />
           </div>
+          <div v-else
+            class="w-4 h-4 flex-shrink-0 flex items-center justify-center border border-[var(--border-dark)] rounded-[15px] bg-[var(--background-gray-main)]">
+            <span v-if="entry.step.status === 'running'"
+              class="block w-[6px] h-[6px] rounded-full bg-[var(--text-secondary)] animate-pulse"></span>
+          </div>
+          <div class="truncate font-medium markdown-content"
+            v-html="renderMarkdown(entry.step.description || '')">
+          </div>
+          <span class="flex-shrink-0 flex" @click.stop="toggle(i)">
+            <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none"
+              stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"
+              class="lucide lucide-chevron-down transition-transform duration-300 w-4 h-4"
+              :class="{ 'rotate-180': isExpanded(i) }">
+              <path d="m6 9 6 6 6-6"></path>
+            </svg>
+          </span>
         </div>
-        <div
-          class="float-right transition text-[12px] leading-[16px] text-[var(--text-tertiary)] ms-auto flex-shrink-0"
-          :class="entry.canToggle ? 'invisible group-hover/header:visible' : undefined"
-        >
+        <div class="float-right transition text-[12px] text-[var(--text-tertiary)] invisible group-hover/header:visible">
           {{ relativeTime(entry.step.timestamp) }}
         </div>
-      </component>
+      </div>
 
-      <!-- Step body — official: solid 1px rail in a w-[20px] column, content
-           indented ps-[20px]. Only rendered when rows are visible. The body
-           animates in with a short fade/slide so expand–collapse feels smooth
-           instead of snapping. -->
-      <div v-if="entry.hasBody" class="flex min-w-0 flex-col step-body-in">
-        <div class="relative min-w-0">
-          <div class="pointer-events-none absolute inset-y-0 start-0 flex w-[20px] justify-center py-2">
-            <div class="h-full w-px flex-none bg-[var(--border-main)]"></div>
-          </div>
-          <div class="flex min-w-0 flex-col ps-[20px]">
-            <div class="min-w-0 overflow-hidden" style="height: auto; opacity: 1">
-              <div class="min-w-0">
-                <div class="flex min-w-0 flex-col">
-                  <div
-                    v-for="item in entry.visiblePreceding"
-                    :key="item.id"
-                    class="min-w-0 [&:has(>[data-timeline-content]:empty)]:hidden"
-                    style="opacity: 1; transform: none"
-                  >
-                    <div data-timeline-content="true" class="min-w-0 flex-1 py-1 ps-[4px]">
-                      <ToolUse
-                        v-if="item.kind === 'tool'"
-                        :tool="item.tool"
-                        :active="entry.liveToolId === item.id"
-                        @click="handleToolClick(item.tool)"
-                      />
-                    </div>
-                  </div>
-                  <div
-                    v-for="item in entry.visibleLast"
-                    :key="item.id"
-                    class="min-w-0 [&:has(>[data-timeline-content]:empty)]:hidden"
-                    style="opacity: 1; transform: none"
-                  >
-                    <div data-timeline-content="true" class="min-w-0 flex-1 py-1 ps-[4px]">
-                      <ToolUse
-                        v-if="item.kind === 'tool'"
-                        :tool="item.tool"
-                        :active="entry.liveToolId === item.id"
-                        @click="handleToolClick(item.tool)"
-                      />
-                      <!-- Step result — official shows a short outcome line under
-                           the StepGroup. Long results (older sessions, verbose
-                           models) are clamped to ~300 chars with a Show more /
-                           Show less toggle so an expanded step never becomes a
-                           wall of text. -->
-                      <div v-else class="flex flex-col gap-1 w-full">
-                        <p class="text-[var(--text-secondary)] text-[14px] u-break-words whitespace-pre-wrap m-0">
-                          {{ clampedResult(item) }}
-                        </p>
-                        <button
-                          v-if="item.text.length > RESULT_CLAMP"
-                          type="button"
-                          class="self-start text-[13px] font-medium text-[var(--text-brand)] hover:underline clickable bg-transparent border-0 p-0"
-                          @click="toggleResult(item.id)"
-                        >
-                          {{ resultExpanded[item.id] ? t('Show less') : t('Show more') }}
-                        </button>
-                      </div>
-                    </div>
-                  </div>
-                </div>
-              </div>
+      <!-- Step items: tool pills + progress narrations, chronologically ordered.
+           Narration text renders BESIDE the rail (indented right of it) — the
+           user-notification style of the Manus work loop. Long narrations
+           (300+ chars) clamp with a Show more toggle so the timeline stays
+           compact and scannable. -->
+      <div class="flex" v-if="entry.items.length">
+        <div class="w-[24px] flex-shrink-0"></div>
+        <div
+          class="flex flex-col gap-[10px] flex-1 min-w-0 overflow-hidden pt-[6px] transition-[max-height,opacity] duration-150 ease-in-out"
+          :class="{ 'max-h-[100000px] opacity-100': isExpanded(i), 'max-h-0 opacity-0': !isExpanded(i) }">
+          <template v-for="item in entry.items" :key="item.seq">
+            <ToolUse v-if="item.kind === 'tool' && item.tool" :tool="item.tool" @click="handleToolClick(item.tool)" />
+            <!-- Narration: plain text line beside the rail — no bullet dot,
+                 Manus-style. The text itself says what is happening. -->
+            <div v-else
+              class="text-[13px] leading-[1.55] text-[var(--text-secondary)] max-w-full">
+              <span class="min-w-0 break-words" v-html="renderMarkdown(clampedNarration(item))"></span>
+              <button v-if="(item.text || '').length > NARRATION_CLAMP" type="button"
+                class="block mt-[2px] text-[13px] font-medium text-[var(--text-brand)] hover:underline clickable bg-transparent border-0 p-0"
+                @click="toggleNarration(item.seq)">
+                {{ narrationExpanded[item.seq] ? t('Show less') : t('Show more') }}
+              </button>
             </div>
-          </div>
+          </template>
         </div>
       </div>
     </div>
@@ -132,11 +82,11 @@
 <script setup lang="ts">
 import { computed, reactive } from 'vue';
 import { useI18n } from 'vue-i18n';
-import { ChevronDown, ChevronRight } from 'lucide-vue-next';
+import { marked } from 'marked';
+import DOMPurify from 'dompurify';
+import { CheckIcon, X as XIcon } from 'lucide-vue-next';
 import ToolUse from './ToolUse.vue';
-import LiveStatusCanvas from './LiveStatusCanvas.vue';
-import StepCheckIcon from './icons/StepCheckIcon.vue';
-import { Message, ToolContent, StepContent, StepTimelineItem, resolveStepTimelineVisibility } from '../types/message';
+import { Message, MessageContent, ToolContent, StepContent } from '../types/message';
 import { useRelativeTime } from '../composables/useTime';
 
 const props = defineProps<{
@@ -150,109 +100,103 @@ const emit = defineEmits<{
 const { t } = useI18n();
 const { relativeTime } = useRelativeTime();
 
-// ── Per-step reactive expansion state (official: default collapsed) ─────────
-// The user's toggle wins; the key survives status changes of the same step.
-const expandedOverrides = reactive<Record<string, boolean>>({});
-
-// ── Step result clamp ────────────────────────────────────────────────────────
-// The result is a short outcome line; anything past ~300 characters collapses
-// with an ellipsis + Show more toggle (same pattern as the narration clamp in
-// ChatMessage) so an expanded step stays compact and scannable.
-const RESULT_CLAMP = 300;
-const resultExpanded = reactive<Record<string, boolean>>({});
-const clampedResult = (item: StepTimelineItem & { text: string }): string => {
-  if (item.kind !== 'result') return '';
-  const text = item.text || '';
-  if (resultExpanded[item.id] || text.length <= RESULT_CLAMP) return text;
-  return `${text.slice(0, RESULT_CLAMP).trimEnd()}…`;
-};
-const toggleResult = (id: string) => {
-  resultExpanded[id] = !resultExpanded[id];
-};
-
+// ── Chronological entries per step ──────────────────────────────────────────
+// Tools live inside each step message (appended while the step runs); progress
+// narrations arrive as interleaved assistant messages. Merge them into a single
+// ordered item list per step so the timeline reads like one continuous story.
+interface TimelineItem {
+  kind: 'tool' | 'narration';
+  timestamp: number;
+  seq: number;
+  tool?: ToolContent;
+  text?: string;
+}
 interface StepEntry {
   step: StepContent;
-  completed: boolean;
-  canToggle: boolean;
-  expanded: boolean;
-  hasBody: boolean;
-  visiblePreceding: StepTimelineItem[];
-  visibleLast: StepTimelineItem[];
-  liveToolId: string | null;
+  items: TimelineItem[];
 }
 
-// Consecutive step messages render as stacked StepGroup shells. Narrations and
-// other chat messages never enter here — they break the group in ChatPage.
 const stepEntries = computed<StepEntry[]>(() => {
   const entries: StepEntry[] = [];
+  let current: StepEntry | null = null;
+  let seq = 0;
   for (const msg of props.messages) {
-    if (msg.type !== 'step') continue;
-    const step = msg.content as StepContent;
-    const visibility = resolveStepTimelineVisibility(step);
-    const completed = step.status === 'completed' || step.status === 'failed';
-    const key = step.id;
-    const override = expandedOverrides[key];
-    const expanded = override !== undefined ? override : false;
-
-    const visiblePreceding = expanded ? visibility.precedingItems : [];
-    const visibleLast = visibility.lastToolItems.length === 0
-      ? []
-      : (expanded ? visibility.lastToolItems : visibility.collapsedVisibleItems);
-
-    // Current (last) tool of a running step keeps its label shimmering.
-    let liveToolId: string | null = null;
-    if (!completed) {
-      for (let i = visibility.lastToolItems.length - 1; i >= 0; i -= 1) {
-        const item = visibility.lastToolItems[i];
-        if (item.kind === 'tool') { liveToolId = item.id; break; }
-      }
+    if (msg.type === 'step') {
+      current = { step: msg.content as StepContent, items: [] };
+      entries.push(current);
+    } else if (msg.type === 'assistant' && current) {
+      const mc = msg.content as MessageContent;
+      if (!mc.content) continue;
+      current.items.push({
+        kind: 'narration',
+        timestamp: mc.timestamp,
+        seq: seq++,
+        text: mc.content,
+      });
     }
-
-    entries.push({
-      step,
-      completed,
-      canToggle: visibility.canToggle,
-      expanded,
-      hasBody: visiblePreceding.length > 0 || visibleLast.length > 0,
-      visiblePreceding,
-      visibleLast,
-      liveToolId,
-    });
+  }
+  for (const entry of entries) {
+    for (const tool of entry.step.tools || []) {
+      // Message-tool events are converted to narration messages by
+      // handleToolEvent — if one still rides along inside a step (legacy
+      // session state), skip it so its text never renders twice.
+      if (tool.name === 'message') continue;
+      entry.items.push({
+        kind: 'tool',
+        timestamp: tool.timestamp,
+        seq: seq++,
+        tool,
+      });
+    }
+    // Stable sort: timestamp first, insertion order breaks ties.
+    entry.items.sort((a, b) => a.timestamp - b.timestamp || a.seq - b.seq);
   }
   return entries;
 });
 
-// Toggle via the reactive override map (mutating entry objects from the
-// computed would be discarded on re-evaluation).
-const toggleStep = (entry: StepEntry) => {
-  const key = entry.step.id;
-  expandedOverrides[key] = !entry.expanded;
+// Where the single rail ends. With visible items under the last step (tool
+// pills / narrations), the line runs beside them to the bottom of the block.
+// Otherwise it stops exactly at the last node's center (header height 20px,
+// icon center at 10px) — the line never dangles past the final node.
+const railBottom = computed(() => {
+  const entries = stepEntries.value;
+  const last = entries[entries.length - 1];
+  if (!last) return '0px';
+  const lastIdx = entries.length - 1;
+  return last.items.length && isExpanded(lastIdx) ? '0px' : '10px';
+});
+
+// ── Per-step collapse state (default expanded) ──────────────────────────────
+const expanded = reactive<Record<number, boolean>>({});
+const isExpanded = (i: number) => expanded[i] !== false;
+const toggle = (i: number) => {
+  expanded[i] = !isExpanded(i);
+};
+
+// ── Narration clamp ──────────────────────────────────────────────────────────
+// Progress narrations render beside the rail; anything past ~300 characters
+// collapses to an ellipsis with a Show more toggle, so one verbose narration
+// can never turn the timeline into a wall of text (user requirement: keep
+// narrations around ~300 chars, clear and readable).
+const NARRATION_CLAMP = 300;
+const narrationExpanded = reactive<Record<number, boolean>>({});
+const clampedNarration = (item: TimelineItem): string => {
+  const text = item.text || '';
+  if (narrationExpanded[item.seq] || text.length <= NARRATION_CLAMP) return text;
+  return `${text.slice(0, NARRATION_CLAMP).trimEnd()}…`;
+};
+const toggleNarration = (seq: number) => {
+  narrationExpanded[seq] = !narrationExpanded[seq];
 };
 
 const handleToolClick = (tool: ToolContent) => {
   emit('toolClick', tool);
 };
-</script>
 
-<style scoped>
-/* Smooth expand/collapse: the step body fades and slides in shortly instead
-   of popping into place. Runs once when the body mounts (v-if toggling). */
-.step-body-in {
-  animation: step-body-in 160ms ease-out;
-}
-@keyframes step-body-in {
-  from {
-    opacity: 0;
-    transform: translateY(-3px);
-  }
-  to {
-    opacity: 1;
-    transform: translateY(0);
-  }
-}
-@media (prefers-reduced-motion: reduce) {
-  .step-body-in {
-    animation: none;
-  }
-}
-</style>
+// Minimal markdown render for step descriptions and narration lines.
+const renderMarkdown = (text: string) => {
+  if (typeof text !== 'string') return '';
+  const html = marked.parseInline(text, { gfm: true }) as string;
+  return DOMPurify.sanitize(html);
+};
+</script>
