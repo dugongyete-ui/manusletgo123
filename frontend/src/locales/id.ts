@@ -5,6 +5,8 @@ export default {
   'New Chat': 'Obrolan Baru',
   'New Task': 'Tugas Baru',
   'Thinking': 'Berpikir',
+  'Show more': 'Tampilkan selengkapnya',
+  'Show less': 'Tampilkan lebih sedikit',
   'Task Progress': 'Progres Tugas',
   'Task Completed': 'Tugas Selesai',
   'Create a task to get started': 'Buat tugas untuk memulai',

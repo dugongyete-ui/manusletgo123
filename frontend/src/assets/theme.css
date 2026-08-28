@@ -198,3 +198,10 @@
     animation: shimmer 2.2s linear infinite;
     contain: paint;
 }
+
+/* Official Manus chat message utilities (scraped CSS) */
+.u-break-words {
+    overflow-wrap: break-word;
+    word-wrap: break-word;
+    word-break: break-word;
+}

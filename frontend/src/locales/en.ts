@@ -5,6 +5,8 @@ export default {
   'New Chat': 'New Chat',
   'New Task': 'New Task',
   'Thinking': 'Thinking',
+  'Show more': 'Show more',
+  'Show less': 'Show less',
   'Task Progress': 'Task Progress',
   'Task Completed': 'Task Completed',
   'Create a task to get started': 'Create a task to get started',

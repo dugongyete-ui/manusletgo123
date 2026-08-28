@@ -25,6 +25,8 @@ export interface StepEventData extends BaseEventData {
   status: "pending" | "running" | "completed" | "failed"
   id: string
   description: string
+  /** Present when the step finished with a concrete outcome. */
+  result?: string
 }
 
 export interface MessageEventData extends BaseEventData {

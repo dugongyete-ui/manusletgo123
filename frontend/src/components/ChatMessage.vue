@@ -28,7 +28,18 @@
         </div>
       </div>
     </div>
-    <div
+    <!-- Progress narration (message_notify_user): clamped to ~300 chars for a
+         clear, compact chat flow — expandable with the Show more toggle. -->
+    <template v-if="isProgressNarration && isLongNarration">
+      <div class="md-prose max-w-none p-0 m-0 prose dark:prose-invert text-[var(--text-primary)]"
+        v-html="renderMarkdown(clampedNarration)"></div>
+      <button type="button"
+        class="self-start text-[13px] font-medium text-[var(--text-brand)] hover:underline clickable bg-transparent border-0 p-0"
+        @click="narrationExpanded = !narrationExpanded">
+        {{ narrationExpanded ? t('Show less') : t('Show more') }}
+      </button>
+    </template>
+    <div v-else
       class="md-prose max-w-none p-0 m-0 prose dark:prose-invert text-[var(--text-primary)]"
       v-html="renderMarkdown(messageContent.content)"
       @click="handleMarkdownClick"></div>
@@ -103,6 +114,7 @@ import hljs from 'highlight.js';
 import DOMPurify from 'dompurify';
 import { CheckIcon } from 'lucide-vue-next';
 import { computed, ref, type Component } from 'vue';
+import { useI18n } from 'vue-i18n';
 import { ToolContent, StepContent } from '../types/message';
 import { useRelativeTime } from '../composables/useTime';
 import AttachmentsMessage from './AttachmentsMessage.vue';
@@ -127,6 +139,26 @@ const props = defineProps<{
 }>();
 
 const hideAssistantHeader = computed(() => props.hideHeader ?? false);
+
+const { t } = useI18n();
+
+// ── Progress narration clamp (official chat keeps notify lines brief) ────────
+// message_notify_user texts render as standalone chat lines; anything past
+// ~300 characters collapses to an ellipsis with a Show more toggle, so the
+// chat flow stays clear without losing the full content.
+const NARRATION_CLAMP = 300;
+const narrationExpanded = ref(false);
+const isProgressNarration = computed(
+  () => messageContent.value.is_progress === true && !messageContent.value.isStreaming,
+);
+const isLongNarration = computed(
+  () => (messageContent.value.content || '').length > NARRATION_CLAMP,
+);
+const clampedNarration = computed(() => {
+  const text = messageContent.value.content || '';
+  if (narrationExpanded.value) return text;
+  return `${text.slice(0, NARRATION_CLAMP).trimEnd()}…`;
+});
 
 const emit = defineEmits<{
   (e: 'toolClick', tool: ToolContent): void;

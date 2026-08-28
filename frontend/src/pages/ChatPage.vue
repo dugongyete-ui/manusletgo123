@@ -249,14 +249,11 @@ const allTools = computed<ToolContent[]>(() => {
 })
 
 // ── Message grouping ────────────────────────────────────────────────────────────
-// Manus-style: ONE task run = ONE connected timeline. From the first step
-// message, every mid-task element — subsequent steps, progress narrations
-// (is_progress), the model's own inline narration text — renders INSIDE the
-// timeline, beside the continuous rail. Only these break the timeline back
-// into standalone chat bubbles:
-//   • the final summary (is_final)      • agent questions (is_question)
-//   • user / error / attachment messages
-// The ack (before the first step) naturally stays standalone.
+// Official Manus chat timeline: steps render as stacked StepGroup shells;
+// progress narrations (message_notify_user → is_progress) render as
+// STANDALONE assistant chat messages BETWEEN the step groups (never inside
+// the step body). Only consecutive step messages group into one timeline
+// block; a narration or any other message ends the group.
 interface MessageGroup {
   kind: 'single' | 'timeline';
   messages: Message[];
@@ -270,8 +267,8 @@ const messageGroups = computed<MessageGroup[]>(() => {
   const msgs = messages.value
   let timeline: MessageGroup | null = null
   // A message renders as an assistant bubble (with the Dzeck avatar header)
-  // when it stands alone — narrations absorbed into a timeline do NOT count:
-  // they render inside the timeline rail, invisible to header suppression.
+  // when it stands alone — narrations rendered standalone DO count for header
+  // suppression, exactly like the official isConsecutiveAssistant.
   const isAssistantBubble = (m: Message) =>
     m.type === 'assistant' ||
     (m.type === 'attachments' && (m.content as AttachmentsContent).role === 'assistant')
@@ -299,20 +296,11 @@ const messageGroups = computed<MessageGroup[]>(() => {
       continue
     }
     if (m.type === 'assistant') {
-      const mc = m.content as MessageContent
-      if (mc.is_final || mc.is_question) {
-        // Summary / question — standalone, ends the timeline. It always gets
-        // its own avatar header (Manus-style): the narration lines before it
-        // rendered INSIDE the timeline, not as an assistant bubble.
-        pushSingle(m, i)
-        timeline = null
-      } else if (timeline) {
-        // Mid-task narration → inside the timeline, beside the rail.
-        timeline.messages.push(m)
-      } else {
-        // Ack / pre-plan text — standalone (no timeline started yet).
-        pushSingle(m, i)
-      }
+      // Every assistant message — ack, narration, question, summary — renders
+      // as a standalone chat bubble (official chat flow). It ends the current
+      // step group so the next step starts a fresh StepGroup shell.
+      pushSingle(m, i)
+      timeline = null
       continue
     }
     // user / tool / attachments — standalone, timeline ends.
@@ -324,9 +312,9 @@ const messageGroups = computed<MessageGroup[]>(() => {
 
 // Consecutive-assistant header suppression, evaluated on RENDERED groups:
 // the header is hidden only when the previous rendered group is itself a
-// standalone assistant bubble (message + attachments pair, back-to-back
-// standalone texts). A summary following the tool timeline always keeps
-// its Dzeck avatar header — exactly like Manus.
+// standalone assistant bubble. A narration following a step group keeps its
+// Dzeck avatar header — exactly like the official isConsecutiveAssistant
+// (a step message between two assistants breaks the chain).
 const isGroupHideHeader = (group: MessageGroup): boolean => {
   if (group.kind !== 'single') return false
   return !!group.hideHeader
@@ -529,24 +517,59 @@ const syncStepToPlan = (status: string) => {
   }
 }
 
-// Handle step event
+// Handle step event — official semantics (useAgentEvents):
+// • running/pending → ensure the step message exists (pending renders running)
+// • completed/failed → update the MATCHED step (by id, fallback last) with
+//   status + description + result (the outcome text shown under the StepGroup)
+const findStepById = (id: string): StepContent | undefined => {
+  for (let i = messages.value.length - 1; i >= 0; i--) {
+    const message = messages.value[i];
+    if (message.type !== 'step') continue;
+    const step = message.content as StepContent;
+    if (step.id === id) return step;
+  }
+  return undefined;
+};
+
+const ensureStepMessage = (stepData: StepEventData) => {
+  const existing = findStepById(stepData.id);
+  if (existing) {
+    existing.status = stepData.status;
+    existing.description = stepData.description || existing.description;
+    if (stepData.result) existing.result = stepData.result;
+    return existing;
+  }
+  if (stepData.status !== 'running' && stepData.status !== 'pending') {
+    return undefined;
+  }
+  const content = {
+    ...stepData,
+    status: stepData.status === 'pending' ? 'running' : stepData.status,
+    tools: [],
+  } as StepContent;
+  messages.value.push({ type: 'step', content });
+  return content;
+};
+
 const handleStepEvent = (stepData: StepEventData) => {
-  const lastStep = getLastStep();
-  if (stepData.status === 'running') {
-    messages.value.push({
-      type: 'step',
-      content: {
-        ...stepData,
-        tools: []
-      } as StepContent,
-    });
+  if (stepData.status === 'running' || stepData.status === 'pending') {
+    ensureStepMessage(stepData);
     syncStepToPlan('running');
   } else if (stepData.status === 'completed') {
-    if (lastStep) {
-      lastStep.status = stepData.status;
+    const matched = findStepById(stepData.id) ?? getLastStep();
+    if (matched) {
+      matched.status = stepData.status;
+      if (stepData.description) matched.description = stepData.description;
+      if (stepData.result) matched.result = stepData.result;
     }
     syncStepToPlan('completed');
   } else if (stepData.status === 'failed') {
+    const matched = findStepById(stepData.id) ?? getLastStep();
+    if (matched) {
+      matched.status = stepData.status;
+      if (stepData.description) matched.description = stepData.description;
+      if (stepData.result) matched.result = stepData.result;
+    }
     isLoading.value = false;
     syncStepToPlan('failed');
   }

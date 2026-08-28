@@ -257,20 +257,11 @@ const messageGroups = computed<MessageGroup[]>(() => {
       continue;
     }
     if (m.type === 'assistant') {
-      const mc = m.content as MessageContent;
-      if (mc.is_final || mc.is_question) {
-        // Summary / question — standalone, ends the timeline. It always gets
-        // its own avatar header (Manus-style): the narration lines before it
-        // rendered INSIDE the timeline, not as an assistant bubble.
-        pushSingle(m, i);
-        timeline = null;
-      } else if (timeline) {
-        // Mid-task narration → inside the timeline, beside the rail.
-        timeline.messages.push(m);
-      } else {
-        // Ack / pre-plan text — standalone (no timeline started yet).
-        pushSingle(m, i);
-      }
+      // Every assistant message — ack, narration, question, summary — renders
+      // as a standalone chat bubble (official chat flow). It ends the current
+      // step group so the next step starts a fresh StepGroup shell.
+      pushSingle(m, i);
+      timeline = null;
       continue;
     }
     // user / tool / attachments — standalone, timeline ends.
@@ -363,21 +354,49 @@ const handleToolEvent = (toolData: ToolEventData) => {
 }
 
 // Handle step event
+// Official semantics (SYNCED with production ChatPage): completed/failed
+// updates the MATCHED step (by id, fallback last) with status + description +
+// result (the outcome text shown under the StepGroup).
+const findStepById = (id: string): StepContent | undefined => {
+  for (let i = messages.value.length - 1; i >= 0; i--) {
+    const message = messages.value[i];
+    if (message.type !== 'step') continue;
+    const step = message.content as StepContent;
+    if (step.id === id) return step;
+  }
+  return undefined;
+};
+
 const handleStepEvent = (stepData: StepEventData) => {
-  const lastStep = getLastStep();
-  if (stepData.status === 'running') {
+  if (stepData.status === 'running' || stepData.status === 'pending') {
+    const existing = findStepById(stepData.id);
+    if (existing) {
+      existing.status = stepData.status === 'pending' ? 'running' : stepData.status;
+      existing.description = stepData.description || existing.description;
+      return;
+    }
     messages.value.push({
       type: 'step',
       content: {
         ...stepData,
+        status: stepData.status === 'pending' ? 'running' : stepData.status,
         tools: []
       } as StepContent,
     });
   } else if (stepData.status === 'completed') {
-    if (lastStep) {
-      lastStep.status = stepData.status;
+    const matched = findStepById(stepData.id) ?? getLastStep();
+    if (matched) {
+      matched.status = stepData.status;
+      if (stepData.description) matched.description = stepData.description;
+      if (stepData.result) matched.result = stepData.result;
     }
   } else if (stepData.status === 'failed') {
+    const matched = findStepById(stepData.id) ?? getLastStep();
+    if (matched) {
+      matched.status = stepData.status;
+      if (stepData.description) matched.description = stepData.description;
+      if (stepData.result) matched.result = stepData.result;
+    }
     isLoading.value = false;
   }
 }

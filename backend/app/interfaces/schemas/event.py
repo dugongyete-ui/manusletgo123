@@ -174,6 +174,7 @@ class StepEventData(BaseEventData):
     status: ExecutionStatus
     id: str
     description: str
+    result: Optional[str] = None
 
 class StepSSEEvent(BaseSSEEvent):
     event: Literal["step"] = "step"
@@ -186,7 +187,8 @@ class StepSSEEvent(BaseSSEEvent):
                 **BaseEventData.base_event_data(event),
                 status=event.step.status,
                 id=event.step.id,
-                description=event.step.description
+                description=event.step.description,
+                result=event.step.result,
             )
         )
 
@@ -213,7 +215,8 @@ class PlanSSEEvent(BaseSSEEvent):
                     **BaseEventData.base_event_data(event),
                     status=step.status,
                     id=step.id, 
-                    description=step.description
+                    description=step.description,
+                    result=step.result
                 ) for step in event.plan.steps]
             )
         )

@@ -1,77 +1,113 @@
 <template>
-  <div class="step-timeline relative flex flex-col w-full">
-    <!-- ONE continuous rail: a single unbroken dashed line from the first
-         step's node down through EVERY following step, narration and tool
-         row. The whole timeline shares ONE rail element, so the line can
-         never be cut between steps — no segment stitching, no gaps, no
-         restarts (Manus-style work loop). Status icons sit ON the line as
-         nodes (solid backgrounds) and all progress text renders BESIDE the
-         rail, indented right of it. -->
-    <div v-if="stepEntries.length"
-      class="absolute left-[7px] top-[10px] border-l border-dashed border-[var(--border-dark)] pointer-events-none"
-      :style="{ bottom: railBottom }"></div>
+  <!-- Official Manus StepGroup shells, stacked with pb-0 when the next block is
+       also a step (isStepConnectedToNext). Each step is its own collapsible
+       group:
 
-    <div v-for="(entry, i) in stepEntries" :key="entry.step.id || i" class="relative flex flex-col"
-      :class="i < stepEntries.length - 1 ? 'pb-[12px]' : ''">
-      <!-- Step header: status node + description + chevron -->
-      <div
-        class="text-sm w-full clickable flex gap-2 justify-between group/header truncate text-[var(--text-primary)]">
-        <div class="flex flex-row gap-2 justify-center items-center truncate" @click="toggle(i)">
-          <!-- status node — solid background so the rail passes BEHIND it -->
-          <div v-if="entry.step.status === 'completed'"
-            class="w-4 h-4 flex-shrink-0 flex items-center justify-center border-[var(--border-dark)] rounded-[15px] bg-[var(--text-disable)] dark:bg-[var(--fill-tsp-white-dark)] border-0">
-            <CheckIcon class="text-[var(--icon-white)] dark:text-[var(--icon-white-tsp)]" :size="10" />
+       • default state  → COLLAPSED (ChevronRight)
+       • collapsed LIVE (running) → still shows lastToolItems (the current tool)
+       • collapsed DONE (completed/failed) → header only — no body, no line
+       • expanded       → precedingItems + lastToolItems (everything)
+
+       Progress narrations (message_notify_user) are NOT part of the step body —
+       they render as standalone chat messages BETWEEN the step groups, exactly
+       like the official chat timeline. -->
+  <div v-for="(entry, i) in stepEntries" :key="entry.step.id || i"
+    class="flex flex-col empty:pb-0"
+    :class="i < stepEntries.length - 1 ? 'pb-0' : 'pb-2'">
+    <div class="flex flex-col">
+      <!-- Step header — official: h-[28px] single line, text-secondary,
+           hover:text-primary, toggle only when rows are hidden while collapsed -->
+      <component
+        :is="entry.canToggle ? 'button' : 'div'"
+        :type="entry.canToggle ? 'button' : undefined"
+        class="relative flex h-[28px] w-full min-w-0 items-center overflow-hidden whitespace-nowrap text-[14px] font-normal text-[var(--text-secondary)]"
+        :class="entry.canToggle
+          ? 'group/header clickable hover:text-[var(--text-primary)] border-0 bg-transparent p-0 text-start'
+          : undefined"
+        @click="entry.canToggle ? toggleStep(entry) : undefined"
+      >
+        <div class="flex min-w-0 flex-1 flex-nowrap items-center gap-[4px] overflow-hidden">
+          <div class="flex size-[20px] flex-shrink-0 items-center justify-center rounded-[100px]">
+            <div
+              v-if="entry.completed"
+              class="bg-[var(--fill-tsp-white-dark)] rounded-full size-[17px] flex items-center justify-center"
+            >
+              <StepCheckIcon :size="9" class="text-[var(--icon-tertiary)]" />
+            </div>
+            <LiveStatusCanvas v-else :size="16" :active="entry.step.status === 'running'" />
           </div>
-          <div v-else-if="entry.step.status === 'failed'"
-            class="w-4 h-4 flex-shrink-0 flex items-center justify-center rounded-[15px] border-0"
-            style="background:#d92d20;">
-            <XIcon class="text-white" :size="10" />
+          <div class="flex min-w-0 flex-1 items-center justify-start gap-[4px] overflow-hidden py-[4px]">
+            <span class="min-w-0 max-w-full overflow-hidden text-ellipsis whitespace-nowrap leading-[20px]">
+              {{ entry.step.description }}
+            </span>
+            <span
+              v-if="entry.canToggle"
+              class="hidden size-[16px] flex-shrink-0 items-center justify-center group-hover/header:flex"
+              :class="(!entry.completed || entry.expanded) ? 'flex' : undefined"
+            >
+              <ChevronDown v-if="entry.expanded" :size="16" color="currentColor" />
+              <ChevronRight v-else :size="16" color="currentColor" />
+            </span>
           </div>
-          <!-- Official Manus LiveStatusLoading: lottie spinner while running -->
-          <div v-else class="w-4 h-4 flex-shrink-0 flex items-center justify-center rounded-[15px] bg-[var(--background-gray-main)]">
-            <LiveStatusCanvas :size="14" :active="entry.step.status === 'running'" />
-          </div>
-          <div class="truncate font-medium markdown-content"
-            v-html="renderMarkdown(entry.step.description || '')">
-          </div>
-          <span class="flex-shrink-0 flex" @click.stop="toggle(i)">
-            <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none"
-              stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"
-              class="lucide lucide-chevron-down transition-transform duration-300 w-4 h-4"
-              :class="{ 'rotate-180': isExpanded(i) }">
-              <path d="m6 9 6 6 6-6"></path>
-            </svg>
-          </span>
         </div>
-        <div class="float-right transition text-[12px] text-[var(--text-tertiary)] invisible group-hover/header:visible">
+        <div
+          class="float-right transition text-[12px] leading-[16px] text-[var(--text-tertiary)] ms-auto flex-shrink-0"
+          :class="entry.canToggle ? 'invisible group-hover/header:visible' : undefined"
+        >
           {{ relativeTime(entry.step.timestamp) }}
         </div>
-      </div>
+      </component>
 
-      <!-- Step items: tool pills + progress narrations, chronologically ordered.
-           Narration text renders BESIDE the rail (indented right of it) — the
-           user-notification style of the Manus work loop.
-
-           Official Manus StepGroup collapse behaviour:
-           - while a step RUNS it stays expanded (live tools shimmer);
-           - when the step COMPLETES it auto-collapses to the header line
-             (narrations stay visible beside the rail);
-           - the user can always re-expand via the chevron. -->
-      <div class="flex" v-if="entry.items.length">
-        <div class="w-[24px] flex-shrink-0"></div>
-        <div
-          class="flex flex-col gap-[10px] flex-1 min-w-0 overflow-hidden pt-[6px] transition-[max-height,opacity] duration-150 ease-in-out"
-          :class="{ 'max-h-[100000px] opacity-100': isExpanded(i) || visibleItems(entry, i).length > 0, 'max-h-0 opacity-0': !isExpanded(i) && visibleItems(entry, i).length === 0 }">
-          <template v-for="item in visibleItems(entry, i)" :key="item.seq">
-            <ToolUse v-if="item.kind === 'tool' && item.tool" :tool="item.tool" :active="isActiveTool(entry, item)"
-              @click="handleToolClick(item.tool)" />
-            <!-- Narration: plain text line beside the rail — no bullet dot,
-                 Manus-style. The text itself says what is happening. -->
-            <div v-else
-              class="text-[13px] leading-[1.55] text-[var(--text-secondary)] max-w-full">
-              <span class="min-w-0 break-words" v-html="renderMarkdown(item.text || '')"></span>
+      <!-- Step body — official: solid 1px rail in a w-[20px] column, content
+           indented ps-[20px]. Only rendered when rows are visible. -->
+      <div v-if="entry.hasBody" class="flex min-w-0 flex-col">
+        <div class="relative min-w-0">
+          <div class="pointer-events-none absolute inset-y-0 start-0 flex w-[20px] justify-center py-2">
+            <div class="h-full w-px flex-none bg-[var(--border-main)]"></div>
+          </div>
+          <div class="flex min-w-0 flex-col ps-[20px]">
+            <div class="min-w-0 overflow-hidden" style="height: auto; opacity: 1">
+              <div class="min-w-0">
+                <div class="flex min-w-0 flex-col">
+                  <div
+                    v-for="item in entry.visiblePreceding"
+                    :key="item.id"
+                    class="min-w-0 [&:has(>[data-timeline-content]:empty)]:hidden"
+                    style="opacity: 1; transform: none"
+                  >
+                    <div data-timeline-content="true" class="min-w-0 flex-1 py-1 ps-[4px]">
+                      <ToolUse
+                        v-if="item.kind === 'tool'"
+                        :tool="item.tool"
+                        :active="entry.liveToolId === item.id"
+                        @click="handleToolClick(item.tool)"
+                      />
+                    </div>
+                  </div>
+                  <div
+                    v-for="item in entry.visibleLast"
+                    :key="item.id"
+                    class="min-w-0 [&:has(>[data-timeline-content]:empty)]:hidden"
+                    style="opacity: 1; transform: none"
+                  >
+                    <div data-timeline-content="true" class="min-w-0 flex-1 py-1 ps-[4px]">
+                      <ToolUse
+                        v-if="item.kind === 'tool'"
+                        :tool="item.tool"
+                        :active="entry.liveToolId === item.id"
+                        @click="handleToolClick(item.tool)"
+                      />
+                      <div v-else class="flex flex-col gap-2 w-full">
+                        <p class="text-[var(--text-secondary)] text-[14px] u-break-words whitespace-pre-wrap m-0">
+                          {{ item.text }}
+                        </p>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              </div>
             </div>
-          </template>
+          </div>
         </div>
       </div>
     </div>
@@ -79,13 +115,12 @@
 </template>
 
 <script setup lang="ts">
-import { computed, reactive, watch } from 'vue';
-import { marked } from 'marked';
-import DOMPurify from 'dompurify';
-import { CheckIcon, X as XIcon } from 'lucide-vue-next';
+import { computed, reactive } from 'vue';
+import { ChevronDown, ChevronRight } from 'lucide-vue-next';
 import ToolUse from './ToolUse.vue';
 import LiveStatusCanvas from './LiveStatusCanvas.vue';
-import { Message, MessageContent, ToolContent, StepContent } from '../types/message';
+import StepCheckIcon from './icons/StepCheckIcon.vue';
+import { Message, ToolContent, StepContent, StepTimelineItem, resolveStepTimelineVisibility } from '../types/message';
 import { useRelativeTime } from '../composables/useTime';
 
 const props = defineProps<{
@@ -98,134 +133,70 @@ const emit = defineEmits<{
 
 const { relativeTime } = useRelativeTime();
 
-// ── Chronological entries per step ──────────────────────────────────────────
-// Tools live inside each step message (appended while the step runs); progress
-// narrations arrive as interleaved assistant messages. Merge them into a single
-// ordered item list per step so the timeline reads like one continuous story.
-interface TimelineItem {
-  kind: 'tool' | 'narration';
-  timestamp: number;
-  seq: number;
-  tool?: ToolContent;
-  text?: string;
-}
+// ── Per-step reactive expansion state (official: default collapsed) ─────────
+// The user's toggle wins; the key survives status changes of the same step.
+const expandedOverrides = reactive<Record<string, boolean>>({});
+
 interface StepEntry {
   step: StepContent;
-  items: TimelineItem[];
+  completed: boolean;
+  canToggle: boolean;
+  expanded: boolean;
+  hasBody: boolean;
+  visiblePreceding: StepTimelineItem[];
+  visibleLast: StepTimelineItem[];
+  liveToolId: string | null;
 }
 
+// Consecutive step messages render as stacked StepGroup shells. Narrations and
+// other chat messages never enter here — they break the group in ChatPage.
 const stepEntries = computed<StepEntry[]>(() => {
   const entries: StepEntry[] = [];
-  let current: StepEntry | null = null;
-  let seq = 0;
   for (const msg of props.messages) {
-    if (msg.type === 'step') {
-      current = { step: msg.content as StepContent, items: [] };
-      entries.push(current);
-    } else if (msg.type === 'assistant' && current) {
-      const mc = msg.content as MessageContent;
-      if (!mc.content) continue;
-      current.items.push({
-        kind: 'narration',
-        timestamp: mc.timestamp,
-        seq: seq++,
-        text: mc.content,
-      });
+    if (msg.type !== 'step') continue;
+    const step = msg.content as StepContent;
+    const visibility = resolveStepTimelineVisibility(step);
+    const completed = step.status === 'completed' || step.status === 'failed';
+    const key = step.id;
+    const override = expandedOverrides[key];
+    const expanded = override !== undefined ? override : false;
+
+    const visiblePreceding = expanded ? visibility.precedingItems : [];
+    const visibleLast = visibility.lastToolItems.length === 0
+      ? []
+      : (expanded ? visibility.lastToolItems : visibility.collapsedVisibleItems);
+
+    // Current (last) tool of a running step keeps its label shimmering.
+    let liveToolId: string | null = null;
+    if (!completed) {
+      for (let i = visibility.lastToolItems.length - 1; i >= 0; i -= 1) {
+        const item = visibility.lastToolItems[i];
+        if (item.kind === 'tool') { liveToolId = item.id; break; }
+      }
     }
-  }
-  for (const entry of entries) {
-    for (const tool of entry.step.tools || []) {
-      // Message-tool events are converted to narration messages by
-      // handleToolEvent — if one still rides along inside a step (legacy
-      // session state), skip it so its text never renders twice.
-      if (tool.name === 'message') continue;
-      entry.items.push({
-        kind: 'tool',
-        timestamp: tool.timestamp,
-        seq: seq++,
-        tool,
-      });
-    }
-    // Stable sort: timestamp first, insertion order breaks ties.
-    entry.items.sort((a, b) => a.timestamp - b.timestamp || a.seq - b.seq);
+
+    entries.push({
+      step,
+      completed,
+      canToggle: visibility.canToggle,
+      expanded,
+      hasBody: visiblePreceding.length > 0 || visibleLast.length > 0,
+      visiblePreceding,
+      visibleLast,
+      liveToolId,
+    });
   }
   return entries;
 });
 
-// Where the single rail ends. With visible items under the last step (tool
-// pills / narrations), the line runs beside them to the bottom of the block.
-// Otherwise it stops exactly at the last node's center (header height 20px,
-// icon center at 10px) — the line never dangles past the final node.
-const railBottom = computed(() => {
-  const entries = stepEntries.value;
-  const last = entries[entries.length - 1];
-  if (!last) return '0px';
-  const lastIdx = entries.length - 1;
-  return visibleItems(last, lastIdx).length && isExpanded(lastIdx) ? '0px' : '10px';
-});
-
-// ── Per-step collapse state (official Manus StepGroup) ─────────────────────
-// 'auto': derived from status — running/failed steps expand, completed steps
-// collapse to their header line (narrations stay). The user can override any
-// step explicitly; the override survives later status changes.
-type CollapseState = boolean | null; // null = auto
-const expanded = reactive<Record<string, CollapseState>>({});
-
-const stepKey = (i: number) => {
-  const entry = stepEntries.value[i];
-  return entry?.step.id || String(i);
-};
-
-const isExpanded = (i: number) => {
-  const key = stepKey(i);
-  const override = expanded[key];
-  if (override !== null && override !== undefined) return override;
-  const status = stepEntries.value[i]?.step.status;
-  // Running (and failed, so the error context stays visible) steps expand;
-  // completed steps auto-collapse — the classic Manus compact timeline.
-  return status === 'running' || status === 'failed' || status === 'pending';
-};
-
-const toggle = (i: number) => {
-  const key = stepKey(i);
-  expanded[key] = !isExpanded(i);
-};
-
-// When a step finishes, drop any stale auto state so the collapse looks
-// immediate (the computed already derives it, this just cleans up).
-watch(() => stepEntries.value.map(e => e.step.status).join(','), () => {
-  for (const key of Object.keys(expanded)) {
-    if (expanded[key] === null) delete expanded[key];
-  }
-});
-
-// Items rendered for an entry. Collapsed completed steps still show their
-// narration lines beside the rail (the Manus work-loop notifications) and
-// hide the tool pills; expanded shows everything.
-const visibleItems = (entry: StepEntry, i: number): TimelineItem[] => {
-  if (isExpanded(i)) return entry.items;
-  return entry.items.filter(item => item.kind === 'narration');
-};
-
-// ── Live tool shimmer ───────────────────────────────────────────────────────
-// The LAST tool row of a RUNNING step keeps its label shimmering for the whole
-// live window (official Manus keeps the current action glowing while work
-// continues, even between tool calls).
-const isActiveTool = (entry: StepEntry, item: TimelineItem): boolean => {
-  if (entry.step.status !== 'running') return false;
-  const tools = entry.items.filter(it => it.kind === 'tool' && it.tool);
-  const lastTool = tools[tools.length - 1];
-  return lastTool === item;
+// Toggle via the reactive override map (mutating entry objects from the
+// computed would be discarded on re-evaluation).
+const toggleStep = (entry: StepEntry) => {
+  const key = entry.step.id;
+  expandedOverrides[key] = !entry.expanded;
 };
 
 const handleToolClick = (tool: ToolContent) => {
   emit('toolClick', tool);
-};
-
-// Minimal markdown render for step descriptions and narration lines.
-const renderMarkdown = (text: string) => {
-  if (typeof text !== 'string') return '';
-  const html = marked.parseInline(text, { gfm: true }) as string;
-  return DOMPurify.sanitize(html);
 };
 </script>
