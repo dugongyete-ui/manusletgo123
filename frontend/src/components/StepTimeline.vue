@@ -59,8 +59,10 @@
       </component>
 
       <!-- Step body — official: solid 1px rail in a w-[20px] column, content
-           indented ps-[20px]. Only rendered when rows are visible. -->
-      <div v-if="entry.hasBody" class="flex min-w-0 flex-col">
+           indented ps-[20px]. Only rendered when rows are visible. The body
+           animates in with a short fade/slide so expand–collapse feels smooth
+           instead of snapping. -->
+      <div v-if="entry.hasBody" class="flex min-w-0 flex-col step-body-in">
         <div class="relative min-w-0">
           <div class="pointer-events-none absolute inset-y-0 start-0 flex w-[20px] justify-center py-2">
             <div class="h-full w-px flex-none bg-[var(--border-main)]"></div>
@@ -97,10 +99,23 @@
                         :active="entry.liveToolId === item.id"
                         @click="handleToolClick(item.tool)"
                       />
-                      <div v-else class="flex flex-col gap-2 w-full">
+                      <!-- Step result — official shows a short outcome line under
+                           the StepGroup. Long results (older sessions, verbose
+                           models) are clamped to ~300 chars with a Show more /
+                           Show less toggle so an expanded step never becomes a
+                           wall of text. -->
+                      <div v-else class="flex flex-col gap-1 w-full">
                         <p class="text-[var(--text-secondary)] text-[14px] u-break-words whitespace-pre-wrap m-0">
-                          {{ item.text }}
+                          {{ clampedResult(item) }}
                         </p>
+                        <button
+                          v-if="item.text.length > RESULT_CLAMP"
+                          type="button"
+                          class="self-start text-[13px] font-medium text-[var(--text-brand)] hover:underline clickable bg-transparent border-0 p-0"
+                          @click="toggleResult(item.id)"
+                        >
+                          {{ resultExpanded[item.id] ? t('Show less') : t('Show more') }}
+                        </button>
                       </div>
                     </div>
                   </div>
@@ -116,6 +131,7 @@
 
 <script setup lang="ts">
 import { computed, reactive } from 'vue';
+import { useI18n } from 'vue-i18n';
 import { ChevronDown, ChevronRight } from 'lucide-vue-next';
 import ToolUse from './ToolUse.vue';
 import LiveStatusCanvas from './LiveStatusCanvas.vue';
@@ -131,11 +147,28 @@ const emit = defineEmits<{
   (e: 'toolClick', tool: ToolContent): void;
 }>();
 
+const { t } = useI18n();
 const { relativeTime } = useRelativeTime();
 
 // ── Per-step reactive expansion state (official: default collapsed) ─────────
 // The user's toggle wins; the key survives status changes of the same step.
 const expandedOverrides = reactive<Record<string, boolean>>({});
+
+// ── Step result clamp ────────────────────────────────────────────────────────
+// The result is a short outcome line; anything past ~300 characters collapses
+// with an ellipsis + Show more toggle (same pattern as the narration clamp in
+// ChatMessage) so an expanded step stays compact and scannable.
+const RESULT_CLAMP = 300;
+const resultExpanded = reactive<Record<string, boolean>>({});
+const clampedResult = (item: StepTimelineItem & { text: string }): string => {
+  if (item.kind !== 'result') return '';
+  const text = item.text || '';
+  if (resultExpanded[item.id] || text.length <= RESULT_CLAMP) return text;
+  return `${text.slice(0, RESULT_CLAMP).trimEnd()}…`;
+};
+const toggleResult = (id: string) => {
+  resultExpanded[id] = !resultExpanded[id];
+};
 
 interface StepEntry {
   step: StepContent;
@@ -200,3 +233,26 @@ const handleToolClick = (tool: ToolContent) => {
   emit('toolClick', tool);
 };
 </script>
+
+<style scoped>
+/* Smooth expand/collapse: the step body fades and slides in shortly instead
+   of popping into place. Runs once when the body mounts (v-if toggling). */
+.step-body-in {
+  animation: step-body-in 160ms ease-out;
+}
+@keyframes step-body-in {
+  from {
+    opacity: 0;
+    transform: translateY(-3px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .step-body-in {
+    animation: none;
+  }
+}
+</style>

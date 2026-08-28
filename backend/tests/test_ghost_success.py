@@ -252,12 +252,20 @@ async def test_persistent_ghost_fails_the_step_honestly():
     assert script.calls == 3
     assert "FINAL attempt" in script.contents[2]  # escalation on last round
 
-    # The user-visible fallback narration explains the failure.
+    # The user-visible fallback narration is ONE short clean line (no bold
+    # headers, no internal diagnostics, no step-description echo).
     narrations = [
         e for e in events
         if isinstance(e, MessageEvent) and e.is_progress
     ]
-    assert any("fabrikasi" in (n.message or "") for n in narrations)
+    assert any(
+        "belum bisa diselesaikan" in (n.message or "")
+        or "could not be fully completed" in (n.message or "")
+        for n in narrations
+    )
+    for n in narrations:
+        assert len(n.message or "") <= 200   # stays a short, scannable line
+        assert "**" not in (n.message or "")  # no markdown shouting
 
 
 @pytest.mark.asyncio
@@ -345,8 +353,120 @@ async def test_legit_first_round_runs_no_correction():
     assert completed[0].step.success is True
 
 
-async def _collect_step(agent) -> list:
-    plan = Plan(title="t", goal="g", language="id", steps=[])
+async def _collect_step(agent, plan_steps=None) -> list:
+    if plan_steps is None:
+        plan_steps = []
+    plan = Plan(title="t", goal="g", language="id", steps=plan_steps)
     step = Step(id="1", description="Install ffmpeg dan yt-dlp")
     message = Message(message="buat script")
     return [e async for e in agent.execute_step(plan, step, message)]
+
+
+# ── Silent-success fallback: one short progress line per silent step ────────
+
+@pytest.mark.asyncio
+async def test_silent_success_emits_short_progress_line():
+    """Multi-step plan + successful silent step (no message_notify_user):
+    exactly ONE is_progress line derived from the step result, clamped to
+    200 chars — the user always sees mid-task activity."""
+    agent = make_executor()
+    long_result = (
+        "Menelusuri sumber terpercaya seperti Wikipedia bahasa Indonesia, saya "
+        "mengumpulkan informasi tentang harimau Sumatera termasuk taksonomi, "
+        "habitat, dan populasi terkini. Populasinya kini kurang dari 400 ekor. "
+        "Ancaman utama adalah perburuan liar dan hilangnya hutan."
+    )
+    script = _RoundScript([shell_tool_events() + [final_message(ok_json(long_result))]])
+    agent.execute = script.execute
+
+    async def parse(text):
+        return json.loads(text)
+    agent._parse_json = parse
+
+    events = await _collect_step(
+        agent,
+        plan_steps=[
+            Step(id="1", description="Cari data"),
+            Step(id="2", description="Tulis artikel"),
+        ],
+    )
+
+    progress = [
+        e for e in events
+        if isinstance(e, MessageEvent) and e.is_progress
+    ]
+    assert len(progress) == 1
+    assert len(progress[0].message) <= 200
+    assert progress[0].message.startswith("Menelusuri sumber")
+    assert progress[0].message.endswith("…") is False or len(progress[0].message) <= 200
+
+
+@pytest.mark.asyncio
+async def test_silent_success_skipped_for_single_step_plan():
+    """Single-step plan: ack + final summary are enough — no derived line."""
+    agent = make_executor()
+    script = _RoundScript([shell_tool_events() + [final_message(ok_json())]])
+    agent.execute = script.execute
+
+    async def parse(text):
+        return json.loads(text)
+    agent._parse_json = parse
+
+    events = await _collect_step(
+        agent, plan_steps=[Step(id="1", description="Satu-satunya langkah")]
+    )
+
+    progress = [
+        e for e in events
+        if isinstance(e, MessageEvent) and e.is_progress
+    ]
+    assert progress == []
+
+
+@pytest.mark.asyncio
+async def test_narrated_step_skips_derived_line():
+    """The model already sent message_notify_user during the step — the
+    model-driven narration wins and NO derived progress line is added."""
+    agent = make_executor()
+    notify_call = ToolEvent(
+        status=ToolStatus.CALLING,
+        tool_call_id="n1",
+        tool_name="message",
+        function_name="message_notify_user",
+        function_args={"text": "Data dari Wikipedia sudah lengkap, lanjut menulis."},
+    )
+    notify_done = ToolEvent(
+        status=ToolStatus.CALLED,
+        tool_call_id="n1",
+        tool_name="message",
+        function_name="message_notify_user",
+        function_args={"text": "Data dari Wikipedia sudah lengkap, lanjut menulis."},
+    )
+    script = _RoundScript([
+        shell_tool_events("t1") + [notify_call, notify_done, final_message(ok_json())]
+    ])
+    agent.execute = script.execute
+
+    async def parse(text):
+        return json.loads(text)
+    agent._parse_json = parse
+
+    events = await _collect_step(
+        agent,
+        plan_steps=[
+            Step(id="1", description="Cari data"),
+            Step(id="2", description="Tulis artikel"),
+        ],
+    )
+
+    progress = [
+        e for e in events
+        if isinstance(e, MessageEvent) and e.is_progress
+    ]
+    # No derived line: the notify tool events streamed through on their own.
+    assert progress == []
+    notify_events = [
+        e for e in events
+        if isinstance(e, ToolEvent) and e.function_name == "message_notify_user"
+    ]
+    assert len(notify_events) == 2

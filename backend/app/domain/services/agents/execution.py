@@ -519,67 +519,76 @@ class ExecutionAgent(BaseAgent):
 
         # ── Fallback: step failed with no user-visible narration ──────────────
         # If the step ended in failure and the LLM never called
-        # message_notify_user, the user sees a failed chip with no explanation.
-        # Emit a diagnostic message so there is always actionable context.
+        # message_notify_user, emit ONE short clean line so the user is not
+        # left wondering. Keep it minimal and friendly — no bold headers, no
+        # internal model diagnostics, no step-description echo (the timeline
+        # already shows which step it was).
         if not step.success and not narration_sent:
             _lang = getattr(plan, "language", "en") or "en"
             _error = (step.error or "").strip()
-            _step_desc = (step.description or "").strip()
-
-            if "non-JSON response" in _error:
-                _reason_en = (
-                    "The AI model produced a plain-text response instead of calling "
-                    "the required tools — this usually happens when the conversation "
-                    "context becomes very long."
-                )
-                _reason_id = (
-                    "Model AI menghasilkan teks biasa alih-alih memanggil tools — "
-                    "ini biasanya terjadi saat konteks percakapan sudah terlalu panjang."
-                )
-            elif "without executing any tools" in _error:
-                _reason_en = (
-                    "The AI model claimed the step was complete without actually "
-                    "running any tools (fabricated result). The step is marked "
-                    "failed so the plan continues with real data only."
-                )
-                _reason_id = (
-                    "Model AI mengklaim langkah selesai tanpa benar-benar menjalankan "
-                    "tools (hasil fabrikasi). Langkah ditandai gagal supaya rencana "
-                    "hanya melanjutkan dengan data nyata."
-                )
-            elif _error:
-                _reason_en = f"Recorded error: {_error}"
-                _reason_id = f"Error yang tercatat: {_error}"
-            else:
-                _reason_en = (
-                    "The AI model completed the step without calling any tools "
-                    "and without providing an explanation."
-                )
-                _reason_id = (
-                    "Model AI menyelesaikan langkah tanpa memanggil tools apapun "
-                    "dan tanpa memberikan penjelasan."
-                )
-
             logger.warning(
                 f"Step {step.id!r} failed silently (success=False, no narration). "
-                f"desc={_step_desc!r} error={_error!r}"
+                f"error={_error!r}"
             )
-
             if _lang == "en":
                 _msg = (
-                    f"**Step could not be completed:** {_step_desc}\n\n"
-                    f"**Reason:** {_reason_en}\n\n"
-                    "Analysis will continue with the data already collected from other steps."
+                    "This step could not be fully completed — "
+                    "continuing with the data already collected."
                 )
             else:
                 _msg = (
-                    f"**Langkah tidak dapat diselesaikan:** {_step_desc}\n\n"
-                    f"**Alasan:** {_reason_id}\n\n"
-                    "Analisis akan dilanjutkan dengan data yang sudah terkumpul dari langkah lain."
+                    "Langkah ini belum bisa diselesaikan sepenuhnya — "
+                    "saya lanjutkan dengan data yang sudah terkumpul."
                 )
             yield MessageEvent(role="assistant", message=_msg, is_progress=True)
 
+        # ── Silent-success fallback: keep the user informed mid-task ──────────
+        # Free-tier models often finish a whole step without a single
+        # message_notify_user, so the chat shows no activity between the
+        # opening ack and the final summary (user complaint: "notifikasi
+        # user tidak ada"). When the model stayed silent during a SUCCESSFUL
+        # multi-step-plan step that produced a result, emit ONE short
+        # progress line derived from the step's own result (first 1-2
+        # sentences, clamped). Model-driven narrations always win; single-step
+        # plans skip this (ack + final summary are enough there).
+        if (
+            step.success
+            and not narration_sent
+            and len(getattr(plan, "steps", []) or []) > 1
+            and (step.result or "").strip()
+        ):
+            _progress_line = self._first_sentences(step.result, max_chars=200)
+            if _progress_line:
+                yield MessageEvent(
+                    role="assistant", message=_progress_line, is_progress=True
+                )
+
         step.status = ExecutionStatus.COMPLETED
+
+    @staticmethod
+    def _first_sentences(text: str, max_chars: int = 200) -> str:
+        """First 1-2 sentences of a step result, clamped for a progress line.
+
+        Used by the silent-success fallback: the derived line must read like
+        a natural progress note (what was found/accomplished), never a wall.
+        """
+        import re as _re
+
+        clean = _re.sub(r"\s+", " ", (text or "").strip())
+        if not clean:
+            return ""
+        sentences = _re.split(r"(?<=[.!?])\s+", clean)
+        out = ""
+        for sentence in sentences[:2]:
+            candidate = f"{out} {sentence}".strip()
+            if len(candidate) > max_chars and out:
+                break
+            out = candidate
+            if len(out) >= max_chars:
+                break
+        if len(out) > max_chars:
+            out = out[:max_chars].rsplit(" ", 1)[0].rstrip(",;:") + "…"
+        return out
 
     def _extract_text_from_json(self, text: str) -> str:
         """
