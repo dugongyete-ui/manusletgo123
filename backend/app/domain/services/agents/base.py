@@ -817,29 +817,28 @@ class BaseAgent(ABC):
         await self._add_to_memory([message])
         return message
 
-    async def astream_text_with_fallback(self, messages) -> str:
-        """Collect the full streamed text from the model.
+    async def astream_chunks_with_fallback(self, messages) -> AsyncGenerator[str, None]:
+        """Yield text chunks from a direct model stream with provider fallback.
 
-        On a limit/quota/auth error the request fails BEFORE any chunk is
-        produced, so it is safe to rotate providers and retry. Used by the
-        direct-astream call sites (planner acknowledgement, executor summary)
-        that bypass ask_with_messages.
-
-        Rate limits use the same PATIENT schedule as ask_with_messages:
-        provider rotation + capped back-off + extended budget, so a long task
-        summarising at a rate-limit window auto-resumes instead of dying with
-        a 429 error after two attempts.
+        Direct streams are used for short user-facing responses such as the
+        initial acknowledgement and the final summary.  A provider normally
+        rejects a request before sending its first chunk, so retries are safe
+        while ``emitted`` is false.  Once a provider has sent content, retrying
+        would duplicate text in the UI; surface that error instead.
         """
         attempt = 0
         while True:
+            emitted = False
             try:
-                parts: list = []
                 async for chunk in self._model.astream(messages):
                     text = chunk.content if isinstance(chunk.content, str) else ""
                     if text:
-                        parts.append(text)
-                return "".join(parts)
+                        emitted = True
+                        yield text
+                return
             except Exception as e:
+                if emitted:
+                    raise
                 _is_limit = self._is_limit_error(e)
                 _budget = (
                     self._rate_limit_budget() if _is_limit else self.max_retries
@@ -877,7 +876,13 @@ class BaseAgent(ABC):
                     await asyncio.sleep(wait)
                     continue
                 raise
-        return ""
+
+    async def astream_text_with_fallback(self, messages) -> str:
+        """Collect a direct model stream while preserving fallback behavior."""
+        parts: list[str] = []
+        async for text in self.astream_chunks_with_fallback(messages):
+            parts.append(text)
+        return "".join(parts)
 
     async def ask(self, request: Union[str, list], format: Optional[str] = None) -> AIMessage:
         return await self.ask_with_messages([

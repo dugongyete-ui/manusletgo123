@@ -1,4 +1,6 @@
+import asyncio
 import logging
+import re
 from app.domain.services.flows.base import BaseFlow
 from app.domain.models.message import Message
 from typing import AsyncGenerator, Optional
@@ -45,6 +47,27 @@ class AgentStatus(str, Enum):
 
 
 class PlanActFlow(BaseFlow):
+    @staticmethod
+    def _should_stream_acknowledgement(message: Message) -> bool:
+        """Only pre-ack requests that are likely to execute tools.
+
+        Conversational questions can produce a zero-step plan whose message is
+        already the complete answer.  Starting an acknowledgement for those
+        requests would create a second assistant bubble when that answer arrives.
+        """
+        if message.attachments or message.vision_images:
+            return True
+
+        task_verbs = (
+            "buat", "buatkan", "bikin", "bangun", "tulis", "hasilkan",
+            "ubah", "edit", "hapus", "kirim", "cari", "analisis", "unduh",
+            "download", "upload", "implement", "build", "create", "write",
+            "generate", "update", "delete", "send", "search", "analyze",
+            "design", "run", "jalankan", "buka", "open",
+        )
+        words = set(re.findall(r"[a-z0-9]+", message.message.lower()))
+        return any(verb in words for verb in task_verbs)
+
     def __init__(
         self,
         agent_id: str,
@@ -201,55 +224,114 @@ class PlanActFlow(BaseFlow):
                 logger.info(f"Agent {self._agent_id} state changed from {AgentStatus.IDLE} to {AgentStatus.PLANNING}")
                 self.status = AgentStatus.PLANNING
             elif self.status == AgentStatus.PLANNING:
-                # ── Step 1: collect the plan first so we know whether steps exist ─────
-                logger.info(f"Agent {self._agent_id} started creating plan")
+                # Start planning and the short user-facing acknowledgement at
+                # the same time.  The acknowledgement must not wait for the
+                # planner's JSON response; that wait was the main source of the
+                # "silent first response" feeling in the chat.
+                logger.info(
+                    f"Agent {self._agent_id} started plan and acknowledgement concurrently"
+                )
                 plan_events_buffer = []
-                async for event in self.planner.create_plan(message):
-                    plan_events_buffer.append(event)
-                    if isinstance(event, PlanEvent) and event.status == PlanStatus.CREATED:
-                        self.plan = event.plan
+                event_queue: asyncio.Queue = asyncio.Queue()
 
-                        has_pre_extracted = "<file name=" in message.message
+                async def _produce_plan() -> None:
+                    try:
+                        async for plan_event in self.planner.create_plan(message):
+                            await event_queue.put(("plan", plan_event))
+                    except Exception as exc:
+                        await event_queue.put(("plan_error", exc))
+                    finally:
+                        await event_queue.put(("plan_done", None))
 
-                        # Safety net A: 0 steps + raw sandbox attachments (no <file> tags)
-                        if len(self.plan.steps) == 0 and message.attachments and not has_pre_extracted:
-                            from app.domain.models.plan import Step as PlanStep
-                            file_list = "\n".join(message.attachments)
-                            self.plan.steps = [PlanStep(
-                                id="1",
-                                description=(
-                                    f"Extract and analyze the content of the uploaded file(s):\n"
-                                    f"{file_list}\n"
-                                    f"Save extracted text to /tmp/extracted_content.txt, "
-                                    f"then read it and respond to the user's request."
+                async def _produce_acknowledgement() -> None:
+                    try:
+                        async for ack_event in self.planner.acknowledge_stream(message):
+                            await event_queue.put(("ack", ack_event))
+                    except Exception as exc:
+                        # Acknowledgement is best-effort; the plan must still
+                        # run when this optional fast path fails.
+                        logger.warning(
+                            f"Agent {self._agent_id} acknowledgement failed: {exc}"
+                        )
+                    finally:
+                        await event_queue.put(("ack_done", None))
+
+                plan_task = asyncio.create_task(_produce_plan())
+                ack_task = None
+                should_stream_ack = self._should_stream_acknowledgement(message)
+                if should_stream_ack:
+                    ack_task = asyncio.create_task(_produce_acknowledgement())
+                plan_finished = False
+                acknowledgement_finished = not should_stream_ack
+
+                while not (plan_finished and acknowledgement_finished):
+                    kind, event = await event_queue.get()
+                    if kind == "plan":
+                        plan_events_buffer.append(event)
+                        if isinstance(event, PlanEvent) and event.status == PlanStatus.CREATED:
+                            self.plan = event.plan
+
+                            has_pre_extracted = "<file name=" in message.message
+
+                            # Safety net A: 0 steps + raw sandbox attachments (no <file> tags)
+                            if len(self.plan.steps) == 0 and message.attachments and not has_pre_extracted:
+                                from app.domain.models.plan import Step as PlanStep
+                                file_list = "\n".join(message.attachments)
+                                self.plan.steps = [PlanStep(
+                                    id="1",
+                                    description=(
+                                        f"Extract and analyze the content of the uploaded file(s):\n"
+                                        f"{file_list}\n"
+                                        f"Save extracted text to /tmp/extracted_content.txt, "
+                                        f"then read it and respond to the user's request."
+                                    )
+                                )]
+                                logger.warning(
+                                    f"Agent {self._agent_id}: planner returned 0 steps with "
+                                    f"{len(message.attachments)} raw attachment(s) — injected default step"
                                 )
-                            )]
-                            logger.warning(
-                                f"Agent {self._agent_id}: planner returned 0 steps with "
-                                f"{len(message.attachments)} raw attachment(s) — injected default step"
-                            )
 
-                        # Safety net B: 0 steps + pre-extracted <file> tags
-                        if len(self.plan.steps) == 0 and has_pre_extracted:
-                            from app.domain.models.plan import Step as PlanStep
-                            import re as _re
-                            fname_match = _re.search(r'<file name="([^"]+)"', message.message)
-                            fname = fname_match.group(1) if fname_match else "the uploaded file"
-                            self.plan.steps = [PlanStep(
-                                id="1",
-                                description=(
-                                    f"The file \"{fname}\" content is already in the user message "
-                                    f"inside <file> tags. Read it and respond to the user's request fully."
+                            # Safety net B: 0 steps + pre-extracted <file> tags
+                            if len(self.plan.steps) == 0 and has_pre_extracted:
+                                from app.domain.models.plan import Step as PlanStep
+                                import re as _re
+                                fname_match = _re.search(r'<file name="([^"]+)"', message.message)
+                                fname = fname_match.group(1) if fname_match else "the uploaded file"
+                                self.plan.steps = [PlanStep(
+                                    id="1",
+                                    description=(
+                                        f"The file \"{fname}\" content is already in the user message "
+                                        f"inside <file> tags. Read it and respond to the user's request fully."
+                                    )
+                                )]
+                                logger.info(
+                                    f"Agent {self._agent_id}: routed pre-extracted file request "
+                                    f"through executor for a complete response"
                                 )
-                            )]
-                            logger.info(
-                                f"Agent {self._agent_id}: routed pre-extracted file request "
-                                f"through executor for a complete response"
-                            )
+                    elif kind == "ack":
+                        # Message chunks go straight to the SSE stream and are
+                        # intentionally not persisted by the task runner.
+                        yield event
+                    elif kind == "plan_error":
+                        if ack_task:
+                            ack_task.cancel()
+                        raise event
+                    elif kind == "plan_done":
+                        plan_finished = True
+                    elif kind == "ack_done":
+                        acknowledgement_finished = True
 
-                logger.info(f"Agent {self._agent_id} created plan with {len(self.plan.steps)} steps")
+                if ack_task:
+                    await asyncio.gather(plan_task, ack_task, return_exceptions=True)
+                else:
+                    await plan_task
+                logger.info(
+                    f"Agent {self._agent_id} created plan with {len(self.plan.steps)} steps"
+                )
 
-                # ── Step 2: now stream acknowledge OR direct answer based on step count ─
+                # Emit the plan only after its JSON is complete.  At this point
+                # the acknowledgement stream has also ended, so the next event
+                # is the plan followed immediately by execution.
                 if len(self.plan.steps) == 0:
                     # Simple / conversational query — plan.message IS the full answer.
                     # Skip acknowledge entirely to avoid a double-response bubble.
@@ -259,13 +341,6 @@ class PlanActFlow(BaseFlow):
                             role="assistant", message=self.plan.message, is_final=True
                         )
                 else:
-                    # Complex query: send acknowledgment streaming NOW (gives quick feedback
-                    # while the user watches the plan appear below it).
-                    logger.info(f"Agent {self._agent_id} streaming acknowledgment")
-                    async for ack_event in self.planner.acknowledge(message):
-                        yield ack_event
-
-                    # Emit buffered plan events so the UI can render the steps list
                     yield TitleEvent(title=self.plan.title)
                     for event in plan_events_buffer:
                         if isinstance(event, PlanEvent):

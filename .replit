@@ -59,13 +59,13 @@ outputType = "webview"
 name = "Backend API"
 author = "agent"
 
-[[workflows.workflow.tasks]]
-task = "shell.exec"
-args = "cd backend && python3 -m uvicorn app.main:app --host localhost --port 8000"
-waitForPort = 8000
-
 [workflows.workflow.metadata]
 outputType = "console"
+
+[[workflows.workflow.tasks]]
+task = "shell.exec"
+args = "cd backend && python3 -m uvicorn app.main:app --host 0.0.0.0 --port 8000"
+waitForPort = 8000
 
 [[workflows.workflow]]
 name = "backend-imports"
@@ -125,6 +125,10 @@ args = "cd sandbox && /home/runner/workspace/.pythonlibs/bin/supervisord -n -c r
 [[ports]]
 localPort = 5000
 externalPort = 80
+
+[[ports]]
+localPort = 8000
+externalPort = 8000
 
 [[ports]]
 localPort = 8080

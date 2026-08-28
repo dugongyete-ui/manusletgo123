@@ -212,13 +212,8 @@ class PlannerAgent(BaseAgent):
                     names.append(n)
         return names
 
-    async def acknowledge(self, message: Message) -> AsyncGenerator[BaseEvent, None]:
-        """Stream an acknowledgment in < 1 s before full JSON planning begins.
-
-        Uses an isolated plain-text prompt.  This must not reuse planner memory:
-        planner memory contains the JSON planning contract, which can make a model
-        stream the plan itself as the acknowledgement.
-        """
+    async def _acknowledgement_chunks(self, message: Message) -> AsyncGenerator[str, None]:
+        """Yield raw acknowledgement text from an isolated plain-text prompt."""
         import re
 
         # Collect context clues (files, images) so the AI is aware of what's present.
@@ -237,11 +232,9 @@ class PlannerAgent(BaseAgent):
         # Vision images only
         elif message.vision_images:
             context_note = "\n[Image(s) attached]"
-        # No current file — check prior conversation turns
-        else:
-            prev_files = await self._get_previous_file_names()
-            if prev_files:
-                context_note = f"\n[Previously shared files: {', '.join(prev_files)}]"
+        # Do not query planner memory here.  Planning already runs in parallel
+        # and owns the conversation-history lookup; keeping this fast path
+        # memory-free avoids a race during first-time memory initialisation.
 
         prompt = (
             f"{message.message}{context_note}\n\n"
@@ -252,39 +245,58 @@ class PlannerAgent(BaseAgent):
             "request). No rigid format, no lists, no bullet points. "
             "Return plain text only. Do not return JSON, markdown code fences, or a plan."
         )
-        try:
-            # Do not use self.memory here.  The planner's memory includes
-            # PLANNER_SYSTEM_PROMPT, which explicitly requires JSON output.
-            context = [
-                LCSystemMessage(
-                    content=(
-                        "You are writing a brief acknowledgement on behalf of an AI "
-                        "assistant agent. The agent HAS working tools (browser, shell, "
-                        "file operations, web search, image tools, messaging) and will "
-                        "use them right after this acknowledgement — the full task is "
-                        "already being handled. Never speculate about tools being "
-                        "missing, unavailable, or not connected, and never describe "
-                        "limitations of the environment. Keep it to ONE short "
-                        "sentence that acknowledges the goal without echoing the "
-                        "request. Reply in plain natural language only. Never output "
-                        "JSON, code fences, a schema, or a step list."
-                    )
-                ),
-                LCHumanMessage(content=prompt),
-            ]
-            raw_text = ""
-            # Streams with automatic fallback-provider switch when the primary
-            # key is exhausted (auth/limit errors fail before any chunk).
-            raw_text = await self.astream_text_with_fallback(context)
+        # Do not use self.memory here.  The planner's memory includes
+        # PLANNER_SYSTEM_PROMPT, which explicitly requires JSON output.
+        context = [
+            LCSystemMessage(
+                content=(
+                    "You are writing a brief acknowledgement on behalf of an AI "
+                    "assistant agent. The agent HAS working tools (browser, shell, "
+                    "file operations, web search, image tools, messaging) and will "
+                    "use them right after this acknowledgement — the full task is "
+                    "already being handled. Never speculate about tools being "
+                    "missing, unavailable, or not connected, and never describe "
+                    "limitations of the environment. Keep it to ONE short "
+                    "sentence that acknowledges the goal without echoing the "
+                    "request. Reply in plain natural language only. Never output "
+                    "JSON, code fences, a schema, or a step list."
+                )
+            ),
+            LCHumanMessage(content=prompt),
+        ]
+        async for chunk in self.astream_chunks_with_fallback(context):
+            yield chunk
 
-            # Validate before emitting anything so malformed/truncated JSON can
-            # never flash in the UI or be saved as a persisted assistant message.
-            full_text = self._clean_acknowledgement(raw_text)
+    async def acknowledge(self, message: Message) -> AsyncGenerator[BaseEvent, None]:
+        """Return one cleaned, atomic acknowledgement event.
+
+        Keep this non-streaming API for callers that persist or replay planner
+        acknowledgements.  The live chat flow uses ``acknowledge_stream`` so it
+        can surface the same model response token-by-token.
+        """
+        try:
+            parts: list[str] = []
+            async for chunk in self._acknowledgement_chunks(message):
+                parts.append(chunk)
+            full_text = self._clean_acknowledgement("".join(parts))
             if full_text:
-                # Single atomic MessageEvent (persisted + authoritative).
-                # No MessageChunkEvent replay: transient chunk events are not
-                # persisted, so a client refreshing mid-ack would re-receive
-                # every chunk already emitted and re-type the message.
+                yield MessageEvent(role="assistant", message=full_text)
+        except Exception as e:
+            logger.warning(f"Acknowledge generation failed, skipping: {e}")
+
+    async def acknowledge_stream(self, message: Message) -> AsyncGenerator[BaseEvent, None]:
+        """Stream a cleaned acknowledgement to the live chat client."""
+        try:
+            parts: list[str] = []
+            async for chunk in self._acknowledgement_chunks(message):
+                parts.append(chunk)
+                yield MessageChunkEvent(role="assistant", content=chunk)
+
+            # The final MessageEvent is authoritative and persisted; chunks
+            # remain transient so reconnecting does not replay them.
+            full_text = self._clean_acknowledgement("".join(parts))
+            yield MessageChunkEvent(role="assistant", content="", done=True)
+            if full_text:
                 yield MessageEvent(role="assistant", message=full_text)
         except Exception as e:
             logger.warning(f"Acknowledge streaming failed, skipping: {e}")

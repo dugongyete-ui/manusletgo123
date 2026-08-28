@@ -3,6 +3,7 @@ from langchain_core.messages import AIMessage
 
 from app.domain.models.message import Message
 from app.domain.services.agents.planner import PlannerAgent
+from app.domain.models.event import MessageChunkEvent
 
 
 class FakeStreamingModel:
@@ -59,3 +60,18 @@ async def test_acknowledgement_emits_clean_plain_text_only():
 
     assert [event.type for event in events] == ["message"]
     assert events[0].message == "Baik, saya akan membantu membuatnya."
+
+
+@pytest.mark.asyncio
+async def test_acknowledgement_stream_emits_live_chunks_and_persisted_message():
+    agent = make_test_agent("Baik, saya akan membantu membuatnya.")
+
+    events = [
+        event async for event in agent.acknowledge_stream(Message(message="Buat website"))
+    ]
+
+    assert [event.type for event in events] == ["message_chunk", "message_chunk", "message"]
+    assert isinstance(events[0], MessageChunkEvent)
+    assert events[0].content == "Baik, saya akan membantu membuatnya."
+    assert events[1].done is True
+    assert events[2].message == "Baik, saya akan membantu membuatnya."
