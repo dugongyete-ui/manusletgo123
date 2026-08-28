@@ -19,10 +19,10 @@ class MessageToolkit(BaseToolkit):
         text: str,
         attachments: Optional[Union[str, List[str]]] = None,
     ) -> ToolResult:
-        """Send a message to user without requiring a response. Use for progress updates, task completion notices, or delivering results with optional file attachments.
+        """Send a short progress message to the user without requiring a response. MANDATORY before executing any other tool: state what you are about to find out or achieve and why it matters (1-2 sentences, intent not mechanics). Also send after notable findings, decisions, changes of direction, or important info, and to deliver results with optional file attachments.
 
         Args:
-            text: Message text to display to user
+            text: Message text to display to user (under 300 characters, plain text)
             attachments: (Optional) List of sandbox file paths to attach (e.g. ["/home/runner/report.pdf"]). Files are synced to storage and shown as download links.
         """
         return ToolResult(success=True, message="OK")

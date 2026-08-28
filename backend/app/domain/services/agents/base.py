@@ -231,9 +231,27 @@ class BaseAgent(ABC):
         return True
 
     def _rotate_provider_for_limit(self, reason: str) -> bool:
-        """On a rate-limit error, alternate primary <-> fallback providers."""
+        """On a rate-limit error, alternate primary <-> fallback providers.
+
+        Balance/quota exhaustion (HTTP 402 "Insufficient balance", daily
+        free-tier caps) does NOT clear on a minutes-scale window, so once we
+        are on the fallback we STAY there for the rest of the run — rotating
+        back to a dead key would only burn the retry budget. Time-window rate
+        limits (429) still alternate: the primary's window may clear while we
+        borrow the fallback.
+        """
         if not self._using_fallback:
             return self._switch_to_fallback_model(reason)
+        _sticky = any(
+            kw in reason.lower()
+            for kw in ("insufficient", "quota", "credit", "balance", "402", "billing")
+        )
+        if _sticky:
+            logger.info(
+                "Staying on fallback provider (primary balance/quota exhausted): %s",
+                reason[:120],
+            )
+            return False
         return self._switch_to_primary_model(reason)
 
     def _limit_retry_wait(self, attempt: int) -> float:
@@ -453,6 +471,10 @@ class BaseAgent(ABC):
         the payload as ``ValueError({'message': ..., 'code': ...})`` — which the
         transient-retry loop below would otherwise never catch, crashing the
         whole agent task on a simple rate limit.
+
+        HTTP 402 "Insufficient balance" (free-tier exhaustion) arrives the same
+        way and is included: the caller's limit-error branch rotates to the
+        fallback provider, so the task keeps running instead of dying.
         """
         if not isinstance(exc, ValueError) or not exc.args:
             return False
@@ -460,7 +482,11 @@ class BaseAgent(ABC):
         if not isinstance(payload, dict):
             return False
         code = payload.get("code")
-        if code == 429 or (isinstance(code, int) and 500 <= code < 600):
+        if (
+            code == 429
+            or code == 402
+            or (isinstance(code, int) and 500 <= code < 600)
+        ):
             return True
         message = str(payload.get("message", "")).lower()
         return any(
@@ -472,6 +498,10 @@ class BaseAgent(ABC):
                 "try again",
                 "provider returned error",
                 "no endpoints found",
+                "insufficient balance",
+                "insufficient",
+                "quota",
+                "credit",
             )
         )
 
@@ -481,6 +511,28 @@ class BaseAgent(ABC):
         for iteration in range(self.max_iterations):
             if not message.tool_calls:
                 break
+            # ── Content narration → visible progress line ──────────────────
+            # Models like MiniMax M3 naturally "think out loud" in the
+            # AIMessage content alongside tool calls ("Saya akan memeriksa
+            # dulu konfigurasinya…"). That text was previously DISCARDED here
+            # — the chat went silent even though the model WAS narrating
+            # (user complaint: "kok hening / kaku"). Emit it as an
+            # is_progress MessageEvent BEFORE this round's tool events, so
+            # the user hears the intent BEFORE the action executes. Downstream
+            # consumers that expect the FINAL result keep working: they only
+            # treat non-progress MessageEvents as the completion payload.
+            _narration = message.content
+            if isinstance(_narration, list):
+                _narration = "".join(
+                    b.get("text", "") for b in _narration if isinstance(b, dict)
+                )
+            _narration = (_narration or "").strip()
+            if _narration and not _narration.startswith("{"):
+                yield MessageEvent(
+                    message=_narration[:600],
+                    is_progress=True,
+                    role="assistant",
+                )
             tool_responses = []
             for tool_call in message.tool_calls:
                 function_name = tool_call["name"]
@@ -680,10 +732,13 @@ class BaseAgent(ABC):
                 # OpenRouter-style "HTTP 200 + error body" provider failures are
                 # surfaced by langchain-openai as a bare ValueError — retry them
                 # exactly like the transient API errors above when they carry a
-                # transient code (429 / 5xx / rate-limit wording).
-                if not self._transient_provider_error(e):
-                    raise
+                # transient code (429 / 402 / 5xx / rate-limit wording). Limit-
+                # style payloads ("Insufficient balance", quota, credit) get the
+                # provider-rotation treatment so the task survives key
+                # exhaustion instead of dying mid-run.
                 _is_limit = self._is_limit_error(e)
+                if not (_is_limit or self._transient_provider_error(e)):
+                    raise
                 _budget = (
                     self._rate_limit_budget() if _is_limit else self.max_retries
                 )
@@ -724,6 +779,36 @@ class BaseAgent(ABC):
                     "Provider endpoints unavailable (attempt %d/%d), "
                     "retrying in %.1fs: %s",
                     attempt + 1, self.max_retries, wait, e,
+                )
+                attempt += 1
+                await asyncio.sleep(wait)
+            except openai.APIStatusError as e:
+                # HTTP 402 "Insufficient balance" (OpenRouter free-tier
+                # exhaustion) is NOT mapped to a specific SDK exception, so
+                # it used to fall through every clause above and kill the
+                # whole task mid-run. Treat limit/quota-style status errors
+                # like the transient path: rotate to the fallback provider
+                # (free, instant) and retry on the patient schedule. Any
+                # other status error re-raises unchanged.
+                _is_limit = self._is_limit_error(e)
+                _status = getattr(e, "status_code", None)
+                if not (_is_limit or _status == 402):
+                    raise
+                _budget = self._rate_limit_budget()
+                if attempt >= _budget - 1:
+                    logger.error(
+                        "Provider status error after %d attempts, giving up: %s",
+                        attempt + 1, e,
+                    )
+                    raise
+                if self._rotate_provider_for_limit(str(e)):
+                    chain = _build_chain()
+                wait = self._limit_retry_wait(attempt)
+                await self._notify_rate_limit_wait(wait)
+                logger.warning(
+                    "Provider limit/status error %s (attempt %d/%d), "
+                    "rotated provider, retrying in %.1fs: %s",
+                    _status, attempt + 1, _budget, wait, e,
                 )
                 attempt += 1
                 await asyncio.sleep(wait)

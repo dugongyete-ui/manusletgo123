@@ -399,7 +399,12 @@ class PlannerAgent(BaseAgent):
         events_buffer = []
         try:
             async for event in _run(content):
-                if isinstance(event, MessageEvent):
+                if isinstance(event, MessageEvent) and event.is_progress:
+                    # Content narration accompanying tool calls (base.execute
+                    # emits it before tool events) — pass through to the chat,
+                    # it is NOT the plan response.
+                    yield event
+                elif isinstance(event, MessageEvent):
                     logger.info(event.message)
                     parsed_response = await self._parse_json(event.message)
                     plan = self._safe_plan(parsed_response, message)
@@ -429,7 +434,9 @@ class PlannerAgent(BaseAgent):
             )
             fallback_content = base_prompt + note
             async for event in self.execute(fallback_content):
-                if isinstance(event, MessageEvent):
+                if isinstance(event, MessageEvent) and event.is_progress:
+                    yield event
+                elif isinstance(event, MessageEvent):
                     logger.info(event.message)
                     parsed_response = await self._parse_json(event.message)
                     plan = self._safe_plan(parsed_response, message)
@@ -440,6 +447,9 @@ class PlannerAgent(BaseAgent):
     async def update_plan(self, plan: Plan, step: Step) -> AsyncGenerator[BaseEvent, None]:
         message = UPDATE_PLAN_PROMPT.format(plan=plan.dump_json(), step=step.model_dump_json())
         async for event in self.execute(message):
+            if isinstance(event, MessageEvent) and event.is_progress:
+                # Narration accompanying tool calls — not a plan update.
+                continue
             if isinstance(event, MessageEvent):
                 logger.debug(f"Planner agent update plan: {event.message}")
                 parsed_response = await self._parse_json(event.message)

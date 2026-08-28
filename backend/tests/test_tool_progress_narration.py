@@ -1,17 +1,16 @@
-"""Unit tests for the narration cleanliness policy in ExecutionAgent.
+"""Unit tests for the narration policy in ExecutionAgent.
 
-Policy (aligned with the reference ai-manus / official Manus behaviour):
-1. NO deterministic fallback narration after EVERY tool completion — the
-   step rows, tool pills and brief labels already show each action live.
-   The ONLY deterministic narration is the mid-step keep-alive safety net:
-   ONE short status line every 4 SILENT real-tool rounds (max 3 per step)
-   so a silent free-tier model can never leave the chat dead-quiet
-   (design doc's LONG_TASK_UPDATE_INTERVAL rule).
-2. message_notify_user texts that merely RE-ANNOUNCE the current step
-   description or the user's request ("Saya sedang menulis file X" while the
-   step row already says "Buat file X …") are suppressed: zero new
-   information, pure clutter.
-3. Substantive findings (which introduce NEW content words) always pass.
+Policy (product direction 2026-08-28 — "aware, frequent, pre-tool"):
+1. The agent MUST narrate BEFORE executing tools (prompt-driven). The ONLY
+   deterministic narration is the mid-step keep-alive safety net: ONE short
+   status line every 3 SILENT real-tool rounds (max 4 per step) so a silent
+   free-tier model can never leave the chat dead-quiet.
+2. The old "redundant action announcement" suppression is RETIRED — it
+   dropped exactly the pre-tool intent lines the user now wants (they
+   legitimately overlap with the step description). The method now always
+   returns False and pre-tool lines pass through untouched.
+3. Near-DUPLICATE narrations (the same line sent twice) are still
+   suppressed — a literal repeat is a glitch, never an update.
 """
 
 import pytest
@@ -25,7 +24,6 @@ def make_executor(step_desc: str = "", user_request: str = "") -> ExecutionAgent
     agent._deferred_attachments = []
     agent._last_narration_norm = None
     agent._suppressed_notify_ids = set()
-    agent._current_step_words = agent._content_words(step_desc)
     agent._user_request_words = agent._content_words(user_request)
     agent._tools_since_narration = 0
     agent._tool_window = []
@@ -64,29 +62,31 @@ def test_tool_event_has_no_narration_marker():
     assert msg.is_progress is True  # marker still supported for model narrations
 
 
-# ── 2. Redundant action announcements are suppressed ─────────────────────────
+# ── 2. Pre-tool intent narrations pass through (suppression retired) ─────────
 
 
-def test_action_announcement_matching_step_is_suppressed():
+def test_pretool_intent_line_matching_step_passes_through():
+    """The mandated BEFORE-tool narration legitimately references the step's
+    own content — it must NOT be suppressed."""
     agent = make_executor(
         step_desc="Buat file tes_collapse.txt dengan konten 'halo collapse test'.",
         user_request="Buat file tes_collapse.txt berisi tulisan 'halo collapse test' lalu tampilkan isinya",
     )
-    assert agent._is_redundant_action_announcement(
+    assert not agent._is_redundant_action_announcement(
         "Saya sedang menulis tes_collapse.txt."
     )
-    assert agent._is_redundant_action_announcement(
+    assert not agent._is_redundant_action_announcement(
         "Saya akan membaca file tes_collapse.txt untuk memastikan isinya."
     )
 
 
-def test_action_announcement_matching_request_is_suppressed():
+def test_pretool_intent_line_matching_request_passes_through():
     agent = make_executor(
         step_desc="Tampilkan isi file",
         user_request="Cari harga emas hari ini",
     )
-    # Short line mostly made of request words → redundant.
-    assert agent._is_redundant_action_announcement("Mencari harga emas sekarang.")
+    # Short pre-tool line mostly made of request words → still passes now.
+    assert not agent._is_redundant_action_announcement("Mencari harga emas sekarang.")
 
 
 def test_substantive_finding_passes_through():
@@ -164,22 +164,22 @@ def _feed_completed_tools(agent: ExecutionAgent, count: int, fn: str = "info_sea
     return emitted
 
 
-def test_keepalive_emits_after_four_silent_tool_rounds():
+def test_keepalive_emits_after_three_silent_tool_rounds():
     agent = make_executor()
     agent._narration_lang = "id"
-    # 3 silent rounds: nothing yet (below threshold, chat stays clean).
-    assert _feed_completed_tools(agent, 3) == []
-    # 4th silent round: exactly ONE keep-alive line fires.
+    # 2 silent rounds: nothing yet (below threshold, chat stays clean).
+    assert _feed_completed_tools(agent, 2) == []
+    # 3rd silent round: exactly ONE keep-alive line fires.
     lines = _feed_completed_tools(agent, 1)
     assert len(lines) == 1
-    assert "4 aksi" in lines[0]  # status summary mentions the count
+    assert "3 aksi" in lines[0]  # status summary mentions the count
     assert len(lines[0]) <= 200  # short, per the ≤300-char narration policy
 
 
-def test_keepalive_capped_at_three_per_step():
+def test_keepalive_capped_at_four_per_step():
     agent = make_executor()
     agent._narration_lang = "en"
-    # 24 silent tool rounds → at most 3 keep-alive lines, never a flood.
+    # 24 silent tool rounds → at most 4 keep-alive lines, never a flood.
     lines = _feed_completed_tools(agent, 24)
     assert len(lines) == ExecutionAgent._MIDSTEP_NARRATION_MAX
     # Every line is distinct (rotated phrasing / growing counts).
@@ -189,12 +189,12 @@ def test_keepalive_capped_at_three_per_step():
 def test_keepalive_window_resets_on_model_narration():
     agent = make_executor()
     agent._narration_lang = "id"
-    # Model narrates after 3 silent rounds → window resets, no keep-alive.
-    _feed_completed_tools(agent, 3)
+    # Model narrates after 2 silent rounds → window resets, no keep-alive.
+    _feed_completed_tools(agent, 2)
     agent._tools_since_narration = 0  # reset by the notify branch
     agent._tool_window = []
-    # 3 more silent rounds are NOT enough to fire a new keep-alive line.
-    assert _feed_completed_tools(agent, 3) == []
+    # 2 more silent rounds are NOT enough to fire a new keep-alive line.
+    assert _feed_completed_tools(agent, 2) == []
 
 
 def test_keepalive_categorizes_dominant_tool_type():

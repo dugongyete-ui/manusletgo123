@@ -65,11 +65,8 @@ class ExecutionAgent(BaseAgent):
         # completion (CALLED) events are dropped too so the duplicate text
         # can never reach the chat UI through the back door.
         self._suppressed_notify_ids: set = set()
-        # Content-word sets of the CURRENT step description and the ORIGINAL
-        # user request — narrations that merely re-announce them ("Saya sedang
-        # menulis file X" while the step row says "Buat file X") duplicate
-        # what the timeline already shows and are suppressed.
-        self._current_step_words: Optional[set] = None
+        # Content-word sets of the ORIGINAL user request — kept for context;
+        # narration suppression is intentionally minimal now (see below).
         self._user_request_words: Optional[set] = None
         # ── Mid-step progress safety net (silent-run keep-alive) ────────────
         # Free-tier models often run a whole step without a single
@@ -116,28 +113,14 @@ class ExecutionAgent(BaseAgent):
         return {w for w in norm.split() if len(w) > 2 and w not in cls._STOPWORDS}
 
     def _is_redundant_action_announcement(self, text: str) -> bool:
-        """True when a narration ONLY re-announces the current step/request.
+        """RETIRED filter — always False (kept for API compat with old tests).
 
-        Pattern seen in the wild (and complained about by users): while the
-        timeline already shows a step row "Buat file tes_collapse.txt …" and a
-        live tool pill, the model sends "Saya sedang menulis tes_collapse.txt"
-        — zero new information. Detection: the narration is SHORT (few content
-        words) and most of its content words already appear in the current
-        step description or the user's request. Substantive findings always
-        introduce NEW content words and pass through untouched.
+        The 2026-08 product direction mandates a notify BEFORE every tool
+        execution. Those intent lines legitimately reference the step's own
+        content, so the old overlap-based suppression would delete exactly
+        the lines the user asked for. Only the near-duplicate check remains
+        active in the notify branch.
         """
-        words = self._content_words(text)
-        if not words or len(words) > 8:
-            # Long texts carry context of their own — never auto-suppress.
-            return False
-        step_words = getattr(self, "_current_step_words", None)
-        request_words = getattr(self, "_user_request_words", None)
-        for reference in (step_words, request_words):
-            if not reference:
-                continue
-            overlap = len(words & reference)
-            if overlap and overlap / len(words) >= 0.6:
-                return True
         return False
 
     @classmethod
@@ -186,21 +169,22 @@ class ExecutionAgent(BaseAgent):
         return False
 
     # ── Narration policy ─────────────────────────────────────────────────────
-    # The aggressive "narration nudge" (forced message_notify_user after N
-    # silent tool rounds) was REMOVED: it forced the model to announce every
-    # mechanical action ("Saya sedang menulis X") that the step rows and tool
-    # pills ALREADY show in the timeline — producing the redundant, cluttered
-    # chat stream users complained about. Official Manus keeps narration
-    # model-driven and sparse ("sparingly for meaningful progress"); activity
-    # visibility comes from the step list + tool pills + shimmer, not from
-    # narrating every action.
-    # The DETERMINISTIC keep-alive below is deliberately different from that
-    # nudge: it never injects prompts into the model, never announces a
-    # single mechanical action, and emits at most _MIDSTEP_NARRATION_MAX
-    # short status lines per step (one every _MIDSTEP_NARRATION_EVERY silent
-    # real-tool rounds) — enough to prove the run is alive, never spam.
-    _MIDSTEP_NARRATION_EVERY = 4
-    _MIDSTEP_NARRATION_MAX = 3
+    # PRODUCT DIRECTION (user request, 2026-08-28): the agent MUST narrate
+    # BEFORE executing tools — a short aware line stating intent and why,
+    # every time — and again after notable findings. The system/execution
+    # prompts drive this model-side; the deterministic layer below only
+    # guarantees liveness when a silent model slips through.
+    # Consequently the old "redundant action announcement" suppression was
+    # REMOVED: it dropped exactly the pre-tool intent lines ("Saya cari berita
+    # AI dulu") the user now wants, because they overlap with the step text.
+    # Only the near-DUPLICATE check (same line twice) remains — a literal
+    # repeat is a glitch, never an update.
+    # The deterministic keep-alive below never injects prompts into the model
+    # and emits at most _MIDSTEP_NARRATION_MAX short status lines per step
+    # (one every _MIDSTEP_NARRATION_EVERY silent real-tool rounds) — enough
+    # to prove the run is alive, never spam.
+    _MIDSTEP_NARRATION_EVERY = 3
+    _MIDSTEP_NARRATION_MAX = 4
     # Ghost-success / plain-text correction rounds: after the initial model
     # round, rerun the step up to this many times with an escalating mandatory
     # tool-usage prompt. A round that STILL returns a fabricated completion
@@ -314,6 +298,26 @@ class ExecutionAgent(BaseAgent):
                 logger.debug(
                     f"Step {step.id} tool error (LLM will retry): {event.error}"
                 )
+            elif isinstance(event, MessageEvent) and event.is_progress:
+                # Content narration emitted by base.execute() BEFORE this
+                # round's tool calls — the model "thinking out loud" in the
+                # AIMessage content (MiniMax M3 style). Show it as a progress
+                # line inside the timeline. Apply the same near-duplicate
+                # suppression as notify-tool narrations and reset the
+                # keep-alive window: the model narrated on its own.
+                _narr = (event.message or "").strip()
+                if _narr and not self._is_duplicate_narration(
+                    _narr, self._last_narration_norm
+                ):
+                    self._last_narration_norm = self._normalize_narration(_narr)
+                    self._tools_since_narration = 0
+                    self._tool_window = []
+                    yield event
+                else:
+                    logger.info(
+                        "Suppressed duplicate content narration: %s", _narr[:80]
+                    )
+                continue
             elif isinstance(event, MessageEvent):
                 step.status = ExecutionStatus.COMPLETED
                 parsed_response = await self._parse_json(event.message)
@@ -420,12 +424,14 @@ class ExecutionAgent(BaseAgent):
                                         "Deferred mid-task attachment to final "
                                         "summary: %s", p,
                                     )
-                        # Suppress near-duplicate progress narrations so the
-                        # chat stream stays clean and professional.
+                        # Suppress only near-DUPLICATE progress narrations
+                        # (the same line sent twice). Pre-tool intent lines
+                        # pass through untouched — see the narration policy
+                        # note above.
                         notify_text = (event.function_args.get("text") or "").strip()
                         if self._is_duplicate_narration(
                             notify_text, self._last_narration_norm
-                        ) or self._is_redundant_action_announcement(notify_text):
+                        ):
                             logger.info(
                                 "Suppressed redundant progress narration: %s",
                                 notify_text[:80],
@@ -530,10 +536,8 @@ class ExecutionAgent(BaseAgent):
     async def execute_step(
         self, plan: Plan, step: Step, message: Message
     ) -> AsyncGenerator[BaseEvent, None]:
-        # Context for redundant-narration suppression: a short line that only
-        # re-announces the step description or the user's request carries zero
-        # new information (the timeline already shows both) — it is dropped.
-        self._current_step_words = self._content_words(step.description or "")
+        # Context kept for potential future heuristics (suppression is
+        # intentionally minimal now — pre-tool narrations must pass).
         self._user_request_words = self._content_words(message.message or "")
         _lang = (getattr(plan, "language", None) or "").lower()
         self._narration_lang = "id" if _lang.startswith("id") or "indonesia" in _lang or "bahasa" in _lang else "en"
@@ -570,6 +574,8 @@ class ExecutionAgent(BaseAgent):
             nonlocal narration_sent
             async for event in self._handle_execution_events(step, round_content):
                 if (
+                    isinstance(event, MessageEvent) and event.is_progress
+                ) or (
                     isinstance(event, ToolEvent)
                     and event.status == ToolStatus.CALLING
                     and event.function_name == "message_notify_user"
