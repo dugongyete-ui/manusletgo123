@@ -213,11 +213,19 @@ class PlannerAgent(BaseAgent):
         return names
 
     async def acknowledge(self, message: Message) -> AsyncGenerator[BaseEvent, None]:
-        """Stream an acknowledgment in < 1 s before full JSON planning begins.
+        """Stream an acknowledgment LIVE — first visible token in ~1-2 s.
+
+        Runs while the full JSON plan is generated concurrently in the
+        background, so the user gets an immediate response and only then
+        watches the "thinking" indicator until the plan is ready.
 
         Uses an isolated plain-text prompt.  This must not reuse planner memory:
         planner memory contains the JSON planning contract, which can make a model
         stream the plan itself as the acknowledgement.
+
+        Purely conversational messages (greetings, thanks, one-sentence Q&A)
+        are classified with a [SKIP] marker so they do NOT get a redundant
+        acknowledgement bubble on top of the direct answer.
         """
         import re
 
@@ -245,12 +253,17 @@ class PlannerAgent(BaseAgent):
 
         prompt = (
             f"{message.message}{context_note}\n\n"
-            "Give a short, natural opening reply in the same language as the user. "
-            "ONE sentence only — acknowledge the goal in your own words and say "
-            "you're getting started. NEVER repeat the user's request back verbatim "
-            "or near-verbatim (no re-listing of file names, actions, or the full "
-            "request). No rigid format, no lists, no bullet points. "
-            "Return plain text only. Do not return JSON, markdown code fences, or a plan."
+            "First, classify the message:\n"
+            "- If it is purely conversational — a greeting, thanks, farewell, or a "
+            "simple question/chat answerable in one sentence WITHOUT any work, "
+            "tools, files, or research — reply with exactly: [SKIP]\n"
+            "- Otherwise, give a short, natural opening reply in the same language "
+            "as the user. ONE sentence only — acknowledge the goal in your own "
+            "words and say you're getting started. NEVER repeat the user's request "
+            "back verbatim or near-verbatim (no re-listing of file names, actions, "
+            "or the full request). No rigid format, no lists, no bullet points. "
+            "Return plain text only. Do not return JSON, markdown code fences, or "
+            "a plan."
         )
         try:
             # Do not use self.memory here.  The planner's memory includes
@@ -267,25 +280,58 @@ class PlannerAgent(BaseAgent):
                         "limitations of the environment. Keep it to ONE short "
                         "sentence that acknowledges the goal without echoing the "
                         "request. Reply in plain natural language only. Never output "
-                        "JSON, code fences, a schema, or a step list."
+                        "JSON, code fences, a schema, or a step list. "
+                        "If the user's message is purely conversational (greeting, "
+                        "thanks, or simple one-sentence chat) output exactly [SKIP] "
+                        "and nothing else."
                     )
                 ),
                 LCHumanMessage(content=prompt),
             ]
-            raw_text = ""
-            # Streams with automatic fallback-provider switch when the primary
-            # key is exhausted (auth/limit errors fail before any chunk).
-            raw_text = await self.astream_text_with_fallback(context)
 
-            # Validate before emitting anything so malformed/truncated JSON can
-            # never flash in the UI or be saved as a persisted assistant message.
+            # ── Live streaming with [SKIP] hold-back ────────────────────────────
+            # Chunks are forwarded to the client the moment they arrive, EXCEPT
+            # while the accumulated text could still turn into the [SKIP]
+            # marker — that must never flash in the chat UI.
+            skip_marker = "[skip]"
+            holdback = ""
+            flushed = False
+            parts: list = []
+            async for chunk in self.astream_chunks_with_fallback(context):
+                parts.append(chunk)
+                if flushed:
+                    yield MessageChunkEvent(content=chunk, done=False)
+                    continue
+                holdback += chunk
+                hl = holdback.strip().lower()
+                if not hl:
+                    continue  # whitespace only — keep holding
+                if skip_marker.startswith(hl):
+                    if hl == skip_marker:
+                        logger.debug(
+                            "Acknowledgement classified as conversational ([SKIP]) — "
+                            "no ack bubble"
+                        )
+                        return
+                    continue  # still ambiguous — keep holding
+                # Diverged from the marker — release everything held back now.
+                flushed = True
+                yield MessageChunkEvent(content=holdback, done=False)
+                holdback = ""
+
+            raw_text = "".join(parts)
             full_text = self._clean_acknowledgement(raw_text)
-            if full_text:
-                # Single atomic MessageEvent (persisted + authoritative).
-                # No MessageChunkEvent replay: transient chunk events are not
-                # persisted, so a client refreshing mid-ack would re-receive
-                # every chunk already emitted and re-type the message.
-                yield MessageEvent(role="assistant", message=full_text)
+            if not full_text or full_text.strip().lower() == skip_marker:
+                return  # nothing usable — stay silent, plan/answer follows soon
+
+            # Defensive: cleaner may have trimmed text that was never flushed.
+            if not flushed and holdback.strip():
+                yield MessageChunkEvent(content=holdback, done=False)
+
+            # Finalize the streamed bubble, then emit the authoritative
+            # MessageEvent (persisted; replaces the streamed bubble in the UI).
+            yield MessageChunkEvent(done=True)
+            yield MessageEvent(role="assistant", message=full_text)
         except Exception as e:
             logger.warning(f"Acknowledge streaming failed, skipping: {e}")
 

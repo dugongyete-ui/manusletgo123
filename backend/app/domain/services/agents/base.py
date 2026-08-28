@@ -124,6 +124,25 @@ def _build_chat_model(prefer_fallback: bool = False):
 
 
 logger = logging.getLogger(__name__)
+
+
+# Provider validation-glitch signatures — HTTP 400s that are in fact transient
+# (a plain re-send succeeds). Observed on NVIDIA NIM / OpenRouter free models.
+_GLITCH_SIGNATURES = (
+    "cannot be empty",
+    "must not be empty",
+    "at least one message is required",
+    "field is required",
+    "must be provided",
+)
+
+
+def _is_validation_glitch(exc: Exception) -> bool:
+    """True when a 400 error matches a known transient validation glitch."""
+    text = str(exc).lower()
+    return any(sig in text for sig in _GLITCH_SIGNATURES)
+
+
 class BaseAgent(ABC):
     """
     Base agent class, defining the basic behavior of the agent
@@ -782,6 +801,25 @@ class BaseAgent(ABC):
                 )
                 attempt += 1
                 await asyncio.sleep(wait)
+            except openai.BadRequestError as e:
+                # Transient provider validation glitches: NVIDIA NIM /
+                # OpenRouter-routed free models intermittently answer a
+                # perfectly valid request with HTTP 400
+                # "The 'messages' field cannot be empty" (observed in
+                # production with a non-empty context). Re-sending the same
+                # request works, so retry briefly instead of killing the task.
+                # Any OTHER 400 (bad schema, bad params) still raises at once.
+                _glitch = _is_validation_glitch(e)
+                if not _glitch or attempt >= 2:
+                    raise
+                wait = 2.0 * (attempt + 1)
+                logger.warning(
+                    "Transient 400 validation glitch (attempt %d/3), "
+                    "retrying same request in %.1fs: %s",
+                    attempt + 1, wait, str(e)[:200],
+                )
+                attempt += 1
+                await asyncio.sleep(wait)
             except openai.APIStatusError as e:
                 # HTTP 402 "Insufficient balance" (OpenRouter free-tier
                 # exhaustion) is NOT mapped to a specific SDK exception, so
@@ -839,6 +877,18 @@ class BaseAgent(ABC):
                     if text:
                         parts.append(text)
                 return "".join(parts)
+            except openai.BadRequestError as e:
+                # Transient provider validation glitch — re-send works.
+                if not _is_validation_glitch(e) or attempt >= 2:
+                    raise
+                wait = 2.0 * (attempt + 1)
+                logger.warning(
+                    "Transient 400 validation glitch while streaming "
+                    "(attempt %d/3), retrying in %.1fs: %s",
+                    attempt + 1, wait, str(e)[:200],
+                )
+                attempt += 1
+                await asyncio.sleep(wait)
             except Exception as e:
                 _is_limit = self._is_limit_error(e)
                 _budget = (
@@ -878,6 +928,82 @@ class BaseAgent(ABC):
                     continue
                 raise
         return ""
+
+    async def astream_chunks_with_fallback(self, messages) -> AsyncGenerator[str, None]:
+        """Yield streamed text chunks LIVE (token-by-token) with the same
+        provider-rotation fallback as astream_text_with_fallback.
+
+        Used for the fast first-response acknowledgement: the caller forwards
+        each yielded chunk to the client immediately, so the user sees text in
+        ~1-2 s instead of waiting for the full response.
+
+        Fallback safety: limit/auth errors fail BEFORE any chunk is produced,
+        so rotation + retry is only allowed while nothing has been surfaced.
+        If the stream dies mid-flight after chunks were already yielded, we
+        simply stop — retrying would duplicate visible text in the chat.
+        """
+        attempt = 0
+        while True:
+            emitted = False
+            try:
+                async for chunk in self._model.astream(messages):
+                    text = chunk.content if isinstance(chunk.content, str) else ""
+                    if text:
+                        emitted = True
+                        yield text
+                return
+            except Exception as e:
+                if emitted:
+                    logger.warning(
+                        "Live stream died mid-flight after chunks were emitted; "
+                        "keeping partial text instead of duplicating: %s",
+                        e,
+                    )
+                    return
+                if isinstance(e, openai.BadRequestError) and _is_validation_glitch(e) and attempt < 2:
+                    wait = 2.0 * (attempt + 1)
+                    logger.warning(
+                        "Transient 400 validation glitch in live stream "
+                        "(attempt %d/3), retrying in %.1fs: %s",
+                        attempt + 1, wait, str(e)[:200],
+                    )
+                    attempt += 1
+                    await asyncio.sleep(wait)
+                    continue
+                _is_limit = self._is_limit_error(e)
+                _budget = (
+                    self._rate_limit_budget() if _is_limit else self.max_retries
+                )
+                if attempt >= _budget - 1:
+                    raise
+                if _is_limit:
+                    self._rotate_provider_for_limit(str(e))
+                    wait = self._limit_retry_wait(attempt)
+                    await self._notify_rate_limit_wait(wait)
+                    logger.warning(
+                        "Rate limit while live streaming (attempt %d/%d), "
+                        "retrying in %.1fs: %s",
+                        attempt + 1, _budget, wait, e,
+                    )
+                    attempt += 1
+                    await asyncio.sleep(wait)
+                    continue
+                # Transient non-limit errors (5xx / network) — short retry.
+                _transient = isinstance(
+                    e,
+                    (openai.InternalServerError, openai.APIConnectionError,
+                     openai.APITimeoutError),
+                ) or self._transient_provider_error(e)
+                if _transient:
+                    wait = self.retry_interval * (2 ** attempt)
+                    logger.warning(
+                        "Transient live stream error (attempt %d/%d), retrying in %.1fs: %s",
+                        attempt + 1, self.max_retries, wait, e,
+                    )
+                    attempt += 1
+                    await asyncio.sleep(wait)
+                    continue
+                raise
 
     async def ask(self, request: Union[str, list], format: Optional[str] = None) -> AIMessage:
         return await self.ask_with_messages([

@@ -1,4 +1,5 @@
 import logging
+import asyncio
 from app.domain.services.flows.base import BaseFlow
 from app.domain.models.message import Message
 from typing import AsyncGenerator, Optional
@@ -201,11 +202,47 @@ class PlanActFlow(BaseFlow):
                 logger.info(f"Agent {self._agent_id} state changed from {AgentStatus.IDLE} to {AgentStatus.PLANNING}")
                 self.status = AgentStatus.PLANNING
             elif self.status == AgentStatus.PLANNING:
-                # ── Step 1: collect the plan first so we know whether steps exist ─────
-                logger.info(f"Agent {self._agent_id} started creating plan")
-                plan_events_buffer = []
-                async for event in self.planner.create_plan(message):
-                    plan_events_buffer.append(event)
+                # ── Fast first response ─────────────────────────────────────────
+                # The acknowledgement is requested FIRST and streams to the user
+                # live (first visible token in ~1-3 s). The plan generation task
+                # is started as soon as the FIRST ack chunk is on its way —
+                # providers that serialise requests per key (e.g. NVIDIA NIM
+                # free tier) then serve the tiny ack before the heavy plan JSON,
+                # while parallel-friendly providers get true concurrency.
+                logger.info(f"Agent {self._agent_id} streaming acknowledgment first (plan follows)")
+
+                plan_task: Optional[asyncio.Task] = None
+
+                def _ensure_plan_task() -> asyncio.Task:
+                    nonlocal plan_task
+                    if plan_task is None:
+                        async def _generate_plan() -> list:
+                            events = []
+                            async for ev in self.planner.create_plan(message):
+                                events.append(ev)
+                            return events
+                        plan_task = asyncio.create_task(_generate_plan())
+                    return plan_task
+
+                try:
+                    async for ack_event in self.planner.acknowledge(message):
+                        # Kick off plan generation once the ack is visibly
+                        # flowing (first visible chunk / finalization event).
+                        if not plan_task:
+                            _ensure_plan_task()
+                        yield ack_event
+                    # [SKIP] / empty ack completed without any event — the
+                    # plan must still be generated.
+                    _ensure_plan_task()
+                    plan_events_buffer = await plan_task
+                except BaseException:
+                    # Generator closed (user stop / error) — never leak the
+                    # background plan task.
+                    if plan_task is not None:
+                        plan_task.cancel()
+                    raise
+
+                for event in plan_events_buffer:
                     if isinstance(event, PlanEvent) and event.status == PlanStatus.CREATED:
                         self.plan = event.plan
 
@@ -249,23 +286,21 @@ class PlanActFlow(BaseFlow):
 
                 logger.info(f"Agent {self._agent_id} created plan with {len(self.plan.steps)} steps")
 
-                # ── Step 2: now stream acknowledge OR direct answer based on step count ─
+                # ── Post-plan events ─────────────────────────────────────────────
+                # The acknowledgement was already streamed BEFORE/DURING plan
+                # generation (fast first response). Purely conversational
+                # messages were classified [SKIP] by the ack and get only the
+                # direct answer below — no redundant double bubble.
                 if len(self.plan.steps) == 0:
                     # Simple / conversational query — plan.message IS the full answer.
-                    # Skip acknowledge entirely to avoid a double-response bubble.
                     yield TitleEvent(title=self.plan.title)
                     if self.plan.message:
                         yield MessageEvent(
                             role="assistant", message=self.plan.message, is_final=True
                         )
                 else:
-                    # Complex query: send acknowledgment streaming NOW (gives quick feedback
-                    # while the user watches the plan appear below it).
-                    logger.info(f"Agent {self._agent_id} streaming acknowledgment")
-                    async for ack_event in self.planner.acknowledge(message):
-                        yield ack_event
-
-                    # Emit buffered plan events so the UI can render the steps list
+                    # Complex query: emit buffered plan events so the UI can
+                    # render the steps list — execution starts right after.
                     yield TitleEvent(title=self.plan.title)
                     for event in plan_events_buffer:
                         if isinstance(event, PlanEvent):

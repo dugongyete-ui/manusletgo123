@@ -16,6 +16,8 @@ from app.domain.external.file import FileStorage
 from app.domain.models.file import FileInfo
 from app.domain.repositories.mcp_repository import MCPRepository
 from app.infrastructure.external.sandbox.user_sandbox import UserScopedSandbox
+from app.domain.external.lazy_browser import LazyBrowser
+from app.domain.external.lazy_sandbox import LazySandbox
 
 # Setup logging
 logger = logging.getLogger(__name__)
@@ -66,7 +68,13 @@ class AgentDomainService:
         """Warm up the sandbox eagerly in the background right after
         session creation so the first chat message is not blocked by the
         sandbox readiness check.  Uses a per-session lock to avoid racing
-        with _create_task."""
+        with _create_task.
+
+        The lock is held ONLY for the sandbox allocation (create + save) —
+        the slow tail (VM boot, user-home setup, package pre-install, the
+        quota-saving pause) runs WITHOUT the lock so an incoming chat can
+        proceed with the allocated sandbox immediately instead of queueing
+        behind the whole warm-up."""
         async with self._get_session_lock(session_id):
             try:
                 session = await self._session_repository.find_by_id(session_id)
@@ -79,112 +87,160 @@ class AgentDomainService:
                 sandbox = await self._sandbox_cls.create()
                 session.sandbox_id = sandbox.id
                 await self._session_repository.save(session)
-                logger.info("[Warmup] Sandbox %s created for session %s — running ensure_sandbox…", sandbox.id, session_id)
-                await sandbox.ensure_sandbox()
-                logger.info("[Warmup] Sandbox %s fully ready for session %s", sandbox.id, session_id)
-                # Shared sandboxes (Replit) get per-user directory isolation;
-                # dedicated sandboxes (E2B) are already fully isolated.
-                if getattr(sandbox, "shared", False):
-                    user_sandbox = UserScopedSandbox(sandbox, session.user_id)
-                    await user_sandbox.setup_user_home()
-                elif hasattr(sandbox, "setup_user_home"):
-                    await sandbox.setup_user_home()
-                # Pre-install all common packages in the background so the
-                # agent never wastes task time on pip/apt installs.
-                if hasattr(sandbox, "warmup_packages"):
-                    asyncio.ensure_future(sandbox.warmup_packages())
-                # E2B quota saver: pause the freshly warmed VM immediately.
-                # The (expensive) first-boot install already happened in the
-                # background, and the first message auto-resumes the paused VM
-                # in seconds — so a session that sits idle (or is abandoned
-                # without any message) burns no compute quota.
-                pause = getattr(sandbox, "pause", None)
-                if callable(pause):
-                    try:
-                        await pause()
-                    except Exception as e:
-                        logger.warning("[Warmup] post-warmup pause failed for session %s: %s", session_id, e)
             except Exception as e:
                 logger.warning("[Warmup] Background sandbox warmup failed for session %s: %s", session_id, e)
+                return
+            # Lock released here — chat()/_create_task can use this sandbox now.
+
+        try:
+            logger.info("[Warmup] Sandbox %s created for session %s — running ensure_sandbox…", sandbox.id, session_id)
+            await sandbox.ensure_sandbox()
+            logger.info("[Warmup] Sandbox %s fully ready for session %s", sandbox.id, session_id)
+            # Shared sandboxes (Replit) get per-user directory isolation;
+            # dedicated sandboxes (E2B) are already fully isolated.
+            if getattr(sandbox, "shared", False):
+                user_sandbox = UserScopedSandbox(sandbox, session.user_id)
+                await user_sandbox.setup_user_home()
+            elif hasattr(sandbox, "setup_user_home"):
+                await sandbox.setup_user_home()
+            # Pre-install all common packages in the background so the
+            # agent never wastes task time on pip/apt installs.
+            if hasattr(sandbox, "warmup_packages"):
+                asyncio.ensure_future(sandbox.warmup_packages())
+            # E2B quota saver: pause the freshly warmed VM immediately.
+            # The (expensive) first-boot install already happened in the
+            # background, and the first message auto-resumes the paused VM
+            # in seconds — so a session that sits idle (or is abandoned
+            # without any message) burns no compute quota.
+            # SKIP the pause when a task is already attached (a chat arrived
+            # during warm-up) — pausing now would pause a VM the runner is
+            # actively resuming / using.
+            pause = getattr(sandbox, "pause", None)
+            if callable(pause):
+                try:
+                    current = await self._session_repository.find_by_id(session_id)
+                    if current is not None and current.task_id:
+                        logger.info(
+                            "[Warmup] Session %s already has an active task — skipping quota pause",
+                            session_id,
+                        )
+                    else:
+                        await pause()
+                except Exception as e:
+                    logger.warning("[Warmup] post-warmup pause failed for session %s: %s", session_id, e)
+        except Exception as e:
+            logger.warning("[Warmup] Background sandbox warmup failed for session %s: %s", session_id, e)
 
     async def _create_task(self, session: Session) -> Task:
         """Create a new agent task — uses a per-session lock to prevent
-        concurrent sandbox creation racing with the warmup task (M1)."""
-        async with self._get_session_lock(session.id):
-            sandbox = None
-            sandbox_id = session.sandbox_id
-            if sandbox_id:
-                try:
-                    sandbox = await self._sandbox_cls.get(sandbox_id)
-                    if sandbox:
-                        await sandbox.ensure_sandbox()
-                except Exception as exc:
-                    logger.warning(
-                        "Failed to reconnect to existing sandbox %s (%s) — creating a new one",
-                        sandbox_id, exc,
-                    )
+        concurrent sandbox creation racing with the warmup task (M1).
+
+        Fast-path: this must NOT block on sandbox readiness. On the E2B route
+        the task is created with LazySandbox/LazyBrowser proxies — the VM
+        allocation, resume, user-home setup, and Chrome CDP connect all run
+        in the runner's background ensure while the first acknowledgement
+        streams within seconds of the user's message."""
+        from app.infrastructure.external.sandbox.sandbox_factory import (
+            will_use_e2b,
+        )
+
+        if will_use_e2b():
+            # ── E2B route: fully lazy — no session-lock wait at all ─────────
+            # The resolver allocates (or reconnects) under the session lock on
+            # FIRST use, so a chat that arrives while the warm-up is still
+            # cold-booting the VM reuses that same VM instead of queueing
+            # behind it or creating a duplicate.
+            async def _resolve_sandbox(replace: bool = False) -> Sandbox:
+                async with self._get_session_lock(session.id):
+                    fresh = await self._session_repository.find_by_id(session.id)
+                    sid = fresh.sandbox_id if fresh else None
                     sandbox = None
-            if not sandbox:
-                sandbox = await self._sandbox_cls.create()
-                session.sandbox_id = sandbox.id
+                    if sid and not replace:
+                        try:
+                            sandbox = await self._sandbox_cls.get(sid)
+                        except Exception as exc:
+                            logger.warning(
+                                "Failed to reconnect to sandbox %s (%s) — creating a new one",
+                                sid, exc,
+                            )
+                            sandbox = None
+                    if not sandbox:
+                        sandbox = await self._sandbox_cls.create()
+                        if fresh is not None:
+                            fresh.sandbox_id = sandbox.id
+                            await self._session_repository.save(fresh)
+                    return sandbox
+
+            sandbox = LazySandbox(_resolve_sandbox)
+            browser = LazyBrowser(sandbox)
+        else:
+            # ── Shared (local Replit) route: synchronous — fast local ops ──
+            async with self._get_session_lock(session.id):
+                # RE-FETCH the session inside the lock — the warm-up may have
+                # allocated a sandbox while this chat was waiting for the lock.
+                fresh = await self._session_repository.find_by_id(session.id)
+                if fresh is not None:
+                    session = fresh
+
+                sandbox = None
+                sandbox_id = session.sandbox_id
+                if sandbox_id:
+                    try:
+                        sandbox = await self._sandbox_cls.get(sandbox_id)
+                    except Exception as exc:
+                        logger.warning(
+                            "Failed to reconnect to existing sandbox %s (%s) — creating a new one",
+                            sandbox_id, exc,
+                        )
+                        sandbox = None
+                if not sandbox:
+                    sandbox = await self._sandbox_cls.create()
+                    session.sandbox_id = sandbox.id
+                    await self._session_repository.save(session)
+
+                if getattr(sandbox, "shared", False):
+                    sandbox = UserScopedSandbox(sandbox, session.user_id)
+                    await sandbox.setup_user_home()
+
+                browser = LazyBrowser(sandbox)
                 await self._session_repository.save(session)
-                await sandbox.ensure_sandbox()
 
-            # Shared sandboxes (Replit singleton) are wrapped with per-user
-            # filesystem isolation: each user operates in
-            # /home/runner/users/{user_id}/ with hard path validation so files,
-            # scripts, and uploads never overlap with other users.
-            # Dedicated sandboxes (E2B microVM) are already fully isolated
-            # per user — use them directly.
-            if getattr(sandbox, "shared", False):
-                sandbox = UserScopedSandbox(sandbox, session.user_id)
-                await sandbox.setup_user_home()
-            elif hasattr(sandbox, "setup_user_home"):
-                await sandbox.setup_user_home()
+        # Project instructions: when the session belongs to a project that
+        # defines an instruction, inject it into the system prompt so every
+        # task in the project follows the same guidance (Manus behaviour).
+        project_instruction: Optional[str] = None
+        if getattr(session, "project_id", None) and self._project_repository:
+            try:
+                project = await self._project_repository.find_by_id_and_user_id(
+                    session.project_id, session.user_id
+                )
+                if project and (project.instruction or "").strip():
+                    project_instruction = project.instruction
+            except Exception as exc:
+                logger.warning(
+                    "Failed to load project %s instructions for session %s: %s",
+                    session.project_id, session.id, exc,
+                )
 
-            browser = await sandbox.get_browser()
-            if not browser:
-                logger.error(f"Failed to get browser for Sandbox {sandbox_id}")
-                raise RuntimeError(f"Failed to get browser for Sandbox {sandbox_id}")
+        task_runner = AgentTaskRunner(
+            session_id=session.id,
+            agent_id=session.agent_id,
+            user_id=session.user_id,
+            sandbox=sandbox,
+            browser=browser,
+            file_storage=self._file_storage,
+            search_engine=self._search_engine,
+            session_repository=self._session_repository,
+            agent_repository=self._repository,
+            mcp_repository=self._mcp_repository,
+            project_instruction=project_instruction,
+        )
 
-            await self._session_repository.save(session)
+        task = self._task_cls.create(task_runner)
+        session.task_id = task.id
+        await self._session_repository.save(session)
 
-            # Project instructions: when the session belongs to a project that
-            # defines an instruction, inject it into the system prompt so every
-            # task in the project follows the same guidance (Manus behaviour).
-            project_instruction: Optional[str] = None
-            if getattr(session, "project_id", None) and self._project_repository:
-                try:
-                    project = await self._project_repository.find_by_id_and_user_id(
-                        session.project_id, session.user_id
-                    )
-                    if project and (project.instruction or "").strip():
-                        project_instruction = project.instruction
-                except Exception as exc:
-                    logger.warning(
-                        "Failed to load project %s instructions for session %s: %s",
-                        session.project_id, session.id, exc,
-                    )
-
-            task_runner = AgentTaskRunner(
-                session_id=session.id,
-                agent_id=session.agent_id,
-                user_id=session.user_id,
-                sandbox=sandbox,
-                browser=browser,
-                file_storage=self._file_storage,
-                search_engine=self._search_engine,
-                session_repository=self._session_repository,
-                agent_repository=self._repository,
-                mcp_repository=self._mcp_repository,
-                project_instruction=project_instruction,
-            )
-
-            task = self._task_cls.create(task_runner)
-            session.task_id = task.id
-            await self._session_repository.save(session)
-
-            return task
+        return task
         
     async def _get_task(self, session: Session) -> Optional[Task]:
         """Get a task for the given session"""

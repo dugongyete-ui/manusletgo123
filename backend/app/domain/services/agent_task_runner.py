@@ -120,6 +120,9 @@ class AgentTaskRunner(TaskRunner):
         # captured when a file_write / file_str_replace CALLING event arrives,
         # consumed when the matching CALLED event is enriched with content.
         self._file_old_by_call: Dict[str, str] = {}
+        # Home-baseline snapshot warmed by the background sandbox-ensure task
+        # (post-boot) so _run_flow never has to force a lazy sandbox resolve.
+        self._home_baseline_snapshot: dict = {}
         self._flow = PlanActFlow(
             self._agent_id,
             self._repository,
@@ -563,7 +566,29 @@ class AgentTaskRunner(TaskRunner):
             # acknowledgment response to the user in < 1 s while the sandbox
             # warms up, exactly like Dzeck does.
             mcp_config = await self._mcp_repository.get_mcp_config()
-            sandbox_task = asyncio.create_task(self._sandbox.ensure_sandbox())
+
+            async def _ensure_sandbox_ready():
+                # Resume/create the VM, then prepare the user home (dirs for
+                # uploads) — deferred here from _create_task so task creation
+                # never blocks the first acknowledgement.
+                await self._sandbox.ensure_sandbox()
+                setup = getattr(self._sandbox, "setup_user_home", None)
+                if callable(setup):
+                    try:
+                        await setup()
+                    except Exception as se:
+                        logger.warning(
+                            f"Background user-home setup failed for agent {self._agent_id}: {se}"
+                        )
+                # Warm the home-baseline snapshot now (post-boot) so the
+                # artifact scan in _run_flow never has to force a cold VM
+                # resolve just to list files.
+                try:
+                    self._home_baseline_snapshot = await self._scan_user_home_files()
+                except Exception:
+                    self._home_baseline_snapshot = {}
+
+            sandbox_task = asyncio.create_task(_ensure_sandbox_ready())
             mcp_task = asyncio.create_task(self._mcp_tool.initialized(mcp_config))
 
             while not await task.input_stream.is_empty():
@@ -769,7 +794,15 @@ class AgentTaskRunner(TaskRunner):
         # shell heredocs (`cat > file <<EOF`), scripts the agent ran, or tools
         # — so every real artifact reaches the summary without depending on
         # the model remembering to claim it.
-        home_baseline: dict = await self._scan_user_home_files()
+        # NOTE: this must NEVER force a lazy sandbox resolve (a cold E2B boot
+        # takes up to a minute and would delay the first acknowledgement).
+        # Prefer the snapshot warmed by the background ensure; when the VM is
+        # not up yet, start from {} — on a fresh session the home IS empty,
+        # so "everything is new" is the correct baseline.
+        home_baseline: dict = dict(self._home_baseline_snapshot or {})
+        self._home_baseline_snapshot = {}
+        if not home_baseline and getattr(self._sandbox, "resolved", True):
+            home_baseline = await self._scan_user_home_files()
         # Paths that were claimed but did not exist yet — retried at every
         # sync point until they appear (or the task ends).
         pending_sync: set = set()

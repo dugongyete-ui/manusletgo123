@@ -147,3 +147,13 @@ def reset_failure_state_for_tests() -> None:
     """Test hook: clear cached auth/rate-limit decisions."""
     _AUTH_DISABLED["disabled"] = False
     _RATE_LIMIT_COOLDOWN["until"] = 0.0
+
+
+def will_use_e2b() -> bool:
+    """Public probe: would create()/get() route to E2B right now?
+
+    Lets the domain service decide between the lazy-E2B path (task creation
+    never blocks on a 30-60 s microVM boot) and the synchronous shared
+    sandbox path (local, fast).
+    """
+    return _e2b_available()
