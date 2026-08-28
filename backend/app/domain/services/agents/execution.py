@@ -71,6 +71,25 @@ class ExecutionAgent(BaseAgent):
         # what the timeline already shows and are suppressed.
         self._current_step_words: Optional[set] = None
         self._user_request_words: Optional[set] = None
+        # ── Mid-step progress safety net (silent-run keep-alive) ────────────
+        # Free-tier models often run a whole step without a single
+        # message_notify_user — the chat goes dead-silent between the ack and
+        # the step-completion line (user complaint: "kok jadi hening"). The
+        # design doc's LONG_TASK_UPDATE_INTERVAL rule applies here: when the
+        # model has stayed silent for _MIDSTEP_NARRATION_EVERY completed real
+        # tool rounds, emit ONE short derived progress line so the user
+        # always sees life. Model-driven narrations reset the window and
+        # always win; the derived lines are capped per step so a very long
+        # step never floods the chat.
+        self._tools_since_narration: int = 0
+        self._tool_window: List[str] = []
+        self._midstep_narration_count: int = 0
+        # Cumulative real tools completed in the CURRENT step — used for the
+        # keep-alive line's count so consecutive lines read "4 aksi…", "8
+        # aksi…", "12 aksi…" (distinct, shows momentum) instead of repeating
+        # the window size every time.
+        self._real_tools_in_step: int = 0
+        self._narration_lang: str = "en"
     @staticmethod
     def _normalize_narration(text: str) -> str:
         """Lowercase, strip punctuation and collapse whitespace for comparison."""
@@ -175,11 +194,91 @@ class ExecutionAgent(BaseAgent):
     # model-driven and sparse ("sparingly for meaningful progress"); activity
     # visibility comes from the step list + tool pills + shimmer, not from
     # narrating every action.
+    # The DETERMINISTIC keep-alive below is deliberately different from that
+    # nudge: it never injects prompts into the model, never announces a
+    # single mechanical action, and emits at most _MIDSTEP_NARRATION_MAX
+    # short status lines per step (one every _MIDSTEP_NARRATION_EVERY silent
+    # real-tool rounds) — enough to prove the run is alive, never spam.
+    _MIDSTEP_NARRATION_EVERY = 4
+    _MIDSTEP_NARRATION_MAX = 3
     # Ghost-success / plain-text correction rounds: after the initial model
     # round, rerun the step up to this many times with an escalating mandatory
     # tool-usage prompt. A round that STILL returns a fabricated completion
     # after all corrections is marked FAILED — never a false checkmark.
     _GHOST_MAX_CORRECTIONS = 2
+
+    def _derived_midstep_progress(self) -> str:
+        """One short keep-alive line for a silent, long-running step.
+
+        Summarizes what the agent has BEEN doing since the last narration
+        (category + count of completed real tools) — the design doc's
+        "[status] + [short finding]" pattern. Rotates phrasing so consecutive
+        lines never read like a stuck loop; localized to the plan language.
+        """
+        n = len(self._tool_window)
+        if n == 0:
+            return ""
+        # The count shown to the user is CUMULATIVE for the step (always
+        # grows), while categories come from the current silent window.
+        n = max(n, self._real_tools_in_step)
+        cats = {"search": 0, "browser": 0, "file": 0, "shell": 0, "other": 0}
+        for fn in self._tool_window:
+            if fn in ("info_search_web", "info_search_image", "info_search"):
+                cats["search"] += 1
+            elif fn.startswith("browser_"):
+                cats["browser"] += 1
+            elif fn.startswith("file_"):
+                cats["file"] += 1
+            elif fn.startswith("shell_"):
+                cats["shell"] += 1
+            else:
+                cats["other"] += 1
+        dominant = max(cats, key=lambda k: cats[k])
+        idx = self._midstep_narration_count
+        if self._narration_lang == "id":
+            variants = {
+                "search": [
+                    f"Pengumpulan informasi berjalan — {n} aksi selesai, data terus bertambah.",
+                    f"Masih menyusuri sumber terkait ({n} aksi terakhir); sumber kunci mulai ditemukan.",
+                ],
+                "browser": [
+                    f"Sedang menjelajah halaman web untuk melengkapi data ({n} aksi terakhir).",
+                    f"Masih membaca isi halaman — {n} aksi sudah selesai di tahap ini.",
+                ],
+                "file": [
+                    f"Sedang menyusun dan menulis file hasil pekerjaan ({n} aksi terakhir).",
+                ],
+                "shell": [
+                    f"Menjalankan perintah shell untuk memproses data ({n} aksi terakhir).",
+                ],
+            }
+            fallback = [
+                f"Langkah ini sudah {n} aksi — pekerjaan berlanjut.",
+                f"{n} aksi terakhir selesai; saya lanjutkan bagian berikutnya.",
+            ]
+        else:
+            variants = {
+                "search": [
+                    f"Information gathering in progress — {n} actions done, data keeps coming in.",
+                    f"Still going through relevant sources ({n} recent actions); key sources are emerging.",
+                ],
+                "browser": [
+                    f"Browsing web pages to complete the data ({n} recent actions).",
+                    f"Still reading page content — {n} actions done at this stage.",
+                ],
+                "file": [
+                    f"Writing and organizing the output files ({n} recent actions).",
+                ],
+                "shell": [
+                    f"Running shell commands to process the data ({n} recent actions).",
+                ],
+            }
+            fallback = [
+                f"This step is now {n} actions in — work continues.",
+                f"{n} recent actions done; moving on to the next part.",
+            ]
+        pool = variants.get(dominant) or fallback
+        return pool[idx % len(pool)]
 
     def _build_vision_content(self, text: str, images: List[VisionImage]) -> list:
         content = [{"type": "text", "text": text}]
@@ -336,6 +435,11 @@ class ExecutionAgent(BaseAgent):
                         self._last_narration_norm = self._normalize_narration(
                             notify_text
                         )
+                        # The model narrated on its own — reset the silent-run
+                        # window so derived keep-alive lines never stack on
+                        # top of model-driven updates.
+                        self._tools_since_narration = 0
+                        self._tool_window = []
                     elif (
                         event.status == ToolStatus.CALLED
                         and event.tool_call_id in self._suppressed_notify_ids
@@ -354,6 +458,41 @@ class ExecutionAgent(BaseAgent):
             # ErrorEvents (logged above) and all non-message ToolEvents
             # (file/shell/browser/…) pass through unchanged.
             yield event
+            # ── Mid-step keep-alive: silent run, N real tools completed ──────
+            # Fires only for real work tools (message-toolkit calls are not
+            # "progress" the user needs reassurance about) and only when the
+            # model has not narrated within the window. The line is a STATUS
+            # summary (what has been done, how much), never a mechanical
+            # action echo — the tool pills already show each action.
+            if (
+                isinstance(event, ToolEvent)
+                and event.status == ToolStatus.CALLED
+                and event.tool_name != "message"
+                and self._counts_as_real_action(event)
+            ):
+                self._tools_since_narration += 1
+                self._tool_window.append(event.function_name)
+                self._real_tools_in_step += 1
+                if (
+                    self._tools_since_narration >= self._MIDSTEP_NARRATION_EVERY
+                    and self._midstep_narration_count < self._MIDSTEP_NARRATION_MAX
+                ):
+                    _keepalive = self._derived_midstep_progress()
+                    if _keepalive:
+                        self._tools_since_narration = 0
+                        self._tool_window = []
+                        self._midstep_narration_count += 1
+                        logger.info(
+                            "Mid-step keep-alive narration (%d/%d for this step): %s",
+                            self._midstep_narration_count,
+                            self._MIDSTEP_NARRATION_MAX,
+                            _keepalive[:80],
+                        )
+                        yield MessageEvent(
+                            role="assistant",
+                            message=_keepalive,
+                            is_progress=True,
+                        )
 
     def _correction_prompt(self, reason: str, round_no: int) -> str:
         """Escalating correction appended to the step prompt on retry rounds.
@@ -398,6 +537,12 @@ class ExecutionAgent(BaseAgent):
         self._user_request_words = self._content_words(message.message or "")
         _lang = (getattr(plan, "language", None) or "").lower()
         self._narration_lang = "id" if _lang.startswith("id") or "indonesia" in _lang or "bahasa" in _lang else "en"
+        # Fresh keep-alive window for every step: each step earns its own
+        # budget of derived progress lines.
+        self._tools_since_narration = 0
+        self._tool_window = []
+        self._midstep_narration_count = 0
+        self._real_tools_in_step = 0
 
         prompt = EXECUTION_PROMPT.format(
             step=step.description,

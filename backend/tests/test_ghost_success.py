@@ -41,6 +41,10 @@ def make_executor() -> ExecutionAgent:
     agent._last_model_narration_ts = 0.0
     agent._step_narrated_functions = set()
     agent._narration_variants_used = {}
+    agent._tools_since_narration = 0
+    agent._tool_window = []
+    agent._midstep_narration_count = 0
+    agent._real_tools_in_step = 0
     return agent
 
 
