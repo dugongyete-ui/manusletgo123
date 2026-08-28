@@ -39,6 +39,11 @@ class ImageToolkit(BaseToolkit):
         if not items:
             items = await self._search_duckduckgo(query, max_results)
 
+        # Final fallback: Bing Images scraping (works from datacenter IPs that
+        # are blocked by Tavily WAF / DuckDuckGo ratelimit)
+        if not items:
+            items = await self._search_bing_images(query, max_results)
+
         if items:
             return ToolResult(
                 success=True,
@@ -112,6 +117,56 @@ class ImageToolkit(BaseToolkit):
                 for r in raw
                 if r.get("image")
             ]
+        except Exception:
+            return []
+
+    async def _search_bing_images(self, query: str, max_results: int) -> list:
+        """Search images via Bing Images scraping (curl_cffi browser impersonation).
+
+        Last-resort fallback when Tavily and DuckDuckGo are both unavailable
+        (e.g. datacenter egress IP blocked). Parses the JSON payload inside
+        each `class="iusc"` card attribute: m=murl (media URL) + t (title).
+        """
+        try:
+            import json as _json
+            import re as _re
+            from curl_cffi.requests import AsyncSession
+
+            async with AsyncSession(impersonate="chrome") as session:
+                resp = await session.get(
+                    "https://www.bing.com/images/search",
+                    params={"q": query, "form": "HDRSC2", "first": "1"},
+                    timeout=20,
+                )
+                if resp.status_code != 200:
+                    return []
+                html = resp.text
+
+            items: list = []
+            for raw in _re.findall(r'class="iusc"[^>]*\sm="([^"]+)"', html):
+                try:
+                    payload = _json.loads(
+                        raw.replace("&quot;", chr(34)).replace("&amp;", "&")
+                    )
+                except Exception:
+                    continue
+                url = payload.get("murl", "")
+                if not url:
+                    continue
+                items.append(
+                    ImageSearchResultItem(
+                        title=payload.get("t", "") or query,
+                        url=url,
+                        thumbnail=payload.get("turl", "") or url,
+                        source="https://www.bing.com/images/search?q="
+                        + query.replace(" ", "+"),
+                        width=None,
+                        height=None,
+                    )
+                )
+                if len(items) >= max_results:
+                    break
+            return items
         except Exception:
             return []
 

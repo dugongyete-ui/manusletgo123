@@ -473,8 +473,11 @@ const handleToolEvent = (toolData: ToolEventData) => {
   }
 
   // Update thinking text: show current action while calling, reset to null when done
+  // Official Manus: the model-supplied ``brief`` (natural-language action)
+  // takes priority over the generic function label.
   if (toolData.status === 'calling') {
-    currentThinkingText.value = t(TOOL_FUNCTION_MAP[toolData.function] || toolData.function);
+    currentThinkingText.value = (toolData as any).brief?.trim()
+      || t(TOOL_FUNCTION_MAP[toolData.function] || toolData.function);
   } else {
     currentThinkingText.value = null;
   }

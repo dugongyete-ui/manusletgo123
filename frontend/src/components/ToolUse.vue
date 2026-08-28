@@ -13,8 +13,18 @@
           <component :is="toolInfo.icon" :size="21" />
         </div>
         <div class="flex-1 h-full min-w-0 flex">
-          <div class="inline-flex items-center h-full rounded-full text-[14px] text-[var(--text-secondary)] max-w-[100%]">
-            <div class="max-w-[100%] text-ellipsis overflow-hidden whitespace-nowrap text-[13px]"
+          <div class="inline-flex items-center h-full rounded-full text-[14px] max-w-[100%]"
+            :class="showShimmer ? '' : 'text-[var(--text-secondary)]'">
+            <!-- Official Manus StandardToolUsed: prefer the model-supplied
+                 ``brief`` (natural-language action) over path/args. -->
+            <div v-if="briefText"
+              class="max-w-[100%] text-ellipsis overflow-hidden whitespace-nowrap text-[13px]"
+              :class="showShimmer ? 'shimmer-text-secondary' : ''"
+              :title="briefText">
+              {{ briefText }}
+            </div>
+            <div v-else class="max-w-[100%] text-ellipsis overflow-hidden whitespace-nowrap text-[13px]"
+              :class="showShimmer ? 'shimmer-text-secondary' : ''"
               :title="`${toolInfo.function}${toolInfo.functionArg}`">
               <div class="flex items-center">
                 {{ toolInfo.function
@@ -24,7 +34,7 @@
             </div>
           </div>
         </div>
-        <!-- Status indicator -->
+        <!-- Status indicator: shimmer replaces the dot while calling -->
         <div class="flex items-center flex-shrink-0">
           <span v-if="tool.status === 'calling'" class="relative flex h-[6px] w-[6px]">
             <span class="animate-ping absolute inline-flex h-full w-full rounded-full bg-[var(--icon-tertiary)] opacity-60" />
@@ -44,15 +54,18 @@
 </template>
 
 <script setup lang="ts">
-import { ref } from "vue";
+import { computed, toRef } from "vue";
 import { ToolContent } from "../types/message";
 import { useToolInfo } from "../composables/useTool";
+import { useToolShimmer } from "../composables/useToolShimmer";
 import { useRelativeTime } from "../composables/useTime";
 import { marked } from "marked";
 import DOMPurify from "dompurify";
 
 const props = defineProps<{
   tool: ToolContent;
+  /** Keep shimmering while this row is the live tool of a running step. */
+  active?: boolean;
 }>();
 
 const emit = defineEmits<{
@@ -60,7 +73,15 @@ const emit = defineEmits<{
 }>();
 
 const { relativeTime } = useRelativeTime();
-const { toolInfo } = useToolInfo(ref(props.tool));
+const toolRef = toRef(props, "tool");
+const { toolInfo } = useToolInfo(toolRef);
+
+const statusRef = computed(() => props.tool.status);
+const activeRef = computed(() => !!props.active);
+const { showShimmer } = useToolShimmer(statusRef, activeRef);
+
+/** Official Manus StandardToolUsed prefers ``brief`` over path/args. */
+const briefText = computed(() => (props.tool.brief || "").trim());
 
 const cleanLinkText = (href: string, text: string): string => {
   const isRawUrl = text === href || text.startsWith('http://') || text.startsWith('https://');

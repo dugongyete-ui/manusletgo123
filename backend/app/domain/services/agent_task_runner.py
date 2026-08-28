@@ -114,6 +114,11 @@ class AgentTaskRunner(TaskRunner):
         self._file_storage = file_storage
         self._mcp_repository = mcp_repository
         self._mcp_tool = MCPToolkit()
+        # Pre-edit snapshots per tool_call_id so the UI can show the Diff /
+        # Original / Modified tabs (official Manus text_editor behaviour):
+        # captured when a file_write / file_str_replace CALLING event arrives,
+        # consumed when the matching CALLED event is enriched with content.
+        self._file_old_by_call: Dict[str, str] = {}
         self._flow = PlanActFlow(
             self._agent_id,
             self._repository,
@@ -413,6 +418,23 @@ class AgentTaskRunner(TaskRunner):
         """Generate tool content. Returns FileInfo when a file is written to storage."""
         synced_file: Optional[FileInfo] = None
         try:
+            # Capture pre-write file content so the UI can show Diff / Original.
+            if (
+                event.status == ToolStatus.CALLING
+                and event.tool_name == "file"
+                and event.function_name in ("file_write", "file_str_replace")
+                and "file" in event.function_args
+            ):
+                try:
+                    file_path = event.function_args["file"]
+                    prior = await self._sandbox.file_read(file_path)
+                    if prior and prior.success and isinstance(prior.data, dict):
+                        self._file_old_by_call[event.tool_call_id] = prior.data.get("content", "") or ""
+                except Exception:
+                    # New file / missing file — no original content.
+                    logger.debug(
+                        f"Agent {self._agent_id} no prior content for {event.function_args.get('file')}"
+                    )
             if event.status == ToolStatus.CALLED:
                 if event.tool_name == "browser":
                     screenshot = await self._get_browser_screenshot()
@@ -445,7 +467,13 @@ class AgentTaskRunner(TaskRunner):
                         file_path = event.function_args["file"]
                         file_read_result = await self._sandbox.file_read(file_path)
                         file_content: str = (file_read_result.data or {}).get("content", "") if (file_read_result and file_read_result.success) else ""
-                        event.tool_content = FileToolContent(content=file_content)
+                        old_content = self._file_old_by_call.pop(event.tool_call_id, None)
+                        # Only expose old_content when there was a prior snapshot
+                        # (enables the Diff / Original / Modified tabs).
+                        event.tool_content = FileToolContent(
+                            content=file_content,
+                            old_content=old_content,
+                        )
                         if file_content:
                             file_info = await self._sync_file_to_storage(file_path)
                             # Track written files so they can be auto-attached to the response

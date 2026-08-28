@@ -38,6 +38,10 @@ export default {
   // File tools
   'Reading file': 'Reading file',
   'Writing file': 'Writing file',
+  // File panel tabs (official Manus text_editor)
+  'Diff': 'Diff',
+  'Original': 'Original',
+  'Modified': 'Modified',
   'Replacing file content': 'Replacing file content',
   'Searching file content': 'Searching file content',
   'Finding file': 'Finding file',

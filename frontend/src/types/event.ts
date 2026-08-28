@@ -17,6 +17,8 @@ export interface ToolEventData extends BaseEventData {
   function: string;
   args: {[key: string]: any};
   content?: any;
+  /** Official Manus natural-language action label. */
+  brief?: string;
 }
 
 export interface StepEventData extends BaseEventData {

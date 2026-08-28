@@ -29,6 +29,8 @@ export interface ToolContent extends BaseContent {
   args: any;
   content?: any;
   status: "calling" | "called";
+  /** Official Manus natural-language action label — shown instead of path/args. */
+  brief?: string;
 }
 
 export interface StepContent extends BaseContent {

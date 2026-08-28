@@ -23,6 +23,58 @@ from langchain.messages import AIMessage, HumanMessage, ToolCall, ToolMessage, S
 from app.domain.services.tools.base import Tool
 from app.domain.utils.robust_json_parser import RobustJsonParser, ToolCallParseError
 import openai
+import copy
+
+
+# ── Official Manus ``brief`` support ─────────────────────────────────────
+# The timeline shows a natural-language action label (tool ``brief``) instead
+# of raw file paths / shell commands. The model must supply it with every
+# executable tool call; the agent strips it before invoking the tool impl.
+BRIEF_PARAM_SCHEMA: Dict[str, Any] = {
+    "type": "string",
+    "description": (
+        "Short user-facing description of this action in the user's language "
+        "(what you are doing), e.g. 'Menulis kode contoh Python' or 'Run the "
+        "example and capture output'. Do not put file paths or raw shell "
+        "commands here."
+    ),
+}
+
+# Soft tools whose output is already user-facing narration — no brief needed.
+_BRIEF_EXEMPT_TOOLKITS = {"message"}
+
+
+def _with_brief_parameter(parameters: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+    """Copy an OpenAI parameters schema and require a ``brief`` property."""
+    params: Dict[str, Any] = copy.deepcopy(parameters) if parameters else {
+        "type": "object",
+        "properties": {},
+    }
+    if params.get("type") != "object":
+        params["type"] = "object"
+    props = params.setdefault("properties", {})
+    if not isinstance(props, dict):
+        props = {}
+        params["properties"] = props
+    if "brief" not in props:
+        props["brief"] = dict(BRIEF_PARAM_SCHEMA)
+    required = params.setdefault("required", [])
+    if isinstance(required, list) and "brief" not in required:
+        required.append("brief")
+    return params
+
+
+def _take_brief(args: Optional[Dict[str, Any]]) -> tuple:
+    """Split ``brief`` from tool-call args (brief is UI-only, not for tool impl)."""
+    clean = dict(args or {})
+    raw = clean.pop("brief", None)
+    if raw is None:
+        return None, clean
+    if isinstance(raw, str):
+        text = raw.strip()
+        return (text or None), clean
+    text = str(raw).strip()
+    return (text or None), clean
 
 
 def _build_chat_model(prefer_fallback: bool = False):
@@ -341,6 +393,35 @@ class BaseAgent(ABC):
         """Get all available tools list"""
         return [tool for toolkit in self.toolkits for tool in toolkit.get_tools()]
 
+    def _tools_with_brief(self) -> List[Any]:
+        """OpenAI tool schemas with the required ``brief`` parameter injected.
+
+        The model supplies a short natural-language label with every call; the
+        agent strips it in ``execute()`` before the tool implementation runs.
+        Soft narration tools (message toolkit) are exempt. Returns a mix of
+        dicts and Tools — ``bind_tools`` accepts both.
+        """
+        try:
+            from langchain_core.utils.function_calling import convert_to_openai_tool
+        except Exception:
+            return self.get_tools()
+        schemas: List[Any] = []
+        for tool in self.get_tools():
+            toolkit_name = getattr(tool, "toolkit", None)
+            toolkit_name = getattr(toolkit_name, "name", "") or ""
+            if toolkit_name in _BRIEF_EXEMPT_TOOLKITS:
+                schemas.append(tool)
+                continue
+            try:
+                schema = convert_to_openai_tool(tool)
+                function = schema.get("function", {})
+                function["parameters"] = _with_brief_parameter(function.get("parameters"))
+                schemas.append(schema)
+            except Exception:
+                # Fall back to the raw tool if schema conversion fails.
+                schemas.append(tool)
+        return schemas
+
     async def invoke_tool(self, tool: Tool, tool_call: ToolCall) -> ToolMessage:
         """Invoke specified tool, with retry mechanism."""
         retries = 0
@@ -443,13 +524,21 @@ class BaseAgent(ABC):
                     function_name = tool.name
                     tool_call["name"] = tool.name
 
+                # Official Manus ``brief``: the model supplies a short NL label
+                # with the call. Strip it here so the tool implementation never
+                # sees an unexpected kwarg, then carry it on both ToolEvents.
+                brief, clean_args = _take_brief(function_args)
+                function_args = clean_args
+                tool_call["args"] = clean_args
+
                 # Generate event before tool call
                 yield ToolEvent(
                     status=ToolStatus.CALLING,
                     tool_call_id=tool_call_id,
                     tool_name=tool.toolkit.name,
                     function_name=function_name,
-                    function_args=function_args
+                    function_args=function_args,
+                    brief=brief,
                 )
 
                 tool_result = await self.invoke_tool(tool, tool_call)
@@ -461,7 +550,8 @@ class BaseAgent(ABC):
                     tool_name=tool.toolkit.name,
                     function_name=function_name,
                     function_args=function_args,
-                    function_result=tool_result.artifact
+                    function_result=tool_result.artifact,
+                    brief=brief,
                 )
 
                 tool_responses.append(tool_result)
@@ -516,7 +606,7 @@ class BaseAgent(ABC):
             return (
                 self._model
                 .bind(response_format=response_format, tool_choice=self.tool_choice)
-                .bind_tools(self.get_tools())
+                .bind_tools(self._tools_with_brief())
                 | RobustJsonParser.from_llm(self._model)
             )
 

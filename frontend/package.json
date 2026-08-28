@@ -20,6 +20,7 @@
     "dompurify": "^3.2.5",
     "framer-motion": "^10.12.16",
     "highlight.js": "^11.11.1",
+    "lottie-web": "^5.13.0",
     "lucide-vue-next": "^0.511.0",
     "marked": "^15.0.8",
     "marked-highlight": "^2.2.4",

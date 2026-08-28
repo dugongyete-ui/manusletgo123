@@ -38,6 +38,10 @@ export default {
   // File tools
   'Reading file': 'Membaca file',
   'Writing file': 'Menulis file',
+  // File panel tabs (official Manus text_editor)
+  'Diff': 'Diff',
+  'Original': 'Asli',
+  'Modified': 'Dimodifikasi',
   'Replacing file content': 'Mengganti konten file',
   'Searching file content': 'Mencari konten file',
   'Finding file': 'Mencari file',

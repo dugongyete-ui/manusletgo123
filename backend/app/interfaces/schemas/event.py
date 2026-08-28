@@ -111,6 +111,8 @@ class ToolEventData(BaseEventData):
     function: str
     args: Dict[str, Any]
     content: Optional[ToolContent] = None
+    # Official Manus StandardToolUsed natural-language action label.
+    brief: Optional[str] = None
 
 class ToolSSEEvent(BaseSSEEvent):
     event: Literal["tool"] = "tool"
@@ -150,7 +152,8 @@ class ToolSSEEvent(BaseSSEEvent):
                 status=event.status,
                 function=event.function_name,
                 args=event.function_args,
-                content=content
+                content=content,
+                brief=event.brief,
             )
         )
 

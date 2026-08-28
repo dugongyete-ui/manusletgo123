@@ -66,6 +66,10 @@ class ShellToolContent(BaseModel):
 class FileToolContent(BaseModel):
     """File tool content"""
     content: str
+    # Pre-edit snapshot so the UI can show Diff / Original / Modified tabs
+    # (official Manus text_editor behaviour). Only present when the file
+    # already existed before file_write / file_str_replace modified it.
+    old_content: Optional[str] = None
 
 class McpToolContent(BaseModel):
     """MCP tool content"""
@@ -100,6 +104,9 @@ class ToolEvent(BaseEvent):
     function_args: Dict[str, Any]
     status: ToolStatus
     function_result: Optional[Any] = None
+    # Official Manus StandardToolUsed prefers ``brief`` (natural-language
+    # action label supplied by the model) over raw paths / commands.
+    brief: Optional[str] = None
 
 class TitleEvent(BaseEvent):
     """Title event"""

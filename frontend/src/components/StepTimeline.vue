@@ -27,10 +27,9 @@
             style="background:#d92d20;">
             <XIcon class="text-white" :size="10" />
           </div>
-          <div v-else
-            class="w-4 h-4 flex-shrink-0 flex items-center justify-center border border-[var(--border-dark)] rounded-[15px] bg-[var(--background-gray-main)]">
-            <span v-if="entry.step.status === 'running'"
-              class="block w-[6px] h-[6px] rounded-full bg-[var(--text-secondary)] animate-pulse"></span>
+          <!-- Official Manus LiveStatusLoading: lottie spinner while running -->
+          <div v-else class="w-4 h-4 flex-shrink-0 flex items-center justify-center rounded-[15px] bg-[var(--background-gray-main)]">
+            <LiveStatusCanvas :size="14" :active="entry.step.status === 'running'" />
           </div>
           <div class="truncate font-medium markdown-content"
             v-html="renderMarkdown(entry.step.description || '')">
@@ -51,14 +50,21 @@
 
       <!-- Step items: tool pills + progress narrations, chronologically ordered.
            Narration text renders BESIDE the rail (indented right of it) — the
-           user-notification style of the Manus work loop. -->
+           user-notification style of the Manus work loop.
+
+           Official Manus StepGroup collapse behaviour:
+           - while a step RUNS it stays expanded (live tools shimmer);
+           - when the step COMPLETES it auto-collapses to the header line
+             (narrations stay visible beside the rail);
+           - the user can always re-expand via the chevron. -->
       <div class="flex" v-if="entry.items.length">
         <div class="w-[24px] flex-shrink-0"></div>
         <div
           class="flex flex-col gap-[10px] flex-1 min-w-0 overflow-hidden pt-[6px] transition-[max-height,opacity] duration-150 ease-in-out"
-          :class="{ 'max-h-[100000px] opacity-100': isExpanded(i), 'max-h-0 opacity-0': !isExpanded(i) }">
-          <template v-for="item in entry.items" :key="item.seq">
-            <ToolUse v-if="item.kind === 'tool' && item.tool" :tool="item.tool" @click="handleToolClick(item.tool)" />
+          :class="{ 'max-h-[100000px] opacity-100': isExpanded(i) || visibleItems(entry, i).length > 0, 'max-h-0 opacity-0': !isExpanded(i) && visibleItems(entry, i).length === 0 }">
+          <template v-for="item in visibleItems(entry, i)" :key="item.seq">
+            <ToolUse v-if="item.kind === 'tool' && item.tool" :tool="item.tool" :active="isActiveTool(entry, item)"
+              @click="handleToolClick(item.tool)" />
             <!-- Narration: plain text line beside the rail — no bullet dot,
                  Manus-style. The text itself says what is happening. -->
             <div v-else
@@ -73,11 +79,12 @@
 </template>
 
 <script setup lang="ts">
-import { computed, reactive } from 'vue';
+import { computed, reactive, watch } from 'vue';
 import { marked } from 'marked';
 import DOMPurify from 'dompurify';
 import { CheckIcon, X as XIcon } from 'lucide-vue-next';
 import ToolUse from './ToolUse.vue';
+import LiveStatusCanvas from './LiveStatusCanvas.vue';
 import { Message, MessageContent, ToolContent, StepContent } from '../types/message';
 import { useRelativeTime } from '../composables/useTime';
 
@@ -154,14 +161,61 @@ const railBottom = computed(() => {
   const last = entries[entries.length - 1];
   if (!last) return '0px';
   const lastIdx = entries.length - 1;
-  return last.items.length && isExpanded(lastIdx) ? '0px' : '10px';
+  return visibleItems(last, lastIdx).length && isExpanded(lastIdx) ? '0px' : '10px';
 });
 
-// ── Per-step collapse state (default expanded) ──────────────────────────────
-const expanded = reactive<Record<number, boolean>>({});
-const isExpanded = (i: number) => expanded[i] !== false;
+// ── Per-step collapse state (official Manus StepGroup) ─────────────────────
+// 'auto': derived from status — running/failed steps expand, completed steps
+// collapse to their header line (narrations stay). The user can override any
+// step explicitly; the override survives later status changes.
+type CollapseState = boolean | null; // null = auto
+const expanded = reactive<Record<string, CollapseState>>({});
+
+const stepKey = (i: number) => {
+  const entry = stepEntries.value[i];
+  return entry?.step.id || String(i);
+};
+
+const isExpanded = (i: number) => {
+  const key = stepKey(i);
+  const override = expanded[key];
+  if (override !== null && override !== undefined) return override;
+  const status = stepEntries.value[i]?.step.status;
+  // Running (and failed, so the error context stays visible) steps expand;
+  // completed steps auto-collapse — the classic Manus compact timeline.
+  return status === 'running' || status === 'failed' || status === 'pending';
+};
+
 const toggle = (i: number) => {
-  expanded[i] = !isExpanded(i);
+  const key = stepKey(i);
+  expanded[key] = !isExpanded(i);
+};
+
+// When a step finishes, drop any stale auto state so the collapse looks
+// immediate (the computed already derives it, this just cleans up).
+watch(() => stepEntries.value.map(e => e.step.status).join(','), () => {
+  for (const key of Object.keys(expanded)) {
+    if (expanded[key] === null) delete expanded[key];
+  }
+});
+
+// Items rendered for an entry. Collapsed completed steps still show their
+// narration lines beside the rail (the Manus work-loop notifications) and
+// hide the tool pills; expanded shows everything.
+const visibleItems = (entry: StepEntry, i: number): TimelineItem[] => {
+  if (isExpanded(i)) return entry.items;
+  return entry.items.filter(item => item.kind === 'narration');
+};
+
+// ── Live tool shimmer ───────────────────────────────────────────────────────
+// The LAST tool row of a RUNNING step keeps its label shimmering for the whole
+// live window (official Manus keeps the current action glowing while work
+// continues, even between tool calls).
+const isActiveTool = (entry: StepEntry, item: TimelineItem): boolean => {
+  if (entry.step.status !== 'running') return false;
+  const tools = entry.items.filter(it => it.kind === 'tool' && it.tool);
+  const lastTool = tools[tools.length - 1];
+  return lastTool === item;
 };
 
 const handleToolClick = (tool: ToolContent) => {
