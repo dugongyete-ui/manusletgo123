@@ -1,12 +1,14 @@
 """Unit tests for the narration policy in ExecutionAgent.
 
 Policy (product direction 2026-08-28 — "aware, frequent, pre-tool"):
-1. The agent MUST narrate BEFORE executing tools (prompt-driven). The ONLY
-   deterministic narration is the mid-step keep-alive safety net: ONE short
-   status line every 3 SILENT real-tool rounds (max 4 per step) so a silent
-   free-tier model can never leave the chat dead-quiet.
+1. The agent MUST narrate BEFORE executing tools (prompt-driven). The
+   deterministic mid-step keep-alive safety net (template counting lines
+   like "Pengumpulan informasi berjalan — 5 aksi selesai") was REMOVED
+   after user feedback that it reads mechanical — narration is now purely
+   model-driven (prompt-mandated notify + content think-aloud surfaced by
+   base.execute + step-completion lines derived from the step result).
 2. The old "redundant action announcement" suppression is RETIRED — it
-   dropped exactly the pre-tool intent lines the user now wants (they
+   dropped exactly the pre-tool intent lines the user wants (they
    legitimately overlap with the step description). The method now always
    returns False and pre-tool lines pass through untouched.
 3. Near-DUPLICATE narrations (the same line sent twice) are still
@@ -14,6 +16,7 @@ Policy (product direction 2026-08-28 — "aware, frequent, pre-tool"):
 """
 
 import pytest
+from unittest.mock import AsyncMock as _AsyncMock
 
 from app.domain.models.event import MessageEvent, ToolEvent, ToolStatus
 from app.domain.services.agents.execution import ExecutionAgent
@@ -25,10 +28,9 @@ def make_executor(step_desc: str = "", user_request: str = "") -> ExecutionAgent
     agent._last_narration_norm = None
     agent._suppressed_notify_ids = set()
     agent._user_request_words = agent._content_words(user_request)
-    agent._tools_since_narration = 0
-    agent._tool_window = []
-    agent._midstep_narration_count = 0
-    agent._real_tools_in_step = 0
+    agent._silent_activities = []
+    agent._silent_tool_count = 0
+    agent._narration_assist_count = 0
     agent._narration_lang = "en"
     return agent
 
@@ -139,79 +141,154 @@ def test_duplicate_narration_detected():
     )
 
 
-# ── 4. Mid-step keep-alive safety net (silent-run keep-alive) ────────────────
+# ── 4. Mid-step keep-alive machinery fully removed ───────────────────────────
 
 
-def _feed_completed_tools(agent: ExecutionAgent, count: int, fn: str = "info_search_web"):
-    """Simulate `count` completed real-tool rounds through the emission hook
-    (same logic as the post-yield block in _handle_execution_events)."""
-    emitted = []
-    for _ in range(count):
-        ev = tool_event(fn)
-        agent._tools_since_narration += 1
-        agent._tool_window.append(ev.function_name)
-        agent._real_tools_in_step += 1
-        if (
-            agent._tools_since_narration >= ExecutionAgent._MIDSTEP_NARRATION_EVERY
-            and agent._midstep_narration_count < ExecutionAgent._MIDSTEP_NARRATION_MAX
-        ):
-            line = agent._derived_midstep_progress()
-            if line:
-                agent._tools_since_narration = 0
-                agent._tool_window = []
-                agent._midstep_narration_count += 1
-                emitted.append(line)
-    return emitted
+def test_keepalive_machinery_removed():
+    """The old TEMPLATE counting machinery ("N aksi selesai") stays removed —
+    replaced by the LLM-written narration assist, which is context-aware and
+    never counts actions."""
+    for attr in (
+        "_derived_midstep_progress",
+        "_tools_since_narration",
+        "_tool_window",
+        "_midstep_narration_count",
+        "_real_tools_in_step",
+        "_MIDSTEP_NARRATION_EVERY",
+        "_MIDSTEP_NARRATION_MAX",
+    ):
+        assert not hasattr(ExecutionAgent, attr), f"{attr} should be gone"
 
 
-def test_keepalive_emits_after_three_silent_tool_rounds():
+@pytest.mark.asyncio
+async def test_silent_real_tools_without_llm_stay_silent():
+    """With no LLM available (astream_text_with_fallback missing/raising) the
+    assist degrades to silence — never a template line, never a crash."""
+    from app.domain.models.plan import Step
+
+    agent = make_executor()
+    step = Step(id="1", description="Uji")
+
+    class _Stream:
+        async def execute(self, content):
+            for i in range(12):
+                yield ToolEvent(
+                    status=ToolStatus.CALLED,
+                    tool_call_id=f"c{i}",
+                    tool_name="browser",
+                    function_name="browser_navigate",
+                    function_args={"url": f"https://example.com/{i}"},
+                )
+
+    agent.execute = _Stream().execute
+    events = [
+        e async for e in agent._handle_execution_events(step, "p")
+        if not isinstance(e, ToolEvent)
+    ]
+    # Assist LLM unavailable → no synthesized line, no crash.
+    assert events == []
+
+
+@pytest.mark.asyncio
+async def test_narration_assist_emits_llm_line_after_five_silent_tools():
+    """Five silent real tools → ONE LLM-written aware line (is_progress),
+    window resets; the line must NOT be a counting template."""
+    from app.domain.models.plan import Step
+
     agent = make_executor()
     agent._narration_lang = "id"
-    # 2 silent rounds: nothing yet (below threshold, chat stays clean).
-    assert _feed_completed_tools(agent, 2) == []
-    # 3rd silent round: exactly ONE keep-alive line fires.
-    lines = _feed_completed_tools(agent, 1)
+    agent.astream_text_with_fallback = _AsyncMock(
+        return_value="Sumber dari Antara dan Detik mulai melengkapi data regulasi AI pemerintah."
+    )
+    step = Step(id="1", description="Uji")
+
+    class _Stream:
+        async def execute(self, content):
+            for i in range(10):
+                yield ToolEvent(
+                    status=ToolStatus.CALLED,
+                    tool_call_id=f"c{i}",
+                    tool_name="browser",
+                    function_name="browser_navigate",
+                    function_args={"url": f"https://example.com/{i}"},
+                )
+
+    agent.execute = _Stream().execute
+    events = [
+        e async for e in agent._handle_execution_events(step, "p")
+    ]
+    lines = [e for e in events if isinstance(e, MessageEvent) and e.is_progress]
+    # 10 silent tools → assist at #5, window resets, assist again at #10.
+    assert len(lines) == 2
+    assert "regulasi AI" in lines[0].message
+    assert "aksi" not in lines[0].message.lower()
+    assert agent._silent_tool_count == 0  # second assist reset the window
+
+
+@pytest.mark.asyncio
+async def test_narration_assist_refuses_counting_lines():
+    """If the LLM disobeys and writes a counting line ("5 aksi selesai"),
+    the guard drops it — that phrasing is exactly what the user rejected."""
+    from app.domain.models.plan import Step
+
+    agent = make_executor()
+    agent.astream_text_with_fallback = _AsyncMock(
+        return_value="Pengumpulan informasi berjalan — 5 aksi selesai."
+    )
+    step = Step(id="1", description="Uji")
+
+    class _Stream:
+        async def execute(self, content):
+            for i in range(5):
+                yield ToolEvent(
+                    status=ToolStatus.CALLED,
+                    tool_call_id=f"c{i}",
+                    tool_name="browser",
+                    function_name="browser_navigate",
+                    function_args={"url": f"https://example.com/{i}"},
+                )
+
+    agent.execute = _Stream().execute
+    events = [
+        e async for e in agent._handle_execution_events(step, "p")
+    ]
+    lines = [e for e in events if isinstance(e, MessageEvent) and e.is_progress]
+    assert lines == []
+
+
+@pytest.mark.asyncio
+async def test_model_narration_resets_assist_window():
+    """A model-driven narration (notify or content) resets the silent window —
+    the assist never stacks on top of the model's own updates."""
+    from app.domain.models.plan import Step
+
+    agent = make_executor()
+    agent.astream_text_with_fallback = _AsyncMock(return_value="baris bantuan")
+    step = Step(id="1", description="Uji")
+
+    class _Stream:
+        async def execute(self, content):
+            for i in range(3):
+                yield ToolEvent(
+                    status=ToolStatus.CALLED,
+                    tool_call_id=f"c{i}",
+                    tool_name="browser",
+                    function_name="browser_navigate",
+                    function_args={"url": f"https://example.com/{i}"},
+                )
+            yield MessageEvent(message="Saya dapat data awal dari tiga sumber.", is_progress=True)
+            for i in range(3, 6):
+                yield ToolEvent(
+                    status=ToolStatus.CALLED,
+                    tool_call_id=f"c{i}",
+                    tool_name="browser",
+                    function_name="browser_navigate",
+                    function_args={"url": f"https://example.com/{i}"},
+                )
+
+    agent.execute = _Stream().execute
+    events = [e async for e in agent._handle_execution_events(step, "p")]
+    # Only the model's own line — assist never fired (window reset mid-run).
+    lines = [e for e in events if isinstance(e, MessageEvent) and e.is_progress]
     assert len(lines) == 1
-    assert "3 aksi" in lines[0]  # status summary mentions the count
-    assert len(lines[0]) <= 200  # short, per the ≤300-char narration policy
-
-
-def test_keepalive_capped_at_four_per_step():
-    agent = make_executor()
-    agent._narration_lang = "en"
-    # 24 silent tool rounds → at most 4 keep-alive lines, never a flood.
-    lines = _feed_completed_tools(agent, 24)
-    assert len(lines) == ExecutionAgent._MIDSTEP_NARRATION_MAX
-    # Every line is distinct (rotated phrasing / growing counts).
-    assert len(set(lines)) == len(lines)
-
-
-def test_keepalive_window_resets_on_model_narration():
-    agent = make_executor()
-    agent._narration_lang = "id"
-    # Model narrates after 2 silent rounds → window resets, no keep-alive.
-    _feed_completed_tools(agent, 2)
-    agent._tools_since_narration = 0  # reset by the notify branch
-    agent._tool_window = []
-    # 2 more silent rounds are NOT enough to fire a new keep-alive line.
-    assert _feed_completed_tools(agent, 2) == []
-
-
-def test_keepalive_categorizes_dominant_tool_type():
-    agent = make_executor()
-    agent._narration_lang = "en"
-    agent._tool_window = ["browser_navigate"] * 5
-    agent._midstep_narration_count = 0
-    line = agent._derived_midstep_progress()
-    assert "browsing" in line.lower() or "browsing web" in line.lower()
-
-    agent2 = make_executor()
-    agent2._narration_lang = "id"
-    agent2._tool_window = ["info_search_web"] * 4
-    line2 = agent2._derived_midstep_progress()
-    assert "informasi" in line2.lower()
-
-
-def test_keepalive_empty_window_returns_empty():
-    agent = make_executor()
-    assert agent._derived_midstep_progress() == ""
+    assert "tiga sumber" in lines[0].message

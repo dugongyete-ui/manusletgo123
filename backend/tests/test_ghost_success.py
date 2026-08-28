@@ -45,6 +45,9 @@ def make_executor() -> ExecutionAgent:
     agent._tool_window = []
     agent._midstep_narration_count = 0
     agent._real_tools_in_step = 0
+    agent._silent_activities = []
+    agent._silent_tool_count = 0
+    agent._narration_assist_count = 0
     return agent
 
 

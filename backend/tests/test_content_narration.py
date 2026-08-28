@@ -22,10 +22,9 @@ def _make_agent() -> ExecutionAgent:
     agent._last_narration_norm = None
     agent._suppressed_notify_ids = set()
     agent._user_request_words = None
-    agent._tools_since_narration = 0
-    agent._tool_window = []
-    agent._midstep_narration_count = 0
-    agent._real_tools_in_step = 0
+    agent._silent_activities = []
+    agent._silent_tool_count = 0
+    agent._narration_assist_count = 0
     agent._narration_lang = "en"
     agent.toolkits = []
     return agent
@@ -152,4 +151,3 @@ async def test_progress_narration_passes_execution_handler_with_dedup():
     ]
     # Near-duplicate suppressed; the two distinct lines survive.
     assert len(narrations) == 2
-    assert agent._tools_since_narration == 0  # window reset by narration

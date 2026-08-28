@@ -19,6 +19,10 @@ def make_executor() -> ExecutionAgent:
     agent._deferred_attachments = []
     agent._last_narration_norm = None
     agent._suppressed_notify_ids = set()
+    agent._silent_activities = []
+    agent._silent_tool_count = 0
+    agent._narration_assist_count = 0
+    agent._narration_lang = "en"
     return agent
 
 

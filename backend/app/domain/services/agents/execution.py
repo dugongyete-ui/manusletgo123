@@ -68,24 +68,21 @@ class ExecutionAgent(BaseAgent):
         # Content-word sets of the ORIGINAL user request — kept for context;
         # narration suppression is intentionally minimal now (see below).
         self._user_request_words: Optional[set] = None
-        # ── Mid-step progress safety net (silent-run keep-alive) ────────────
-        # Free-tier models often run a whole step without a single
-        # message_notify_user — the chat goes dead-silent between the ack and
-        # the step-completion line (user complaint: "kok jadi hening"). The
-        # design doc's LONG_TASK_UPDATE_INTERVAL rule applies here: when the
-        # model has stayed silent for _MIDSTEP_NARRATION_EVERY completed real
-        # tool rounds, emit ONE short derived progress line so the user
-        # always sees life. Model-driven narrations reset the window and
-        # always win; the derived lines are capped per step so a very long
-        # step never floods the chat.
-        self._tools_since_narration: int = 0
-        self._tool_window: List[str] = []
-        self._midstep_narration_count: int = 0
-        # Cumulative real tools completed in the CURRENT step — used for the
-        # keep-alive line's count so consecutive lines read "4 aksi…", "8
-        # aksi…", "12 aksi…" (distinct, shows momentum) instead of repeating
-        # the window size every time.
-        self._real_tools_in_step: int = 0
+        # ── LLM-written mid-step narration assist ────────────────────────────
+        # Some models (NVIDIA nemotron) never narrate: no message_notify_user,
+        # no content alongside tool calls — the chat goes dead-silent mid-task
+        # (QA #5). The old template keep-alive ("Pengumpulan informasi berjalan
+        # — 5 aksi selesai") was removed after user feedback that counting
+        # lines read mechanical ("kaku", "ai selalu berkata begitu").
+        # Replacement: when the model has stayed silent for
+        # _NARRATION_ASSIST_EVERY completed real tools, ask the LLM to write ONE
+        # short aware progress line FROM THE ACTUAL RECENT ACTIVITY (tool briefs
+        # + result snippets) — context-aware, never a fixed template, never a
+        # count. Model-driven narrations reset the window and always win; the
+        # assist is capped per step so it can never flood the chat.
+        self._silent_activities: List[str] = []
+        self._silent_tool_count: int = 0
+        self._narration_assist_count: int = 0
         self._narration_lang: str = "en"
     @staticmethod
     def _normalize_narration(text: str) -> str:
@@ -172,97 +169,104 @@ class ExecutionAgent(BaseAgent):
     # PRODUCT DIRECTION (user request, 2026-08-28): the agent MUST narrate
     # BEFORE executing tools — a short aware line stating intent and why,
     # every time — and again after notable findings. The system/execution
-    # prompts drive this model-side; the deterministic layer below only
-    # guarantees liveness when a silent model slips through.
-    # Consequently the old "redundant action announcement" suppression was
-    # REMOVED: it dropped exactly the pre-tool intent lines ("Saya cari berita
-    # AI dulu") the user now wants, because they overlap with the step text.
-    # Only the near-DUPLICATE check (same line twice) remains — a literal
-    # repeat is a glitch, never an update.
-    # The deterministic keep-alive below never injects prompts into the model
-    # and emits at most _MIDSTEP_NARRATION_MAX short status lines per step
-    # (one every _MIDSTEP_NARRATION_EVERY silent real-tool rounds) — enough
-    # to prove the run is alive, never spam.
-    _MIDSTEP_NARRATION_EVERY = 3
-    _MIDSTEP_NARRATION_MAX = 4
+    # prompts drive this model-side; base.execute() surfaces the model's own
+    # content think-aloud. For models that stay silent anyway (nemotron), the
+    # LLM-written narration assist below keeps the chat alive WITHOUT the
+    # mechanical counting templates the user rejected. Only the near-DUPLICATE
+    # check (same line twice) remains active — a literal repeat is a glitch,
+    # never an update.
+    _NARRATION_ASSIST_EVERY = 5   # silent completed real tools before an assist line
+    _NARRATION_ASSIST_MAX = 3     # max assist lines per step
     # Ghost-success / plain-text correction rounds: after the initial model
     # round, rerun the step up to this many times with an escalating mandatory
     # tool-usage prompt. A round that STILL returns a fabricated completion
     # after all corrections is marked FAILED — never a false checkmark.
     _GHOST_MAX_CORRECTIONS = 2
 
-    def _derived_midstep_progress(self) -> str:
-        """One short keep-alive line for a silent, long-running step.
+    def _describe_tool_activity(self, event: ToolEvent) -> str:
+        """One compact human-readable line describing a completed tool call.
 
-        Summarizes what the agent has BEEN doing since the last narration
-        (category + count of completed real tools) — the design doc's
-        "[status] + [short finding]" pattern. Rotates phrasing so consecutive
-        lines never read like a stuck loop; localized to the plan language.
+        Used to give the narration-assist LLM real context: what the agent
+        actually did and what came back — not just function names.
         """
-        n = len(self._tool_window)
-        if n == 0:
-            return ""
-        # The count shown to the user is CUMULATIVE for the step (always
-        # grows), while categories come from the current silent window.
-        n = max(n, self._real_tools_in_step)
-        cats = {"search": 0, "browser": 0, "file": 0, "shell": 0, "other": 0}
-        for fn in self._tool_window:
+        fn = event.function_name or ""
+        args = event.function_args or {}
+        label = getattr(event, "brief", None) or ""
+        if not label:
             if fn in ("info_search_web", "info_search_image", "info_search"):
-                cats["search"] += 1
+                label = f"search: {args.get('query', '')}"
             elif fn.startswith("browser_"):
-                cats["browser"] += 1
+                label = f"browser {fn.replace('browser_', '')} {args.get('url') or ''}"[:90]
             elif fn.startswith("file_"):
-                cats["file"] += 1
+                label = f"file {fn.replace('file_', '')}: {args.get('path') or args.get('file_path') or ''}"
             elif fn.startswith("shell_"):
-                cats["shell"] += 1
+                label = f"shell: {str(args.get('command', ''))[:70]}"
             else:
-                cats["other"] += 1
-        dominant = max(cats, key=lambda k: cats[k])
-        idx = self._midstep_narration_count
-        if self._narration_lang == "id":
-            variants = {
-                "search": [
-                    f"Pengumpulan informasi berjalan — {n} aksi selesai, data terus bertambah.",
-                    f"Masih menyusuri sumber terkait ({n} aksi terakhir); sumber kunci mulai ditemukan.",
-                ],
-                "browser": [
-                    f"Sedang menjelajah halaman web untuk melengkapi data ({n} aksi terakhir).",
-                    f"Masih membaca isi halaman — {n} aksi sudah selesai di tahap ini.",
-                ],
-                "file": [
-                    f"Sedang menyusun dan menulis file hasil pekerjaan ({n} aksi terakhir).",
-                ],
-                "shell": [
-                    f"Menjalankan perintah shell untuk memproses data ({n} aksi terakhir).",
-                ],
-            }
-            fallback = [
-                f"Langkah ini sudah {n} aksi — pekerjaan berlanjut.",
-                f"{n} aksi terakhir selesai; saya lanjutkan bagian berikutnya.",
-            ]
-        else:
-            variants = {
-                "search": [
-                    f"Information gathering in progress — {n} actions done, data keeps coming in.",
-                    f"Still going through relevant sources ({n} recent actions); key sources are emerging.",
-                ],
-                "browser": [
-                    f"Browsing web pages to complete the data ({n} recent actions).",
-                    f"Still reading page content — {n} actions done at this stage.",
-                ],
-                "file": [
-                    f"Writing and organizing the output files ({n} recent actions).",
-                ],
-                "shell": [
-                    f"Running shell commands to process the data ({n} recent actions).",
-                ],
-            }
-            fallback = [
-                f"This step is now {n} actions in — work continues.",
-                f"{n} recent actions done; moving on to the next part.",
-            ]
-        pool = variants.get(dominant) or fallback
-        return pool[idx % len(pool)]
+                label = fn
+        result = event.function_result
+        if not isinstance(result, str):
+            try:
+                result = json.dumps(result, ensure_ascii=False)
+            except Exception:
+                result = str(result)
+        snippet = " ".join((result or "").split())[:140]
+        line = f"- {label}".strip()
+        if snippet:
+            line += f" → {snippet}"
+        return line[:240]
+
+    async def _generate_activity_narration(self) -> str:
+        """Ask the LLM to write ONE aware progress line from recent activity.
+
+        Never raises: any failure returns "" (silence beats a broken task).
+        Memory-free — uses astream_text_with_fallback, not self.ask, so the
+        agent's conversation memory stays untouched.
+        """
+        if not self._silent_activities:
+            return ""
+        lang = getattr(self, "_narration_lang", "en")
+        lang_name = (
+            "Indonesian (Bahasa Indonesia)" if lang == "id" else "English"
+        )
+        activity = "\n".join(self._silent_activities[-8:])
+        system = (
+            "You write one-line progress updates for an AI agent's chat, in the "
+            "same natural voice the agent itself uses. Given the agent's recent "
+            "tool activity, write ONE short line that shows AWARENESS of what is "
+            "happening — what is being found, read, built, or why the approach "
+            "is shifting. Read like a thoughtful colleague, never like a log.\n"
+            "HARD RULES: max 180 characters; one or two sentences; do NOT count "
+            "actions (never write patterns like 'N aksi' / 'N actions'); do NOT "
+            "mention tool or function names; do NOT use quotes or JSON; output "
+            f"ONLY the line itself in {lang_name}."
+        )
+        try:
+            text = await self.astream_text_with_fallback(
+                [
+                    {"role": "system", "content": system},
+                    {
+                        "role": "user",
+                        "content": (
+                            f"Recent activity of the agent:\n{activity}\n\n"
+                            "Write the one progress line now."
+                        ),
+                    },
+                ]
+            )
+        except Exception as exc:
+            logger.debug("Narration assist LLM call failed: %s", exc)
+            return ""
+        if not text:
+            return ""
+        line = " ".join(str(text).strip().split())
+        line = line.strip("\"'`“”‘’ ")
+        if line.startswith("{"):
+            return ""
+        # Refuse lines that violate the spirit (counting actions).
+        import re as _re
+        if _re.search(r"\b\d+\s*(aksi|actions?|tools?|langkah)\b", line.lower()):
+            return ""
+        return line[:220]
 
     def _build_vision_content(self, text: str, images: List[VisionImage]) -> list:
         content = [{"type": "text", "text": text}]
@@ -302,16 +306,17 @@ class ExecutionAgent(BaseAgent):
                 # Content narration emitted by base.execute() BEFORE this
                 # round's tool calls — the model "thinking out loud" in the
                 # AIMessage content (MiniMax M3 style). Show it as a progress
-                # line inside the timeline. Apply the same near-duplicate
-                # suppression as notify-tool narrations and reset the
-                # keep-alive window: the model narrated on its own.
+                # line inside the timeline, with the same near-duplicate
+                # suppression as notify-tool narrations.
                 _narr = (event.message or "").strip()
                 if _narr and not self._is_duplicate_narration(
                     _narr, self._last_narration_norm
                 ):
                     self._last_narration_norm = self._normalize_narration(_narr)
-                    self._tools_since_narration = 0
-                    self._tool_window = []
+                    # The model narrated on its own — reset the narration-assist
+                    # window so assisted lines never stack on model updates.
+                    self._silent_activities = []
+                    self._silent_tool_count = 0
                     yield event
                 else:
                     logger.info(
@@ -441,11 +446,10 @@ class ExecutionAgent(BaseAgent):
                         self._last_narration_norm = self._normalize_narration(
                             notify_text
                         )
-                        # The model narrated on its own — reset the silent-run
-                        # window so derived keep-alive lines never stack on
-                        # top of model-driven updates.
-                        self._tools_since_narration = 0
-                        self._tool_window = []
+                        # The model narrated on its own — reset the narration-
+                        # assist window so assisted lines never stack on it.
+                        self._silent_activities = []
+                        self._silent_tool_count = 0
                     elif (
                         event.status == ToolStatus.CALLED
                         and event.tool_call_id in self._suppressed_notify_ids
@@ -464,39 +468,38 @@ class ExecutionAgent(BaseAgent):
             # ErrorEvents (logged above) and all non-message ToolEvents
             # (file/shell/browser/…) pass through unchanged.
             yield event
-            # ── Mid-step keep-alive: silent run, N real tools completed ──────
-            # Fires only for real work tools (message-toolkit calls are not
-            # "progress" the user needs reassurance about) and only when the
-            # model has not narrated within the window. The line is a STATUS
-            # summary (what has been done, how much), never a mechanical
-            # action echo — the tool pills already show each action.
+            # ── LLM-written narration assist ─────────────────────────────
+            # Fires only for real work tools when the model has stayed SILENT
+            # (no notify call, no content narration) for
+            # _NARRATION_ASSIST_EVERY completed tools. The line is written by
+            # the LLM from the actual recent activity — aware, never a fixed
+            # counting template — and capped per step.
             if (
                 isinstance(event, ToolEvent)
                 and event.status == ToolStatus.CALLED
                 and event.tool_name != "message"
                 and self._counts_as_real_action(event)
             ):
-                self._tools_since_narration += 1
-                self._tool_window.append(event.function_name)
-                self._real_tools_in_step += 1
+                self._silent_activities.append(self._describe_tool_activity(event))
+                self._silent_tool_count += 1
                 if (
-                    self._tools_since_narration >= self._MIDSTEP_NARRATION_EVERY
-                    and self._midstep_narration_count < self._MIDSTEP_NARRATION_MAX
+                    self._silent_tool_count >= self._NARRATION_ASSIST_EVERY
+                    and self._narration_assist_count < self._NARRATION_ASSIST_MAX
                 ):
-                    _keepalive = self._derived_midstep_progress()
-                    if _keepalive:
-                        self._tools_since_narration = 0
-                        self._tool_window = []
-                        self._midstep_narration_count += 1
+                    _assist = await self._generate_activity_narration()
+                    if _assist:
+                        self._silent_activities = []
+                        self._silent_tool_count = 0
+                        self._narration_assist_count += 1
                         logger.info(
-                            "Mid-step keep-alive narration (%d/%d for this step): %s",
-                            self._midstep_narration_count,
-                            self._MIDSTEP_NARRATION_MAX,
-                            _keepalive[:80],
+                            "Narration assist (%d/%d for this step): %s",
+                            self._narration_assist_count,
+                            self._NARRATION_ASSIST_MAX,
+                            _assist[:80],
                         )
                         yield MessageEvent(
                             role="assistant",
-                            message=_keepalive,
+                            message=_assist,
                             is_progress=True,
                         )
 
@@ -540,13 +543,16 @@ class ExecutionAgent(BaseAgent):
         # intentionally minimal now — pre-tool narrations must pass).
         self._user_request_words = self._content_words(message.message or "")
         _lang = (getattr(plan, "language", None) or "").lower()
-        self._narration_lang = "id" if _lang.startswith("id") or "indonesia" in _lang or "bahasa" in _lang else "en"
-        # Fresh keep-alive window for every step: each step earns its own
-        # budget of derived progress lines.
-        self._tools_since_narration = 0
-        self._tool_window = []
-        self._midstep_narration_count = 0
-        self._real_tools_in_step = 0
+        self._narration_lang = (
+            "id"
+            if _lang.startswith("id") or "indonesia" in _lang or "bahasa" in _lang
+            else "en"
+        )
+        # Fresh narration-assist window for every step: each step earns its
+        # own budget of assisted progress lines.
+        self._silent_activities = []
+        self._silent_tool_count = 0
+        self._narration_assist_count = 0
 
         prompt = EXECUTION_PROMPT.format(
             step=step.description,

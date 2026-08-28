@@ -257,11 +257,20 @@ const messageGroups = computed<MessageGroup[]>(() => {
       continue;
     }
     if (m.type === 'assistant') {
-      // Every assistant message — ack, narration, question, summary — renders
-      // as a standalone chat bubble (official chat flow). It ends the current
-      // step group so the next step starts a fresh StepGroup shell.
-      pushSingle(m, i);
-      timeline = null;
+      const mc = m.content as MessageContent;
+      if (mc.is_final || mc.is_question) {
+        // Summary / question — standalone, ends the timeline. It always gets
+        // its own avatar header (Manus-style): the narration lines before it
+        // rendered INSIDE the timeline, not as an assistant bubble.
+        pushSingle(m, i);
+        timeline = null;
+      } else if (timeline) {
+        // Mid-task narration → inside the timeline, beside the rail.
+        timeline.messages.push(m);
+      } else {
+        // Ack / pre-plan text — standalone (no timeline started yet).
+        pushSingle(m, i);
+      }
       continue;
     }
     // user / tool / attachments — standalone, timeline ends.
@@ -386,6 +395,23 @@ const findStepById = (id: string): StepContent | undefined => {
   return undefined;
 };
 
+// Sync a step's status into plan.value.steps so PlanPanel stays up-to-date
+// during replay — SYNCED with production ChatPage (positional matching:
+// first-pending / first-running, because the planner may regenerate ids).
+const syncStepToPlan = (status: string) => {
+  if (!plan.value) return;
+  if (status === 'running') {
+    const pendingStep = plan.value.steps.find(s => s.status === 'pending');
+    if (pendingStep) pendingStep.status = 'running';
+  } else if (status === 'completed') {
+    const runningStep = plan.value.steps.find(s => s.status === 'running');
+    if (runningStep) runningStep.status = 'completed';
+  } else if (status === 'failed') {
+    const runningStep = plan.value.steps.find(s => s.status === 'running');
+    if (runningStep) runningStep.status = 'failed';
+  }
+}
+
 const handleStepEvent = (stepData: StepEventData) => {
   if (stepData.status === 'running' || stepData.status === 'pending') {
     const existing = findStepById(stepData.id);
@@ -402,6 +428,7 @@ const handleStepEvent = (stepData: StepEventData) => {
         tools: []
       } as StepContent,
     });
+    syncStepToPlan('running');
   } else if (stepData.status === 'completed') {
     const matched = findStepById(stepData.id) ?? getLastStep();
     if (matched) {
@@ -409,6 +436,7 @@ const handleStepEvent = (stepData: StepEventData) => {
       if (stepData.description) matched.description = stepData.description;
       if (stepData.result) matched.result = stepData.result;
     }
+    syncStepToPlan('completed');
   } else if (stepData.status === 'failed') {
     const matched = findStepById(stepData.id) ?? getLastStep();
     if (matched) {
@@ -417,6 +445,7 @@ const handleStepEvent = (stepData: StepEventData) => {
       if (stepData.result) matched.result = stepData.result;
     }
     isLoading.value = false;
+    syncStepToPlan('failed');
   }
 }
 
@@ -427,7 +456,9 @@ const handleErrorEvent = (errorData: ErrorEventData) => {
     type: 'assistant',
     content: {
       content: errorData.error,
-      timestamp: errorData.timestamp
+      timestamp: errorData.timestamp,
+      // Terminal message — always standalone, never swallowed by a timeline.
+      is_final: true,
     } as MessageContent,
   });
 }
