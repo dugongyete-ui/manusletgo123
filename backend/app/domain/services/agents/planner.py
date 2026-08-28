@@ -246,7 +246,10 @@ class PlannerAgent(BaseAgent):
         prompt = (
             f"{message.message}{context_note}\n\n"
             "Give a short, natural opening reply in the same language as the user. "
-            "Just react to what they asked — no rigid format, no lists, no bullet points. "
+            "ONE sentence only — acknowledge the goal in your own words and say "
+            "you're getting started. NEVER repeat the user's request back verbatim "
+            "or near-verbatim (no re-listing of file names, actions, or the full "
+            "request). No rigid format, no lists, no bullet points. "
             "Return plain text only. Do not return JSON, markdown code fences, or a plan."
         )
         try:
@@ -261,9 +264,10 @@ class PlannerAgent(BaseAgent):
                         "use them right after this acknowledgement — the full task is "
                         "already being handled. Never speculate about tools being "
                         "missing, unavailable, or not connected, and never describe "
-                        "limitations of the environment. Reply in plain natural "
-                        "language only. Never output JSON, code fences, a schema, or "
-                        "a step list."
+                        "limitations of the environment. Keep it to ONE short "
+                        "sentence that acknowledges the goal without echoing the "
+                        "request. Reply in plain natural language only. Never output "
+                        "JSON, code fences, a schema, or a step list."
                     )
                 ),
                 LCHumanMessage(content=prompt),

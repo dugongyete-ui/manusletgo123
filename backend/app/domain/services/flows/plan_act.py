@@ -43,79 +43,6 @@ class AgentStatus(str, Enum):
     UPDATING = "updating"
 
 
-# ── Manus-style progress narration ─────────────────────────────────────────────
-# Deterministic step-transition messages so the user ALWAYS sees progress in the
-# chat stream between steps, regardless of whether the model calls
-# message_notify_user on its own (free-tier models often skip it).
-# Templates read as spoken sentences (not "Status: label" prefixes): the step
-# description is folded into the sentence. Variants rotate by step index so
-# consecutive transitions never sound identical. Kept compact (≤100 chars per
-# segment), single-line, no emojis — clean text only.
-_NARRATION_TEMPLATES = {
-    "en": {
-        "done": [
-            "Done with {done} — moving on to {next}.",
-            "Finished {done}, now {next}.",
-            "That wraps up {done}. Next: {next}.",
-        ],
-        "failed": [
-            "{done} didn't work out — continuing with {next}.",
-            "That step hit a snag, so I'm moving on to {next}.",
-        ],
-    },
-    "id": {
-        "done": [
-            "Sudah selesai {done}, sekarang lanjut {next}.",
-            "Oke, {done} sudah beres — lanjut {next}.",
-            "Selesai juga {done} — berikutnya {next}.",
-        ],
-        "failed": [
-            "{done} belum berhasil, saya lanjut dengan {next}.",
-            "Langkah tadi menemui kendala — lanjut ke {next}.",
-        ],
-    },
-}
-
-
-def _narration_lang(language: Optional[str]) -> str:
-    """Normalise the plan language to a narration template key."""
-    if not language:
-        return "en"
-    lang = language.lower().strip()
-    if lang.startswith("id") or "indonesia" in lang or "bahasa" in lang:
-        return "id"
-    return "en"
-
-
-def _step_transition_narration(
-    done_step, next_step, language: Optional[str], step_index: int = 0
-) -> str:
-    """Build the natural chat message shown between two plan steps."""
-    lang = _narration_lang(language)
-    tpl = _NARRATION_TEMPLATES.get(lang, _NARRATION_TEMPLATES["en"])
-    key = "failed" if (getattr(done_step, "success", None) is False) else "done"
-    variants = tpl[key]
-    template = variants[step_index % len(variants)]
-
-    def _short(text: str, limit: int = 100) -> str:
-        text = (text or "").strip().replace("\n", " ")
-        return text if len(text) <= limit else text[: limit - 1].rstrip() + "…"
-
-    def _sentence(text: str) -> str:
-        # Fold the step description into the sentence so it reads naturally,
-        # e.g. "Mencari informasi X" -> "Sudah selesai mencari informasi X, ...".
-        # Keep the original case when it looks like an acronym/proper noun
-        # ("AI agent..." stays capitalised; "Mencari..." becomes "mencari...").
-        text = _short(text)
-        if len(text) >= 2 and text[0].isupper() and text[1].isupper():
-            return text
-        return text[:1].lower() + text[1:] if text else text
-
-    return template.format(
-        done=_sentence(getattr(done_step, "description", "")),
-        next=_sentence(getattr(next_step, "description", "")),
-    )
-# ──────────────────────────────────────────────────────────────────────────────
 
 class PlanActFlow(BaseFlow):
     def __init__(
@@ -267,7 +194,6 @@ class PlanActFlow(BaseFlow):
 
         logger.info(f"Agent {self._agent_id} started processing message: {message.message[:50]}...")
         step = None
-        _last_completed_step = None  # for step-transition narration
         while True:
             if self.status == AgentStatus.IDLE:
                 logger.info(f"Agent {self._agent_id} state changed from {AgentStatus.IDLE} to {AgentStatus.PLANNING}")
@@ -392,30 +318,16 @@ class PlanActFlow(BaseFlow):
                     self.status = AgentStatus.SUMMARIZING
                     continue
 
-                # ── Manus-style progress narration: announce the transition
-                # between the previously completed step and the step that is
-                # about to run, so the chat stream is never silent mid-task.
-                # (The first step is covered by the acknowledgement message.)
-                if _steps_executed > 0 and _last_completed_step is not None:
-                    narration = _step_transition_narration(
-                        _last_completed_step, step, getattr(self.plan, "language", None),
-                        step_index=_steps_executed,
-                    )
-                    logger.info(
-                        f"Agent {self._agent_id} step transition narration: "
-                        f"{narration[:80]}..."
-                    )
-                    yield MessageEvent(
-                        role="assistant", message=narration, is_progress=True
-                    )
-
-                # Execute step
+                # Execute step. No deterministic transition narration here:
+                # the step rows themselves show progress live (spinner →
+                # checkmark), and official Manus keeps the chat stream free of
+                # "Done with X — moving on to Y" filler that would just
+                # duplicate the step list the user can already see.
                 logger.info(f"Agent {self._agent_id} started executing step {step.id}: {step.description[:50]}...")
                 async for event in self.executor.execute_step(self.plan, step, message):
                     yield event
 
                 _steps_executed += 1
-                _last_completed_step = step
                 if step.success:
                     _consecutive_failures = 0
                 else:
@@ -460,7 +372,9 @@ class PlanActFlow(BaseFlow):
                         f"Agent {self._agent_id} summary will deliver {len(step_attachments)} "
                         f"step deliverable(s): {step_attachments}"
                     )
-                async for event in self.executor.summarize(step_attachments):
+                async for event in self.executor.summarize(
+                    step_attachments, current_request=message.message
+                ):
                     yield event
                 logger.info(f"Agent {self._agent_id} summarizing completed, state changed from {AgentStatus.SUMMARIZING} to {AgentStatus.COMPLETED}")
                 self.status = AgentStatus.COMPLETED

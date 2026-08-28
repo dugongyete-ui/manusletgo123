@@ -65,241 +65,61 @@ class ExecutionAgent(BaseAgent):
         # completion (CALLED) events are dropped too so the duplicate text
         # can never reach the chat UI through the back door.
         self._suppressed_notify_ids: set = set()
-        # ── Fallback tool-progress narration state ──────────────────────────
-        # Safety net for quiet models: when the model has NOT narrated via
-        # message_notify_user for a while, a compact status line keeps the
-        # stream alive. When the model narrates on its own, these templates
-        # stay completely silent (see _MODEL_NARRATION_SILENCE).
-        self._narration_lang: str = "en"
-        self._last_narrated_function: Optional[str] = None
-        self._last_tool_narration_ts: float = 0.0
-        # Monotonic timestamp of the last message_notify_user the MODEL sent
-        # (any narration attempt, including duplicates). While the model keeps
-        # the user company on its own, the deterministic template narration
-        # stays completely silent — templates are a FALLBACK for models that
-        # go quiet, never a replacement for the model's own voice.
-        self._last_model_narration_ts: float = 0.0
-        # Consecutive tool-response rounds without a message_notify_user —
-        # drives the narration nudge (see ask_with_messages).
-        self._silent_rounds: int = 0
-        self._step_narrated_functions: set = set()
-        # How many times each function has been narrated so far — drives the
-        # template rotation so consecutive steps never repeat the same
-        # phrasing (persists ACROSS steps on purpose; per-step dedup is
-        # handled separately by _step_narrated_functions).
-        self._narration_variants_used: dict = {}
-
-    # ── Deterministic tool-progress narration ──────────────────────────────────
-    # Plain, professional status lines derived from the tool itself — no
-    # emojis, no raw tool names, no internal jargon (Manus-style narration).
-    # Each line tells the user WHAT the agent is doing AND WHY (the purpose
-    # behind the action), in natural first-person language, with the concrete
-    # detail (command, filename, site). Variants rotate per narration so the
-    # stream never sounds like a looped recording.
-    _TOOL_NARRATIONS = {
-        "en": {
-            "info_search_web": [
-                "I'm searching the web for information on \"{q}\".",
-                "Let me look up \"{q}\" online first.",
-                "Starting with a web search for \"{q}\".",
-            ],
-            "browser_navigate": [
-                "I'm opening {q} to gather the information needed.",
-                "Let me open {q} to check the source directly.",
-                "Moving on to {q} for more complete data.",
-            ],
-            "browser_view": [
-                "I'm reading through the page to pull out the key points.",
-                "Let me go over the content so nothing important gets missed.",
-                "Checking the page for the details that matter.",
-            ],
-            "browser_click": [
-                "I'm clicking through this section to keep the search going.",
-                "Let me open this part for more specific details.",
-                "Clicking this element to dig a little deeper.",
-            ],
-            "file_write": [
-                "I'm writing {q}.",
-                "Putting the work together into {q}.",
-                "Preparing {q} now.",
-            ],
-            "file_str_replace": [
-                "I'm editing {q}.",
-                "Updating part of {q}.",
-                "Making a small revision to {q}.",
-            ],
-            "file_read": [
-                "I'm reading {q}.",
-                "Let me check the contents of {q}.",
-                "Opening {q} to see what's inside.",
-            ],
-            "shell_exec": [
-                "I'm running `{q}`.",
-                "Executing `{q}` in the terminal.",
-                "Running `{q}` now.",
-            ],
-            "image_search_web": [
-                "I'm searching for images related to \"{q}\".",
-                "Let me find supporting visuals for \"{q}\".",
-                "Looking up pictures for \"{q}\".",
-            ],
-            "image_download": [
-                "I'm downloading that image first.",
-                "Saving the selected image.",
-                "Downloading the image now.",
-            ],
-        },
-        "id": {
-            "info_search_web": [
-                "Saya sedang mencari informasi tentang \"{q}\" di web.",
-                "Saya cari dulu referensi tentang \"{q}\" lewat pencarian web.",
-                "Saya mulai dari pencarian web untuk \"{q}\".",
-            ],
-            "browser_navigate": [
-                "Saya sedang membuka {q} untuk mencari informasi yang dibutuhkan.",
-                "Saya buka {q} untuk melihat sumbernya secara langsung.",
-                "Saya lanjut ke {q} supaya datanya lebih lengkap.",
-            ],
-            "browser_view": [
-                "Saya sedang membaca isi halamannya untuk mengambil poin-poin penting.",
-                "Saya baca dulu isinya supaya detail yang dibutuhkan tidak terlewat.",
-                "Saya periksa isi halaman untuk informasi yang relevan.",
-            ],
-            "browser_click": [
-                "Saya mengeklik bagian halaman ini untuk melanjutkan pencarian.",
-                "Saya buka bagian ini untuk melihat detail yang lebih spesifik.",
-                "Saya klik elemen di halaman untuk mendapatkan data lebih lanjut.",
-            ],
-            "file_write": [
-                "Saya sedang menulis {q}.",
-                "Saya susun hasil kerjanya ke {q}.",
-                "Saya siapkan {q} sekarang.",
-            ],
-            "file_str_replace": [
-                "Saya sedang menyunting {q}.",
-                "Saya perbarui sebagian isi {q}.",
-                "Saya revisi sedikit bagian dari {q}.",
-            ],
-            "file_read": [
-                "Saya sedang membaca {q}.",
-                "Saya periksa dulu isi {q}.",
-                "Saya buka {q} untuk melihat isinya.",
-            ],
-            "shell_exec": [
-                "Saya menjalankan `{q}`.",
-                "Saya eksekusi `{q}` di terminal.",
-                "Menjalankan `{q}` sekarang.",
-            ],
-            "image_search_web": [
-                "Saya mencari gambar terkait \"{q}\".",
-                "Saya cari dulu gambar pendukung untuk \"{q}\".",
-                "Mencari visual untuk \"{q}\".",
-            ],
-            "image_download": [
-                "Saya mengunduh gambarnya terlebih dahulu.",
-                "Saya simpan dulu gambar yang dipilih.",
-                "Mengunduh gambarnya sekarang.",
-            ],
-        },
-    }
-
-    # Minimum seconds between two tool narrations — keeps the stream
-    # informative without becoming spammy on tool-heavy steps.
-    _TOOL_NARRATION_MIN_INTERVAL = 3.0
-
-    # The deterministic templates only speak when the model has been silent
-    # (no message_notify_user) for at least this many seconds. The model's own
-    # narration (question before a tool, meaning after the result) is always
-    # richer than any template — templates exist so a quiet model never leaves
-    # a dead stream, nothing more.
-    _MODEL_NARRATION_SILENCE = 45.0
-
-    @staticmethod
-    def _narration_arg(event: "ToolEvent") -> str:
-        """Extract a short human-readable argument from a tool call."""
-        args = event.function_args or {}
-        if event.function_name == "browser_navigate":
-            url = str(args.get("url", "")).strip()
-            try:
-                from urllib.parse import urlparse
-                host = urlparse(url).hostname or url
-                return host
-            except Exception:
-                return url
-        for key in ("query", "file", "cmd", "command"):
-            val = str(args.get(key, "")).strip()
-            if val:
-                if key == "file":
-                    val = val.rstrip("/").split("/")[-1]
-                if key in ("cmd", "command"):
-                    # First line of the command only — heredocs and long
-                    # pipelines get truncated, the user just needs the gist.
-                    val = val.splitlines()[0] if val else val
-                return val[:48] + ("…" if len(val) > 48 else "")
-        return ""
-
-    def _tool_progress_narration(self, event: "ToolEvent") -> Optional[str]:
-        """Fallback one-line status for a completed tool call.
-
-        ONLY speaks when the model itself has not narrated
-        (message_notify_user) for _MODEL_NARRATION_SILENCE seconds. The model's
-        own narration is contextual (what it wants to know, what a result
-        means) — whenever it is present, templates add nothing but noise, so
-        they stay silent.
-
-        When the fallback IS active (quiet model), it narrates the CURRENT
-        kind of work (search → browse → read → write → shell…), throttled to
-        at most one line per _TOOL_NARRATION_MIN_INTERVAL seconds so rapid
-        tool bursts stay quiet. Exceptions: each DISTINCT shell command gets
-        its own line (that is what the user actually watches), and each
-        DISTINCT site navigated to gets its own line, still throttled.
-        Template variants rotate per function so consecutive steps never
-        repeat the same phrasing.
-        """
-        import time as _time
-
-        fn = event.function_name
-        table = self._TOOL_NARRATIONS.get(
-            self._narration_lang, self._TOOL_NARRATIONS["en"]
-        )
-        if fn not in table:
-            return None
-        now = _time.monotonic()
-        # Model is actively keeping the user company — templates stay quiet.
-        if now - self._last_model_narration_ts < self._MODEL_NARRATION_SILENCE:
-            return None
-        # Dedup key: shell commands dedupe per-command, navigation dedupes
-        # per-site (a new site is a newsworthy action), everything else per
-        # kind of work — one "membuka wikipedia.org" is enough per step.
-        arg = self._narration_arg(event) or ""
-        if fn in ("shell_exec", "browser_navigate"):
-            dedup_key = f"{fn}:{arg}"
-        else:
-            dedup_key = fn
-        # Already narrated this exact line of work in this step — stay quiet.
-        if dedup_key in self._step_narrated_functions:
-            return None
-        # First narration of the step always goes out; later ones need a gap.
-        if (
-            self._step_narrated_functions
-            and (now - self._last_tool_narration_ts) < self._TOOL_NARRATION_MIN_INTERVAL
-        ):
-            return None
-        self._step_narrated_functions.add(dedup_key)
-        self._last_narrated_function = fn
-        self._last_tool_narration_ts = now
-        # Rotate variants so the stream never repeats itself verbatim.
-        variants = table[fn]
-        count = self._narration_variants_used.get(fn, 0)
-        self._narration_variants_used[fn] = count + 1
-        template = variants[count % len(variants)]
-        return template.format(q=arg)
-
+        # Content-word sets of the CURRENT step description and the ORIGINAL
+        # user request — narrations that merely re-announce them ("Saya sedang
+        # menulis file X" while the step row says "Buat file X") duplicate
+        # what the timeline already shows and are suppressed.
+        self._current_step_words: Optional[set] = None
+        self._user_request_words: Optional[set] = None
     @staticmethod
     def _normalize_narration(text: str) -> str:
         """Lowercase, strip punctuation and collapse whitespace for comparison."""
         import re as _re
         return _re.sub(r"\s+", " ", _re.sub(r"[^\w\s]", " ", (text or "").lower())).strip()
+
+    _STOPWORDS = {
+        # Indonesian
+        "saya", "aku", "anda", "kita", "akan", "sedang", "telah", "sudah", "sedang",
+        "dengan", "untuk", "yang", "ini", "itu", "dari", "ke", "di", "dan", "atau",
+        "buat", "membuat", "buatlah", "tolong", "silakan", "lalu", "kemudian", "juga",
+        "pada", "adalah", "bisa", "dapat", "agar", "sebuah", "secara", "saat", "sekarang",
+        # English
+        "i", "me", "my", "the", "a", "an", "to", "of", "for", "and", "or", "in",
+        "on", "at", "is", "are", "am", "will", "be", "been", "was", "were", "now",
+        "this", "that", "it", "with", "as", "by", "from", "please", "make", "create",
+        "then", "also", "so", "can", "could", "just", "about", "into", "up", "out",
+    }
+
+    @classmethod
+    def _content_words(cls, text: str) -> set:
+        """Meaningful lowercase tokens (stopwords + punctuation removed)."""
+        norm = cls._normalize_narration(text)
+        return {w for w in norm.split() if len(w) > 2 and w not in cls._STOPWORDS}
+
+    def _is_redundant_action_announcement(self, text: str) -> bool:
+        """True when a narration ONLY re-announces the current step/request.
+
+        Pattern seen in the wild (and complained about by users): while the
+        timeline already shows a step row "Buat file tes_collapse.txt …" and a
+        live tool pill, the model sends "Saya sedang menulis tes_collapse.txt"
+        — zero new information. Detection: the narration is SHORT (few content
+        words) and most of its content words already appear in the current
+        step description or the user's request. Substantive findings always
+        introduce NEW content words and pass through untouched.
+        """
+        words = self._content_words(text)
+        if not words or len(words) > 8:
+            # Long texts carry context of their own — never auto-suppress.
+            return False
+        step_words = getattr(self, "_current_step_words", None)
+        request_words = getattr(self, "_user_request_words", None)
+        for reference in (step_words, request_words):
+            if not reference:
+                continue
+            overlap = len(words & reference)
+            if overlap and overlap / len(words) >= 0.6:
+                return True
+        return False
 
     @classmethod
     def _is_duplicate_narration(cls, text: str, last_norm: Optional[str], threshold: float = 0.7) -> bool:
@@ -346,71 +166,20 @@ class ExecutionAgent(BaseAgent):
             return True
         return False
 
-    # ── Narration nudge for silent models ────────────────────────────────────
-    # Free-tier models often go straight from tool call to tool call without
-    # ever calling message_notify_user — the user then sees a dead chat stream
-    # while the tool panel fills up. A short reminder prepended to the tool
-    # result (high salience, exactly where the model's attention sits) reliably
-    # triggers narration, without the cost of a full correction retry.
-    _NUDGE_AFTER_SILENT_ROUNDS = 2
+    # ── Narration policy ─────────────────────────────────────────────────────
+    # The aggressive "narration nudge" (forced message_notify_user after N
+    # silent tool rounds) was REMOVED: it forced the model to announce every
+    # mechanical action ("Saya sedang menulis X") that the step rows and tool
+    # pills ALREADY show in the timeline — producing the redundant, cluttered
+    # chat stream users complained about. Official Manus keeps narration
+    # model-driven and sparse ("sparingly for meaningful progress"); activity
+    # visibility comes from the step list + tool pills + shimmer, not from
+    # narrating every action.
     # Ghost-success / plain-text correction rounds: after the initial model
     # round, rerun the step up to this many times with an escalating mandatory
     # tool-usage prompt. A round that STILL returns a fabricated completion
     # after all corrections is marked FAILED — never a false checkmark.
     _GHOST_MAX_CORRECTIONS = 2
-    _NARRATION_NUDGE = (
-        "\n\n[SYSTEM REQUIREMENT — NARRATION] Your last responses contained tool "
-        "calls but NO message_notify_user call. The user is watching a silent "
-        "screen and does not know what you are finding. Your NEXT response MUST "
-        "include a message_notify_user call (before or alongside your next tool "
-        "call): in the user's language, say what you just found — the actual "
-        "finding, not the action — and what you are doing next. Example shape: "
-        "\"Dari [sumber], saya menemukan bahwa [temuan konkret]. Selanjutnya "
-        "saya [tindakan berikutnya] karena [alasan].\" This is mandatory."
-    )
-
-    async def ask_with_messages(self, messages, format=None):
-        """Intercept tool-response rounds to nudge silent models into narrating.
-
-        Counts consecutive rounds whose tool responses contain NO
-        message_notify_user. After _NUDGE_AFTER_SILENT_ROUNDS silent rounds the
-        narration reminder is PREPENDED to the first tool result of the batch
-        (primacy — browser results are often tens of KB of page text, so a
-        suffix at the end of the last message is invisible to the model). A
-        narrated round resets the counter (the nudge never fires while the
-        model talks on its own).
-        """
-        narrated_this_round = False
-        for m in messages:
-            name = m.get("name") if isinstance(m, dict) else getattr(m, "name", "")
-            if name == "message_notify_user":
-                narrated_this_round = True
-                break
-        if narrated_this_round:
-            self._silent_rounds = 0
-        else:
-            self._silent_rounds = getattr(self, "_silent_rounds", 0) + 1
-            if self._silent_rounds >= self._NUDGE_AFTER_SILENT_ROUNDS and messages:
-                first = messages[0]
-                original = (
-                    first.get("content") if isinstance(first, dict) else first.content
-                ) or ""
-                combined = self._NARRATION_NUDGE + "\n\n" + original
-                try:
-                    if isinstance(first, dict):
-                        first["content"] = combined
-                    else:
-                        first.content = combined
-                    self._silent_rounds = 0  # nudge at most once per threshold
-                    logger.info(
-                        "Model silent for %s rounds — prepended narration nudge "
-                        "to tool result", self._NUDGE_AFTER_SILENT_ROUNDS,
-                    )
-                except Exception:
-                    # Message object immutable on this langchain version — skip
-                    # the nudge rather than break the tool loop.
-                    logger.debug("Could not prepend narration nudge", exc_info=True)
-        return await super().ask_with_messages(messages, format)
 
     def _build_vision_content(self, text: str, images: List[VisionImage]) -> list:
         content = [{"type": "text", "text": text}]
@@ -530,13 +299,6 @@ class ExecutionAgent(BaseAgent):
                     continue
                 elif event.function_name == "message_notify_user":
                     if event.status == ToolStatus.CALLING:
-                        # The model is narrating on its own — from this moment
-                        # the deterministic template narration stays silent
-                        # for _MODEL_NARRATION_SILENCE seconds. Recorded BEFORE
-                        # the duplicate check: even a suppressed duplicate
-                        # proves the model is in narration mode.
-                        import time as _time
-                        self._last_model_narration_ts = _time.monotonic()
                         raw_att = event.function_args.get("attachments")
                         if raw_att:
                             # Models sometimes emit attachments as a JSON-
@@ -564,9 +326,9 @@ class ExecutionAgent(BaseAgent):
                         notify_text = (event.function_args.get("text") or "").strip()
                         if self._is_duplicate_narration(
                             notify_text, self._last_narration_norm
-                        ):
+                        ) or self._is_redundant_action_announcement(notify_text):
                             logger.info(
-                                "Suppressed duplicate progress narration: %s",
+                                "Suppressed redundant progress narration: %s",
                                 notify_text[:80],
                             )
                             self._suppressed_notify_ids.add(event.tool_call_id)
@@ -592,20 +354,6 @@ class ExecutionAgent(BaseAgent):
             # ErrorEvents (logged above) and all non-message ToolEvents
             # (file/shell/browser/…) pass through unchanged.
             yield event
-            # Fallback progress narration: after a non-message tool COMPLETES,
-            # emit a short status line ONLY when the model has gone quiet for
-            # a while (see _MODEL_NARRATION_SILENCE). When the model narrates
-            # on its own, these templates never speak.
-            if (
-                isinstance(event, ToolEvent)
-                and event.status == ToolStatus.CALLED
-                and event.tool_name != "message"
-            ):
-                narration = self._tool_progress_narration(event)
-                if narration:
-                    yield MessageEvent(
-                        role="assistant", message=narration, is_progress=True
-                    )
 
     def _correction_prompt(self, reason: str, round_no: int) -> str:
         """Escalating correction appended to the step prompt on retry rounds.
@@ -621,19 +369,17 @@ class ExecutionAgent(BaseAgent):
                 "this step as complete WITHOUT calling any tools. That result "
                 "was fabricated and has been DISCARDED. You MUST actually call "
                 "the required tools now (file, shell, browser, or search tools "
-                "as the step requires) to do the real work. Start by calling "
-                "message_notify_user to narrate your approach, then call the "
-                "tools one by one. Only after the tools have produced real "
-                "results may you return the final JSON result."
+                "as the step requires) to do the real work. Call the tools one "
+                "by one. Only after the tools have produced real results may "
+                "you return the final JSON result."
             )
         else:
             base = (
                 "\n\n[CORRECTION — MANDATORY]: Your previous response was plain "
-                "text instead of tool calls. You MUST begin by calling "
-                "message_notify_user with your opening narration, then call the "
-                "required tools one by one. Do NOT write a text response — call "
-                "tools first. Only return the final JSON result after completing "
-                "all tool calls."
+                "text instead of tool calls. You MUST call the required tools "
+                "one by one to do the real work. Do NOT write a text response — "
+                "call tools first. Only return the final JSON result after "
+                "completing all tool calls."
             )
         if round_no >= self._GHOST_MAX_CORRECTIONS:
             base += (
@@ -645,12 +391,11 @@ class ExecutionAgent(BaseAgent):
     async def execute_step(
         self, plan: Plan, step: Step, message: Message
     ) -> AsyncGenerator[BaseEvent, None]:
-        # Reset per-step deterministic-narration state and pick up the plan
-        # language so tool-progress lines are spoken in the user's language.
-        self._step_narrated_functions = set()
-        self._last_narrated_function = None
-        self._silent_rounds = 0
-        self._round_needs_correction = None
+        # Context for redundant-narration suppression: a short line that only
+        # re-announces the step description or the user's request carries zero
+        # new information (the timeline already shows both) — it is dropped.
+        self._current_step_words = self._content_words(step.description or "")
+        self._user_request_words = self._content_words(message.message or "")
         _lang = (getattr(plan, "language", None) or "").lower()
         self._narration_lang = "id" if _lang.startswith("id") or "indonesia" in _lang or "bahasa" in _lang else "en"
 
@@ -989,7 +734,8 @@ class ExecutionAgent(BaseAgent):
         )
 
     async def summarize(
-        self, step_attachments: Optional[List[str]] = None
+        self, step_attachments: Optional[List[str]] = None,
+        current_request: Optional[str] = None,
     ) -> AsyncGenerator[BaseEvent, None]:
         """Deliver the final result to the user.
 
@@ -997,6 +743,9 @@ class ExecutionAgent(BaseAgent):
             step_attachments: final deliverable file paths collected from every
                 step's result JSON — delivered ONCE here, with this final
                 summary message (never mid-task).
+            current_request: the user's request for THIS run. Session memory
+                accumulates across tasks; without explicit scoping the model
+                sometimes summarizes an EARLIER task from the same session.
         """
         from app.domain.services.agents.attachment_paths import (
             normalize_attachment_paths,
@@ -1011,7 +760,21 @@ class ExecutionAgent(BaseAgent):
         await self._ensure_memory()
         context = list(self.memory.get_messages())
 
-        stream_context = context + [LCHumanMessage(content=SUMMARIZE_STREAM_PROMPT)]
+        # Scope the summary to the CURRENT request: execution memory keeps
+        # every task of the session, and without this instruction the model
+        # can drift into summarizing an earlier exchange instead.
+        if current_request:
+            scope_note = (
+                f"\n\n[IMPORTANT] The user's CURRENT request (the one you must "
+                f"answer now) is:\n{current_request}\nSummarize ONLY the work "
+                "and findings from THIS request — the most recent exchanges in "
+                "the conversation. Ignore earlier tasks from this session "
+                "except where they directly affect the current result."
+            )
+            stream_prompt = SUMMARIZE_STREAM_PROMPT + scope_note
+        else:
+            stream_prompt = SUMMARIZE_STREAM_PROMPT
+        stream_context = context + [LCHumanMessage(content=stream_prompt)]
 
         full_text = ""
         try:

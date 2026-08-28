@@ -280,8 +280,24 @@ const isGroupHideHeader = (group: MessageGroup): boolean => {
   return !!group.hideHeader;
 };
 
+// Index of the last user message — steps of the CURRENT run only exist after
+// it. Step ids restart at "1" for every new task in the same session, so a
+// global id lookup would morph the previous task's step rows instead of
+// stacking a new step group.
+const lastUserMessageIndex = (): number => {
+  for (let i = messages.value.length - 1; i >= 0; i--) {
+    if (messages.value[i].type === 'user') return i;
+  }
+  return -1;
+}
+
 const getLastStep = (): StepContent | undefined => {
-  return messages.value.filter(message => message.type === 'step').pop()?.content as StepContent;
+  const from = lastUserMessageIndex();
+  for (let i = messages.value.length - 1; i > from; i--) {
+    if (messages.value[i].type === 'step')
+      return messages.value[i].content as StepContent;
+  }
+  return undefined;
 }
 
 // Handle message event
@@ -358,7 +374,10 @@ const handleToolEvent = (toolData: ToolEventData) => {
 // updates the MATCHED step (by id, fallback last) with status + description +
 // result (the outcome text shown under the StepGroup).
 const findStepById = (id: string): StepContent | undefined => {
-  for (let i = messages.value.length - 1; i >= 0; i--) {
+  // Only match steps from the CURRENT run (after the last user message) —
+  // step ids restart per task, so ids collide across runs in one session.
+  const from = lastUserMessageIndex();
+  for (let i = messages.value.length - 1; i > from; i--) {
     const message = messages.value[i];
     if (message.type !== 'step') continue;
     const step = message.content as StepContent;
