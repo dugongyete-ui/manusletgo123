@@ -71,6 +71,14 @@ class SessionRepository(Protocol):
         """Update the shared status of a session"""
         ...
     
+    async def update_project_id(self, session_id: str, project_id: Optional[str]) -> None:
+        """Move a session into a project (or out when project_id is None)"""
+        ...
+    
+    async def clear_project_id(self, project_id: str) -> None:
+        """Detach all sessions from a project (used when deleting the project)"""
+        ...
+    
     async def delete(self, session_id: str) -> None:
         """Delete a session"""
         ...

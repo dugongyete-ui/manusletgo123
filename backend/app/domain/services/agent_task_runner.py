@@ -102,6 +102,7 @@ class AgentTaskRunner(TaskRunner):
         file_storage: FileStorage,
         mcp_repository: MCPRepository,
         search_engine: Optional[SearchEngine] = None,
+        project_instruction: Optional[str] = None,
     ):
         self._session_id = session_id
         self._agent_id = agent_id
@@ -128,6 +129,7 @@ class AgentTaskRunner(TaskRunner):
             self._browser,
             self._mcp_tool,
             self._search_engine,
+            project_instruction=project_instruction,
         )
         # The Task currently being pumped by run(). The rate-limit notice
         # callback (fired from inside the agents' retry loops) needs it to

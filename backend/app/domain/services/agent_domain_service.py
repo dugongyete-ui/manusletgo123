@@ -44,6 +44,7 @@ class AgentDomainService:
         file_storage: FileStorage,
         mcp_repository: MCPRepository,
         search_engine: Optional[SearchEngine] = None,
+        project_repository=None,
     ):
         self._repository = agent_repository
         self._session_repository = session_repository
@@ -52,6 +53,7 @@ class AgentDomainService:
         self._task_cls = task_cls
         self._file_storage = file_storage
         self._mcp_repository = mcp_repository
+        self._project_repository = project_repository
         logger.info("AgentDomainService initialization completed")
             
     async def shutdown(self) -> None:
@@ -147,6 +149,23 @@ class AgentDomainService:
 
             await self._session_repository.save(session)
 
+            # Project instructions: when the session belongs to a project that
+            # defines an instruction, inject it into the system prompt so every
+            # task in the project follows the same guidance (Manus behaviour).
+            project_instruction: Optional[str] = None
+            if getattr(session, "project_id", None) and self._project_repository:
+                try:
+                    project = await self._project_repository.find_by_id_and_user_id(
+                        session.project_id, session.user_id
+                    )
+                    if project and (project.instruction or "").strip():
+                        project_instruction = project.instruction
+                except Exception as exc:
+                    logger.warning(
+                        "Failed to load project %s instructions for session %s: %s",
+                        session.project_id, session.id, exc,
+                    )
+
             task_runner = AgentTaskRunner(
                 session_id=session.id,
                 agent_id=session.agent_id,
@@ -158,6 +177,7 @@ class AgentDomainService:
                 session_repository=self._session_repository,
                 agent_repository=self._repository,
                 mcp_repository=self._mcp_repository,
+                project_instruction=project_instruction,
             )
 
             task = self._task_cls.create(task_runner)

@@ -17,7 +17,8 @@ from app.interfaces.schemas.base import APIResponse
 from app.interfaces.schemas.session import (
     ChatRequest, ShellViewRequest, CreateSessionResponse, GetSessionResponse,
     ListSessionItem, ListSessionResponse, ShellViewResponse,
-    ShareSessionResponse, SharedSessionResponse
+    ShareSessionResponse, SharedSessionResponse,
+    MoveSessionProjectRequest, MoveSessionProjectResponse
 )
 from app.interfaces.schemas.file import FileViewRequest, FileViewResponse
 from app.interfaces.schemas.resource import AccessTokenRequest, SignedUrlResponse
@@ -108,7 +109,8 @@ async def get_all_sessions(
             unread_message_count=s.unread_message_count,
             latest_message=s.latest_message,
             latest_message_at=int(s.latest_message_at.timestamp()) if s.latest_message_at else None,
-            is_shared=s.is_shared
+            is_shared=s.is_shared,
+            project_id=s.project_id
         ) for s in summaries
     ]
     return APIResponse.success(ListSessionResponse(sessions=session_items))
@@ -129,7 +131,8 @@ async def stream_sessions(
                     unread_message_count=s.unread_message_count,
                     latest_message=s.latest_message,
                     latest_message_at=int(s.latest_message_at.timestamp()) if s.latest_message_at else None,
-                    is_shared=s.is_shared
+                    is_shared=s.is_shared,
+                    project_id=s.project_id
                 ) for s in summaries
             ]
             yield ServerSentEvent(
@@ -363,6 +366,25 @@ async def create_vnc_signed_url(
     return APIResponse.success(SignedUrlResponse(
         signed_url=signed_url,
         expires_in=expire_minutes * 60,
+    ))
+
+
+@router.patch("/{session_id}/project", response_model=APIResponse[MoveSessionProjectResponse])
+async def move_session_project(
+    session_id: str,
+    request: MoveSessionProjectRequest,
+    current_user: User = Depends(get_current_user),
+    agent_service: AgentService = Depends(get_agent_service)
+) -> APIResponse[MoveSessionProjectResponse]:
+    """Move a session into a project (or remove it when project_id is null)"""
+    if request.project_id:
+        from app.interfaces.dependencies import get_project_service
+        project_service = get_project_service()
+        await project_service.get_project(request.project_id, current_user.id)
+    await agent_service.update_session_project(session_id, current_user.id, request.project_id)
+    return APIResponse.success(MoveSessionProjectResponse(
+        session_id=session_id,
+        project_id=request.project_id,
     ))
 
 

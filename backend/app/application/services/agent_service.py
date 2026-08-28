@@ -16,6 +16,7 @@ from app.domain.external.sandbox import Sandbox
 from app.domain.external.search import SearchEngine
 from app.domain.external.file import FileStorage
 from app.domain.repositories.agent_repository import AgentRepository
+from app.domain.repositories.file_favorite_repository import FileFavoriteRepository
 from app.domain.external.task import Task
 from app.domain.models.file import FileInfo
 from app.core.config import get_settings
@@ -35,11 +36,14 @@ class AgentService:
         file_storage: FileStorage,
         mcp_repository: MCPRepository,
         search_engine: Optional[SearchEngine] = None,
+        file_favorite_repository: Optional[FileFavoriteRepository] = None,
+        project_repository=None,
     ):
         logger.info("Initializing AgentService")
         self._agent_repository = agent_repository
         self._session_repository = session_repository
         self._file_storage = file_storage
+        self._file_favorite_repository = file_favorite_repository
         self._agent_domain_service = AgentDomainService(
             self._agent_repository,
             self._session_repository,
@@ -48,6 +52,7 @@ class AgentService:
             file_storage,
             mcp_repository,
             search_engine,
+            project_repository=project_repository,
         )
         self._search_engine = search_engine
         self._sandbox_cls = sandbox_cls
@@ -307,3 +312,75 @@ class AgentService:
             logger.error(f"Shared session {session_id} not found or not shared")
             return None
         return session
+
+    # ─────────────────────────────────────────────────────────────────
+    # Library (files aggregated across sessions)
+    # ─────────────────────────────────────────────────────────────────
+
+    async def get_library_files(self, user_id: str, limit: int = 100) -> List[dict]:
+        """Aggregate recent files across the user's sessions for Library view"""
+        sessions = await self._session_repository.find_by_user_id(user_id)
+        sessions = sorted(
+            sessions,
+            key=lambda s: s.latest_message_at or s.updated_at,
+            reverse=True,
+        )
+        favorite_ids: set = set()
+        if self._file_favorite_repository:
+            favorite_ids = await self._file_favorite_repository.list_favorite_file_ids(user_id)
+        items: List[dict] = []
+        for session in sessions:
+            for file_info in session.files or []:
+                upload_date = getattr(file_info, "upload_date", None)
+                file_id = file_info.file_id
+                items.append({
+                    "session_id": session.id,
+                    "session_title": session.title,
+                    "file_id": file_id,
+                    "filename": file_info.filename,
+                    "file_path": getattr(file_info, "file_path", None),
+                    "content_type": getattr(file_info, "content_type", None),
+                    "size": getattr(file_info, "size", None),
+                    "upload_date": upload_date.isoformat() if upload_date else None,
+                    "is_favorite": bool(file_id and file_id in favorite_ids),
+                    "latest_message_at": (
+                        int(session.latest_message_at.timestamp())
+                        if session.latest_message_at
+                        else None
+                    ),
+                })
+                if len(items) >= limit:
+                    return items
+        return items
+
+    async def update_library_file_favorite(
+        self,
+        file_id: str,
+        user_id: str,
+        is_favorite: bool,
+    ) -> None:
+        """Update favorite status of a library file (per attachment, not session)."""
+        if not self._file_favorite_repository:
+            raise RuntimeError("File favorite repository not available")
+        if not await self._user_owns_library_file(user_id, file_id):
+            raise RuntimeError("File not found")
+        await self._file_favorite_repository.set_favorite(user_id, file_id, is_favorite)
+
+    async def _user_owns_library_file(self, user_id: str, file_id: str) -> bool:
+        sessions = await self._session_repository.find_by_user_id(user_id)
+        for session in sessions:
+            for file_info in session.files or []:
+                if file_info.file_id == file_id:
+                    return True
+        return False
+
+    async def update_session_project(
+        self, session_id: str, user_id: str, project_id: Optional[str]
+    ) -> None:
+        """Move a session into a project (or out of it when project_id is None)."""
+        session = await self._session_repository.find_by_id_and_user_id(session_id, user_id)
+        if not session:
+            logger.error(f"Session {session_id} not found for user {user_id}")
+            raise RuntimeError("Session not found")
+        await self._session_repository.update_project_id(session_id, project_id)
+        logger.info(f"Session {session_id} moved to project {project_id}")

@@ -206,3 +206,16 @@ export async function getSharedSessionFiles(sessionId: string): Promise<FileInfo
   const response = await apiClient.get<ApiResponse<FileInfo[]>>(`/sessions/${sessionId}/share/files`);
   return response.data.data;
 }
+
+/**
+ * Move a session into a project (or remove it when projectId is null)
+ */
+export async function moveSessionProject(
+  sessionId: string,
+  projectId: string | null
+): Promise<{ session_id: string; project_id: string | null }> {
+  const response = await apiClient.patch<
+    ApiResponse<{ session_id: string; project_id: string | null }>
+  >(`/sessions/${sessionId}/project`, { project_id: projectId });
+  return response.data.data;
+}

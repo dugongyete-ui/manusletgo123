@@ -18,6 +18,10 @@ import MainLayout from './pages/MainLayout.vue'
 import SharePage from './pages/SharePage.vue'
 import ShareLayout from './pages/ShareLayout.vue'
 import LandingPage from './pages/LandingPage.vue'
+// Lazy-load heavy/secondary pages (Library, Project) so they stay out of the
+// initial bundle (same strategy as the reference implementation).
+const LibraryPage = () => import('./pages/LibraryPage.vue')
+const ProjectPage = () => import('./pages/ProjectPage.vue')
 
 // Create router
 export const router = createRouter({
@@ -41,6 +45,30 @@ export const router = createRouter({
         { 
           path: ':sessionId', 
           component: ChatPage,
+          meta: { requiresAuth: true }
+        }
+      ]
+    },
+    {
+      path: '/library',
+      component: MainLayout,
+      meta: { requiresAuth: true },
+      children: [
+        {
+          path: '',
+          component: LibraryPage,
+          meta: { requiresAuth: true }
+        }
+      ]
+    },
+    {
+      path: '/project/:projectId',
+      component: MainLayout,
+      meta: { requiresAuth: true },
+      children: [
+        {
+          path: '',
+          component: ProjectPage,
           meta: { requiresAuth: true }
         }
       ]

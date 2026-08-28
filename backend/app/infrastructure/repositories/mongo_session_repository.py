@@ -18,6 +18,7 @@ SESSION_LIST_PROJECTION = {
     "latest_message_at": 1,
     "status": 1,
     "is_shared": 1,
+    "project_id": 1,
 }
 
 class MongoSessionRepository(SessionRepository):
@@ -71,6 +72,7 @@ class MongoSessionRepository(SessionRepository):
                 latest_message_at=doc.get("latest_message_at"),
                 status=doc.get("status", SessionStatus.PENDING),
                 is_shared=doc.get("is_shared", False),
+                project_id=doc.get("project_id"),
             ))
         return summaries
     
@@ -217,4 +219,22 @@ class MongoSessionRepository(SessionRepository):
         )
         if not result:
             raise ValueError(f"Session {session_id} not found")
+
+    async def update_project_id(self, session_id: str, project_id: Optional[str]) -> None:
+        """Move a session into a project (or out when project_id is None)"""
+        result = await SessionDocument.find_one(
+            SessionDocument.session_id == session_id
+        ).update(
+            {"$set": {"project_id": project_id, "updated_at": datetime.now(UTC)}}
+        )
+        if not result:
+            raise ValueError(f"Session {session_id} not found")
+
+    async def clear_project_id(self, project_id: str) -> None:
+        """Detach all sessions from a project (used when deleting the project)"""
+        await SessionDocument.find(
+            SessionDocument.project_id == project_id
+        ).update(
+            {"$set": {"project_id": None, "updated_at": datetime.now(UTC)}}
+        )
 

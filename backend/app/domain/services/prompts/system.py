@@ -1,3 +1,6 @@
+from typing import Optional
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Provider-conditional blocks
 #
@@ -423,10 +426,29 @@ _DEFAULT_USER_HOME = "/home/runner"
 _DEFAULT_UPLOAD_DIR = "/home/runner/upload"
 
 
+def format_project_instructions(instruction: Optional[str] = None) -> str:
+    """Wrap a project instruction string for injection into the system prompt.
+
+    Ported from the reference clone so sessions inside a project follow the
+    project-level guidance (e.g. brand voice, response style, sourcing rules).
+    """
+    text = (instruction or "").strip()
+    if not text:
+        return ""
+    return (
+        "<project_instructions>\n"
+        "Follow these project-specific instructions for every task in this "
+        "project:\n\n"
+        f"{text}\n"
+        "</project_instructions>"
+    )
+
+
 def get_system_prompt(
     user_home: str = _DEFAULT_USER_HOME,
     upload_dir: str = _DEFAULT_UPLOAD_DIR,
     environment: str = "replit",
+    project_instruction: Optional[str] = None,
 ) -> str:
     """Return the system prompt for one sandbox provider + working directories.
 
@@ -463,4 +485,4 @@ def get_system_prompt(
         upload_dir=upload_dir,
         security_rules=security_rules,
         sandbox_environment=sandbox_environment,
-    )
+    ) + ("\n\n" + format_project_instructions(project_instruction) if format_project_instructions(project_instruction) else "")

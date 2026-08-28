@@ -55,6 +55,7 @@ class PlanActFlow(BaseFlow):
         browser: Browser,
         mcp_tool: MCPToolkit,
         search_engine: Optional[SearchEngine] = None,
+        project_instruction: Optional[str] = None,
     ):
         self._agent_id = agent_id
         self._repository = agent_repository
@@ -87,7 +88,8 @@ class PlanActFlow(BaseFlow):
         upload_dir = getattr(sandbox, 'upload_dir', '/home/runner/upload')
         environment = getattr(sandbox, 'provider', 'replit')
         base_prompt = get_system_prompt(
-            user_home=user_home, upload_dir=upload_dir, environment=environment
+            user_home=user_home, upload_dir=upload_dir, environment=environment,
+            project_instruction=project_instruction,
         )
 
         # Create planner and execution agents

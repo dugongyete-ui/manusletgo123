@@ -40,6 +40,7 @@ class ListSessionItem(BaseModel):
     status: SessionStatus
     unread_message_count: int
     is_shared: bool = False
+    project_id: Optional[str] = None
 
 
 class ListSessionResponse(BaseModel):
@@ -74,3 +75,38 @@ class SharedSessionResponse(BaseModel):
     status: SessionStatus
     events: List[AgentSSEEvent] = []
     is_shared: bool
+
+
+class MoveSessionProjectRequest(BaseModel):
+    """Move session to project (null to remove from project)"""
+    project_id: Optional[str] = None
+
+
+class MoveSessionProjectResponse(BaseModel):
+    session_id: str
+    project_id: Optional[str] = None
+
+
+class LibraryFileItem(BaseModel):
+    """Library file item schema (files aggregated across sessions)"""
+    session_id: str
+    session_title: Optional[str] = None
+    file_id: Optional[str] = None
+    filename: Optional[str] = None
+    file_path: Optional[str] = None
+    content_type: Optional[str] = None
+    size: Optional[int] = None
+    upload_date: Optional[str] = None
+    is_favorite: bool = False
+    latest_message_at: Optional[int] = None
+
+
+class LibraryResponse(BaseModel):
+    """Library files response schema"""
+    files: List[LibraryFileItem]
+
+
+class FavoriteLibraryFileResponse(BaseModel):
+    """Favorite library file response schema"""
+    file_id: str
+    is_favorite: bool

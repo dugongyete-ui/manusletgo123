@@ -8,6 +8,7 @@ from app.domain.models.event import AgentEvent
 from app.domain.models.session import Session, SessionStatus
 from app.domain.models.file import FileInfo
 from app.domain.models.user import User, UserRole
+from app.domain.models.project import Project
 from pymongo import IndexModel, ASCENDING, DESCENDING
 
 T = TypeVar('T', bound=BaseModel)
@@ -97,14 +98,56 @@ class SessionDocument(BaseDocument[Session], id_field="session_id", domain_model
     status: SessionStatus
     files: List[FileInfo] = []
     is_shared: Optional[bool] = False
+    project_id: Optional[str] = None
     class Settings:
         name = "sessions"
         indexes = [
             "session_id",
             "user_id",
+            "project_id",
             IndexModel(
                 [("user_id", ASCENDING), ("latest_message_at", DESCENDING)],
                 name="user_id_latest_message_at",
+            ),
+        ]
+
+
+class ProjectDocument(BaseDocument[Project], id_field="project_id", domain_model_class=Project):
+    """MongoDB document for Project"""
+    project_id: str
+    user_id: str
+    name: str
+    instruction: Optional[str] = None
+    is_pinned: bool = False
+    sort_order: int = 0
+    created_at: datetime = datetime.now(timezone.utc)
+    updated_at: datetime = datetime.now(timezone.utc)
+
+    class Settings:
+        name = "projects"
+        indexes = [
+            "project_id",
+            "user_id",
+            IndexModel(
+                [("user_id", ASCENDING), ("is_pinned", DESCENDING), ("sort_order", ASCENDING), ("updated_at", DESCENDING)],
+                name="user_id_pinned_sort",
+            ),
+        ]
+
+
+class FileFavoriteDocument(Document):
+    """Per-user library file favorite (attachment-level, not session-level)."""
+    user_id: str
+    file_id: str
+    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+
+    class Settings:
+        name = "file_favorites"
+        indexes = [
+            IndexModel(
+                [("user_id", ASCENDING), ("file_id", ASCENDING)],
+                unique=True,
+                name="user_id_file_id",
             ),
         ]
 

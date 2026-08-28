@@ -14,7 +14,7 @@ from app.interfaces.dependencies import get_agent_service
 from app.interfaces.api.routes import router
 from app.infrastructure.logging import setup_logging
 from app.interfaces.errors.exception_handlers import register_exception_handlers
-from app.infrastructure.models.documents import AgentDocument, SessionDocument, UserDocument
+from app.infrastructure.models.documents import AgentDocument, SessionDocument, UserDocument, ProjectDocument, FileFavoriteDocument
 from beanie import init_beanie
 
 # Initialize logging system
@@ -46,7 +46,7 @@ async def _init_databases() -> None:
             await get_mongodb().initialize()
             await init_beanie(
                 database=get_mongodb().client[settings.mongodb_database],
-                document_models=[AgentDocument, SessionDocument, UserDocument],
+                document_models=[AgentDocument, SessionDocument, UserDocument, ProjectDocument, FileFavoriteDocument],
             )
             logger.info("Successfully initialized Beanie")
             break

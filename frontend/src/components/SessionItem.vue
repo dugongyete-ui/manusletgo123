@@ -44,19 +44,20 @@
 </template>
 
 <script setup lang="ts">
-import { Ellipsis, MessageCircle } from 'lucide-vue-next';
+import { Ellipsis, MessageCircle, FolderInput, Trash } from 'lucide-vue-next';
 import { computed, ref } from 'vue';
 import { useI18n } from 'vue-i18n';
 import { useRoute, useRouter } from 'vue-router';
-import { ListSessionItem, SessionStatus } from '../types/response';
-import { useContextMenu, createDangerMenuItem } from '../composables/useContextMenu';
+import { ListSessionItem, ProjectItem, SessionStatus } from '../types/response';
+import { useContextMenu, createDangerMenuItem, type MenuItem } from '../composables/useContextMenu';
 import { useDialog } from '../composables/useDialog';
-import { deleteSession } from '../api/agent';
+import { deleteSession, moveSessionProject } from '../api/agent';
 import { showSuccessToast, showErrorToast } from '../utils/toast';
-import { Trash } from 'lucide-vue-next';
+import { eventBus } from '../utils/eventBus';
 
 interface Props {
   session: ListSessionItem;
+  projects?: ProjectItem[];
 }
 
 const props = defineProps<Props>();
@@ -70,6 +71,7 @@ const isContextMenuOpen = ref(false);
 
 const emit = defineEmits<{
   (e: 'deleted', sessionId: string): void
+  (e: 'moved', sessionId: string, projectId: string | null): void
 }>();
 
 const currentSessionId = computed(() => {
@@ -84,16 +86,52 @@ const handleSessionClick = () => {
   router.push(`/chat/${props.session.session_id}`);
 };
 
+const moveToProject = async (projectId: string | null) => {
+  try {
+    await moveSessionProject(props.session.session_id, projectId);
+    showSuccessToast(projectId ? t('Task moved') : t('Task removed from project'));
+    emit('moved', props.session.session_id, projectId);
+    eventBus.emit('sessions:changed');
+  } catch (error) {
+    console.error('Failed to move session:', error);
+    showErrorToast(t('Failed to move task'));
+  }
+};
+
 const handleSessionMenuClick = (event: MouseEvent) => {
   event.stopPropagation();
 
   const target = event.currentTarget as HTMLElement;
   isContextMenuOpen.value = true;
 
-  showContextMenu(props.session.session_id, target, [
-    createDangerMenuItem('delete', t('Delete'), { icon: Trash }),
-  ], (itemKey: string, _: string) => {
-    if (itemKey === 'delete') {
+  const items: MenuItem[] = [];
+
+  // Move-to-project submenu entries (only when projects are provided)
+  if (props.projects && props.projects.length > 0) {
+    for (const project of props.projects) {
+      if (project.project_id === props.session.project_id) continue;
+      items.push({
+        key: `move:${project.project_id}`,
+        label: `${t('Move to')} ${project.name}`,
+        icon: FolderInput,
+      });
+    }
+    if (props.session.project_id) {
+      items.push({
+        key: 'move:null',
+        label: t('Remove from project'),
+        icon: FolderInput,
+      });
+    }
+  }
+
+  items.push(createDangerMenuItem('delete', t('Delete'), { icon: Trash }));
+
+  showContextMenu(props.session.session_id, target, items, (itemKey: string, _: string) => {
+    if (itemKey.startsWith('move:')) {
+      const targetId = itemKey.slice(5);
+      moveToProject(targetId === 'null' ? null : targetId);
+    } else if (itemKey === 'delete') {
       showConfirmDialog({
         title: t('Are you sure you want to delete this session?'),
         content: t('The chat history of this session cannot be recovered after deletion.'),

@@ -23,8 +23,11 @@ from app.infrastructure.external.sandbox.sandbox_factory import HybridSandboxFac
 from app.infrastructure.external.task.redis_task import RedisStreamTask
 from app.infrastructure.repositories.mongo_agent_repository import MongoAgentRepository
 from app.infrastructure.repositories.mongo_session_repository import MongoSessionRepository
+from app.infrastructure.repositories.mongo_project_repository import MongoProjectRepository
+from app.infrastructure.repositories.mongo_file_favorite_repository import MongoFileFavoriteRepository
 from app.infrastructure.repositories.file_mcp_repository import FileMCPRepository
 from app.infrastructure.repositories.user_repository import MongoUserRepository
+from app.application.services.project_service import ProjectService
 
 # Configure logging
 logger = logging.getLogger(__name__)
@@ -52,6 +55,8 @@ def get_agent_service() -> AgentService:
     file_storage = get_file_storage()
     search_engine = get_search_engine()
     mcp_repository = FileMCPRepository()
+    file_favorite_repository = MongoFileFavoriteRepository()
+    project_repository = MongoProjectRepository()
     
     # Create AgentService instance
     return AgentService(
@@ -62,6 +67,20 @@ def get_agent_service() -> AgentService:
         file_storage=file_storage,
         search_engine=search_engine,
         mcp_repository=mcp_repository,
+        file_favorite_repository=file_favorite_repository,
+        project_repository=project_repository,
+    )
+
+
+@lru_cache()
+def get_project_service() -> ProjectService:
+    """
+    Get project service instance with required dependencies
+    """
+    logger.info("Creating ProjectService instance")
+    return ProjectService(
+        project_repository=MongoProjectRepository(),
+        session_repository=MongoSessionRepository(),
     )
 
 
