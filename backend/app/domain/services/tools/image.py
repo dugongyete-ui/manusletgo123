@@ -249,7 +249,7 @@ class ImageToolkit(BaseToolkit):
 
         Args:
             url: Direct URL of the image to download (from image_search_web results)
-            file_path: Absolute path where the image should be saved, e.g. /home/runner/github_logo.png
+            file_path: Path where the image should be saved, relative to your home directory or absolute inside it (e.g. github_logo.png → saved as <user_home>/github_logo.png).
         """
         try:
             headers = {
@@ -259,10 +259,36 @@ class ImageToolkit(BaseToolkit):
                     "Chrome/120.0.0.0 Safari/537.36"
                 )
             }
-            async with httpx.AsyncClient(timeout=30, follow_redirects=True, verify=False) as client:
-                response = await client.get(url, headers=headers)
-                response.raise_for_status()
-                image_data = response.content
+            image_data: Optional[bytes] = None
+            first_error = ""
+            try:
+                async with httpx.AsyncClient(timeout=30, follow_redirects=True, verify=False) as client:
+                    response = await client.get(url, headers=headers)
+                    response.raise_for_status()
+                    image_data = response.content
+            except httpx.HTTPStatusError as e:
+                first_error = f"HTTP {e.response.status_code}"
+            except Exception as e:
+                first_error = str(e)
+
+            if image_data is None:
+                # Many CDNs / anti-bot layers (403/429, Cloudflare) reject
+                # plain httpx TLS fingerprints. Retry once with curl-cffi
+                # impersonating a real Chrome client.
+                try:
+                    from curl_cffi.requests import AsyncSession
+                    async with AsyncSession(impersonate="chrome", timeout=30) as session:
+                        resp = await session.get(url)
+                        resp.raise_for_status()
+                        image_data = resp.content
+                except Exception as e:
+                    return ToolResult(
+                        success=False,
+                        message=(
+                            f"Failed to download image from {url}: {first_error}; "
+                            f"browser-impersonation retry also failed: {e}"
+                        ),
+                    )
 
             result = await self.sandbox.file_upload(image_data, file_path)
             if result and result.success:

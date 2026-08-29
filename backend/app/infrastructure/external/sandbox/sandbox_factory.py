@@ -139,7 +139,18 @@ class HybridSandboxFactory:
                     type(exc).__name__,
                     exc,
                 )
-                raise
+                # Raise a CLEAN, human-readable error instead of the raw e2b
+                # SDK exception: aux endpoints (file view / shell view / VNC)
+                # surface this directly to the UI, while the chat flow
+                # (_create_task) catches it and transparently creates a fresh
+                # sandbox — which the factory itself routes to Replit while
+                # E2B is cooling down, so tasks keep running (home/runner).
+                raise RuntimeError(
+                    f"Sandbox {id} is no longer available "
+                    f"({type(exc).__name__}). "
+                    "The next task in this session will automatically continue "
+                    "in the shared local sandbox."
+                ) from exc
         return await ReplitSandbox.get(id)
 
 

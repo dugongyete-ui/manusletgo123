@@ -40,14 +40,18 @@ class ShellViewResult(BaseModel):
 class ShellWaitResult(BaseModel):
     """Process wait result model"""
     returncode: int = Field(..., description="Process return code")
+    session_id: Optional[str] = Field(None, description="Shell session ID")
+    output: Optional[str] = Field(None, description="Accumulated session output (ANSI-clean)")
 
 
 class ShellWriteResult(BaseModel):
     """Process input write result model"""
     status: str = Field(..., description="Write status")
+    session_id: Optional[str] = Field(None, description="Shell session ID")
 
 
 class ShellKillResult(BaseModel):
     """Process termination result model"""
     status: str = Field(..., description="Process status")
-    returncode: int = Field(..., description="Process return code") 
+    returncode: int = Field(..., description="Process return code")
+    session_id: Optional[str] = Field(None, description="Shell session ID") 

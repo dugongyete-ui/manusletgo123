@@ -337,6 +337,6 @@ class BrowserToolkit(BaseToolkit):
 
         Args:
             index:     DOM index of the <input type='file'> element from browser_view.
-            file_path: Absolute path to the file in the sandbox (e.g. /home/runner/photo.jpg).
+            file_path: Absolute path to the file in the sandbox, under the home directory described in your sandbox environment (e.g. ~/photo.jpg — the shell expands it; or its absolute form).
         """
         return await self.browser.upload_file(index=index, file_path=file_path)

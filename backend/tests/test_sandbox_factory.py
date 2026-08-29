@@ -173,10 +173,16 @@ def test_get_routes_replit_ids_to_replit(monkeypatch):
 
 
 def test_get_e2b_reconnect_failure_raises_for_domain_fallback(monkeypatch):
-    """get() on a dead E2B sandbox raises so the domain service creates a new one."""
+    """get() on a dead E2B sandbox raises a CLEAN RuntimeError (not the raw
+    SDK exception) so the domain service creates a new sandbox while aux
+    endpoints show a readable message."""
     _patch_e2b(monkeypatch, FakeE2BError("sandbox not found"))
-    with pytest.raises(FakeE2BError):
+    with pytest.raises(RuntimeError) as exc_info:
         asyncio.run(HybridSandboxFactory.get("e2b:gone"))
+    # Clean, human-readable message for the UI…
+    assert "no longer available" in str(exc_info.value)
+    # …with the original failure preserved as __cause__ for the logs.
+    assert isinstance(exc_info.value.__cause__, FakeE2BError)
 
 
 def test_classify_failure_kinds():

@@ -370,18 +370,12 @@ class BrowserUseBrowser:
 
         Returns (success, strategy_used_or_error_message).
         """
-        # ── Strategy 1: Playwright click ──────────────────────────────────────
-        try:
-            # NOTE: browser_use's Element.click() signature is
-            # click(button, click_count, modifiers) — it takes NO timeout kwarg.
-            # Passing timeout= raised TypeError instantly, so strategy 1 always
-            # "failed" before it even attempted the click.
-            await element.click()
-            return True, "playwright"
-        except Exception as e1:
-            logger.info("CLICK[%d] S1-playwright failed → trying S2-js-synthetic (%s)", index, type(e1).__name__)
-
-        # ── Strategy 2: JS synthetic click with React-safe events ─────────────
+        # ── Strategy 1: JS synthetic click with React-safe events ─────────────
+        # PRIMARY since the browser_use actor click (Element.click(), CDP mouse
+        # events) was observed to silently no-op on some targets — it returned
+        # success while the page's onclick handler never fired. Direct JS event
+        # dispatch always reaches the right document: the same proven mechanism
+        # the select_* tools use.
         try:
             result = await element.evaluate("""() => {
                 try {
@@ -393,7 +387,10 @@ class BrowserUseBrowser:
                     this.dispatchEvent(new MouseEvent('mouseenter', opts));
                     this.dispatchEvent(new MouseEvent('mousedown', opts));
                     this.dispatchEvent(new MouseEvent('mouseup',   opts));
-                    this.dispatchEvent(new MouseEvent('click',     opts));
+                    // Native HTMLElement.click() fires onclick AND performs
+                    // default actions (form submit, anchor navigation).
+                    if (typeof this.click === 'function') this.click();
+                    else this.dispatchEvent(new MouseEvent('click', opts));
                     // Also trigger focus for inputs/buttons
                     if (typeof this.focus === 'function') this.focus();
                     return 'ok';
@@ -402,9 +399,20 @@ class BrowserUseBrowser:
             if result == "ok":
                 await asyncio.sleep(0.15)
                 return True, "js-synthetic"
-            logger.info("CLICK[%d] S2-js-synthetic returned '%s' → trying S3-cdp-coords", index, result)
+            logger.info("CLICK[%d] S1-js-synthetic returned '%s' → trying S2-actor-click", index, result)
+        except Exception as e1:
+            logger.info("CLICK[%d] S1-js-synthetic failed → trying S2-actor-click (%s)", index, type(e1).__name__)
+
+        # ── Strategy 2: browser_use actor click (CDP mouse events) ────────────
+        try:
+            # NOTE: browser_use's Element.click() signature is
+            # click(button, click_count, modifiers) — it takes NO timeout kwarg.
+            # Passing timeout= raised TypeError instantly, so this strategy
+            # always "failed" before it even attempted the click.
+            await element.click()
+            return True, "actor-click"
         except Exception as e2:
-            logger.info("CLICK[%d] S2-js-synthetic failed → trying S3-cdp-coords (%s)", index, type(e2).__name__)
+            logger.info("CLICK[%d] S2-actor-click failed → trying S3-cdp-coords (%s)", index, type(e2).__name__)
 
         # ── Strategy 3: raw CDP at element center coordinates ─────────────────
         try:
@@ -418,7 +426,7 @@ class BrowserUseBrowser:
             logger.info("CLICK[%d] S3-cdp-coords failed (%s)", index, type(e3).__name__)
 
         logger.warning("CLICK[%d] ALL 3 strategies failed — element may be hidden/off-screen", index)
-        return False, "all 3 click strategies failed (playwright, js-synthetic, cdp-coords)"
+        return False, "all 3 click strategies failed (js-synthetic, actor-click, cdp-coords)"
 
     async def _wait_for_dom_settle(self, timeout: float = 0.6) -> None:
         """Short wait for React/Vue state updates and lazy-loaded DOM changes to settle.
@@ -721,15 +729,25 @@ class BrowserUseBrowser:
 
         Args:
             index:     DOM index of the <input type='file'> element.
-            file_path: Absolute path to the file inside the sandbox (e.g. /home/runner/photo.jpg).
+            file_path: Absolute path to the file inside the sandbox, under the
+                home directory described in your sandbox environment
+                (e.g. /home/user/photo.jpg on an E2B sandbox,
+                /home/runner/photo.jpg on a shared Replit sandbox).
         """
         import os
         import json as _json
         try:
             if not os.path.isfile(file_path):
+                # NOTE: '~' is expanded by the SANDBOX's own shell, so the hint
+                # stays correct for every provider (E2B /home/user vs shared
+                # Replit /home/runner/...) — never hard-code a host path here.
                 return ToolResult(
                     success=False,
-                    message=f"File not found: {file_path}. List available files with shell_exec('ls /home/runner/').",
+                    message=(
+                        f"File not found: {file_path}. List your home directory "
+                        "with shell_exec('ls ~') to find the correct absolute "
+                        "path, then retry."
+                    ),
                 )
             session = await self._ensure_session()
             node = await session.get_dom_element_by_index(index)
@@ -754,8 +772,16 @@ class BrowserUseBrowser:
                     ),
                 )
 
-            # Use Playwright's set_input_files for reliable upload
-            await element.set_input_files(file_path)
+            # Use CDP DOM.setFileInputFiles directly — cdp_use's Element has no
+            # Playwright-style set_input_files(); the raw CDP command is the
+            # reliable way to attach a local file to the input (works on every
+            # cdp_use version, unlike element.set_input_files which raised
+            # "'Element' object has no attribute 'set_input_files'").
+            cdp_sess = await self._get_cdp_session()
+            await cdp_sess.cdp_client.send.DOM.setFileInputFiles(
+                params={"files": [file_path], "backendNodeId": node.backend_node_id},
+                session_id=str(cdp_sess.session_id),
+            )
             await self._wait_for_dom_settle()
             file_name = os.path.basename(file_path)
             return ToolResult(
@@ -990,15 +1016,58 @@ class BrowserUseBrowser:
                         message=f"Cannot find interactive element with index {index}",
                     )
                 element = await page.get_element(node.backend_node_id)
-                await element.fill(text)
-                # Fire React-safe events so framework state picks up the value
-                try:
-                    await element.evaluate("""() => {
-                        this.dispatchEvent(new Event('input',  {bubbles:true}));
-                        this.dispatchEvent(new Event('change', {bubbles:true}));
-                    }""")
-                except Exception:
-                    pass
+                # Mirroring verify_value/upload_file: Element.evaluate() raises
+                # 'Document needs to be requested first' unless the DOM document
+                # was requested on this session — ensure it before the JS fill.
+                await self._ensure_dom_document()
+                # JS-first fill with VERIFICATION: the browser_use actor
+                # Element.fill() was observed to silently no-op on some targets
+                # (returned success but the value stayed empty). Setting the
+                # value via the prototype setter is React-safe by construction
+                # and lets us VERIFY the result instead of trusting a no-op.
+                set_value_js = """(text) => {
+                    const proto = this.tagName === 'TEXTAREA'
+                        ? window.HTMLTextAreaElement.prototype
+                        : window.HTMLInputElement.prototype;
+                    const setter = Object.getOwnPropertyDescriptor(proto, 'value').set;
+                    setter.call(this, text);
+                    this.dispatchEvent(new Event('input',  {bubbles:true}));
+                    this.dispatchEvent(new Event('change', {bubbles:true}));
+                    return this.value;
+                }"""
+                actual = await element.evaluate(set_value_js, text)
+                if actual != text:
+                    # Fallback 1: actor fill (legacy path)
+                    try:
+                        await element.fill(text)
+                        actual = await element.evaluate("() => this.value")
+                    except Exception:
+                        pass
+                if actual != text:
+                    # Fallback 2: CDP click-to-focus + insertText
+                    try:
+                        coords = await self._get_element_center(element)
+                        if coords:
+                            await self._cdp_click_at(coords[0], coords[1])
+                            await asyncio.sleep(0.05)
+                            cdp_sess = await self._get_cdp_session()
+                            await cdp_sess.cdp_client.send.Input.insertText(
+                                params={"text": text},
+                                session_id=str(cdp_sess.session_id),
+                            )
+                            actual = await element.evaluate("() => this.value")
+                    except Exception:
+                        pass
+                if actual != text:
+                    return ToolResult(
+                        success=False,
+                        message=(
+                            f"Input failed: element value is {actual!r}, "
+                            f"expected {text!r}. Try browser_verify_value or "
+                            "click the element first."
+                        ),
+                        data={"expected": text, "actual": actual},
+                    )
                 logger.info("INPUT[%d] ✓ text=%r%s", index, text[:40], "…" if len(text) > 40 else "")
 
             if press_enter:
@@ -1622,7 +1691,12 @@ class BrowserUseBrowser:
                     ).trim();
                 }
                 const aLower = actual.toLowerCase();
-                const match = aLower === lower || aLower.includes(lower) || lower.includes(aLower);
+                // Empty actual must only match empty expected — previously
+                // lower.includes('') was always true, so verify_value claimed
+                // success even when the element had NO value at all.
+                const match = aLower === ''
+                    ? lower === ''
+                    : (aLower === lower || aLower.includes(lower) || lower.includes(aLower));
                 return JSON.stringify({match, actual, expected, tag});
             }"""
             raw = await element.evaluate(js, expected_text)

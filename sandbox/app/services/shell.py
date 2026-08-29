@@ -299,7 +299,11 @@ class ShellService:
             
             logger.info(f"Process completed with return code: {process.returncode}")
             return ShellWaitResult(
-                returncode=process.returncode
+                returncode=process.returncode,
+                session_id=session_id,
+                # Include the accumulated, ANSI-clean session output so the
+                # shell_wait tool result is never "success but blank".
+                output=self._remove_ansi_escape_codes(shell.get("output", "") or ""),
             )
         except asyncio.TimeoutError:
             logger.warning(f"Process wait timeout expired: {seconds}s")
@@ -345,7 +349,8 @@ class ShellService:
             logger.info(f"Successfully wrote input to process")
             
             return ShellWriteResult(
-                status="success"
+                status="success",
+                session_id=session_id,
             )
         except Exception as e:
             logger.error(f"Failed to write input: {str(e)}", exc_info=True)
@@ -380,13 +385,15 @@ class ShellService:
                 logger.info(f"Process terminated with return code: {process.returncode}")
                 return ShellKillResult(
                     status="terminated",
-                    returncode=process.returncode
+                    returncode=process.returncode,
+                    session_id=session_id,
                 )
             else:
                 logger.info(f"Process was already terminated with return code: {process.returncode}")
                 return ShellKillResult(
                     status="already_terminated",
-                    returncode=process.returncode
+                    returncode=process.returncode,
+                    session_id=session_id,
                 )
         except Exception as e:
             logger.error(f"Failed to kill process: {str(e)}", exc_info=True)

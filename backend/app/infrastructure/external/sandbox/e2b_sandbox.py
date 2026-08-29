@@ -139,7 +139,28 @@ class E2BSandbox:
         self._activity_until = 0.0
         # session_id -> {handle, started_at}
         self._shell_sessions: dict[str, dict] = {}
+        # Manus-style per-session console history (ps1/command/output), mirroring
+        # the Replit sandbox API so shell_view renders identically on both
+        # providers (the UI tool panel and the aux /sessions/{id}/shell endpoint
+        # both read these records).
+        self._shell_consoles: dict[str, list[dict]] = {}
+        # Accumulated (ANSI-clean) output across every command of a session —
+        # view_shell's `output` field, like the Replit shell transcript.
+        self._shell_outputs: dict[str, str] = {}
         self._http = httpx.AsyncClient(timeout=30)
+
+    def _console_record(self, session_id: str, command: str, cwd: str) -> dict:
+        """Append a fresh console record for a command; returns the record."""
+        records = self._shell_consoles.setdefault(session_id, [])
+        record = {"ps1": f"user@e2b:{cwd} $", "command": command, "output": ""}
+        records.append(record)
+        return record
+
+    def _accumulate_output(self, session_id: str, output: str) -> str:
+        """Append command output to the session transcript and return it."""
+        total = (self._shell_outputs.get(session_id, "") + output).lstrip("\n")
+        self._shell_outputs[session_id] = total
+        return total
 
     # ------------------------------------------------------------------
     # Live-view viewer hooks (called by the VNC websocket route)
@@ -477,6 +498,57 @@ class E2BSandbox:
     def _ansi_clean(self, text: str) -> str:
         return _ANSI_RE.sub("", text or "")
 
+    def _waiter_outcome(self, waiter) -> tuple:
+        """Return (result, exc) for a DONE waiter task; (None, None) if cancelled.
+
+        The e2b SDK poisons handle.wait() once its internal stream iteration is
+        cancelled (it re-raises the stored CancelledError — a BaseException, so
+        `except Exception` never catches it). To stay safe we never cancel the
+        waiter: exec/wait poll it with asyncio.wait() instead of wait_for().
+        """
+        if waiter is None or waiter.cancelled():
+            return None, None
+        exc = waiter.exception()
+        if exc is not None:
+            return None, exc
+        return waiter.result(), None
+
+    def _completed_result(
+        self,
+        session_id: str,
+        record: dict,
+        result=None,
+        exc: Exception | None = None,
+        accumulate: bool = True,
+    ) -> ToolResult:
+        """Build the completed ToolResult from a finished command, updating the
+        session console record and transcript exactly once."""
+        if exc is not None:
+            # CommandExitException (non-zero exit) or any SDK failure that
+            # still carries captured stdout/stderr.
+            exit_code = getattr(exc, "exit_code", None)
+            stdout = getattr(exc, "stdout", "") or ""
+            stderr = getattr(exc, "stderr", "") or ""
+            if exit_code is None:
+                exit_code = 1
+        else:
+            exit_code = getattr(result, "exit_code", 0) or 0
+            stdout = getattr(result, "stdout", "") or ""
+            stderr = getattr(result, "stderr", "") or ""
+        output = self._ansi_clean(stdout + (("\n" + stderr) if stderr else ""))
+        record["output"] = output
+        total = self._accumulate_output(session_id, output) if accumulate else self._shell_outputs.get(session_id, "")
+        return ToolResult(
+            success=True,
+            message="Command execution completed",
+            data={
+                "session_id": session_id,
+                "status": "completed",
+                "returncode": exit_code,
+                "output": total,
+            },
+        )
+
     async def exec_command(
         self,
         session_id: str,
@@ -485,81 +557,96 @@ class E2BSandbox:
     ) -> ToolResult:
         await self.ensure_sandbox()
         cwd = exec_dir or "/home/user"
+        # Console record is appended BEFORE running so even long-running
+        # commands show up in shell_view with an empty output that fills in.
+        record = self._console_record(session_id, command, cwd)
         try:
             # kill any previous process on this session (Replit semantics:
-            # re-exec on the same id replaces the process and clears output)
+            # re-exec on the same id replaces the process; console history
+            # is preserved, exactly like the Replit sandbox service)
             old = self._shell_sessions.pop(session_id, None)
             if old and old.get("handle") is not None:
                 try:
                     await old["handle"].kill()
                 except Exception:
                     pass
+            # stdin=True keeps a stdin pipe open on the process — required for
+            # write_to_process (interactive commands), matching the Replit
+            # sandbox that always spawns processes with stdin=PIPE.
             handle = await self._sbx.commands.run(
-                command, background=True, cwd=cwd
+                command, background=True, cwd=cwd, stdin=True
             )
         except Exception as exc:
             # cwd may not exist (agent guessed a path) — retry in home
             try:
+                cwd = "/home/user"
                 handle = await self._sbx.commands.run(
-                    command, background=True, cwd="/home/user"
+                    command, background=True, cwd=cwd, stdin=True
                 )
             except Exception as exc2:
                 return ToolResult(
                     success=False,
                     message=f"Command execution failed: {exc2 or exc}",
+                    data={"session_id": session_id, "status": "failed"},
                 )
-        self._shell_sessions[session_id] = {"handle": handle}
+        # ONE persistent waiter task per exec — polled (never cancelled) by
+        # exec_command's 5s window and by later shell_wait calls. Cancelling
+        # wait() mid-stream permanently poisons the SDK handle.
+        waiter = asyncio.ensure_future(handle.wait())
+        self._shell_sessions[session_id] = {
+            "handle": handle,
+            "waiter": waiter,
+            "consumed": False,
+        }
 
         # Give quick commands up to 5s to finish (mirrors the Replit API that
         # waits ~5s and returns completed output directly).
-        try:
-            result = await asyncio.wait_for(handle.wait(), timeout=5)
-            output = self._ansi_clean(
-                (result.stdout or "") + (("\n" + result.stderr) if result.stderr else "")
-            )
-            return ToolResult(
-                success=True,
-                message="Command execution completed",
-                data={
-                    "status": "completed",
-                    "returncode": result.exit_code,
-                    "output": output,
-                },
-            )
-        except asyncio.TimeoutError:
-            return ToolResult(
-                success=True,
-                message="Command started",
-                data={"status": "running", "returncode": None, "output": None},
-            )
-        except Exception as exc:
-            # Non-zero exit etc. — command "completed" with a return code.
-            exit_code = getattr(exc, "exit_code", None)
-            stdout = getattr(exc, "stdout", "") or ""
-            stderr = getattr(exc, "stderr", "") or ""
-            output = self._ansi_clean(stdout + (("\n" + stderr) if stderr else ""))
-            return ToolResult(
-                success=True,
-                message="Command execution completed",
-                data={
-                    "status": "completed",
-                    "returncode": exit_code if exit_code is not None else 1,
-                    "output": output,
-                },
-            )
+        done, _ = await asyncio.wait({waiter}, timeout=5)
+        if done:
+            self._shell_sessions[session_id]["consumed"] = True
+            result, exc = self._waiter_outcome(waiter)
+            return self._completed_result(session_id, record, result, exc)
+        partial = self._ansi_clean(handle.stdout or "")
+        record["output"] = partial
+        total = self._accumulate_output(session_id, partial)
+        return ToolResult(
+            success=True,
+            message="Command started",
+            data={
+                "session_id": session_id,
+                "status": "running",
+                "returncode": None,
+                "output": total,
+            },
+        )
 
     def _session(self, session_id: str):
         entry = self._shell_sessions.get(session_id)
         return (entry or {}).get("handle")
 
     async def view_shell(self, session_id: str, console: bool = False) -> ToolResult:
-        handle = self._session(session_id)
-        if handle is None:
+        """Session transcript + console records.
+
+        Response data mirrors the Replit sandbox /shell/view shape exactly
+        ({output, session_id, console}) — the aux endpoint
+        POST /sessions/{id}/shell builds ShellViewResponse(output, session_id,
+        console) from it and the task runner reads data['console'] to fill
+        ShellToolContent for the UI tool panel. Missing keys there are what
+        made shell tool views render BLANK on E2B.
+        """
+        entry = self._shell_sessions.get(session_id)
+        if entry is None:
             return ToolResult(
                 success=False,
                 message=f"No active shell session: {session_id}",
-                data={"status": "not_found", "output": ""},
+                data={
+                    "status": "not_found",
+                    "output": "",
+                    "session_id": session_id,
+                    "console": [],
+                },
             )
+        handle = entry.get("handle")
         try:
             stdout = handle.stdout or ""
             stderr = handle.stderr or ""
@@ -568,57 +655,92 @@ class E2BSandbox:
         output = self._ansi_clean(
             stdout + (("\n" + stderr) if stderr else "")
         )
+        records = self._shell_consoles.get(session_id, [])
+        if output and records:
+            # Live-refresh the newest record so view catches output that
+            # arrived after the exec call returned (same as Replit's
+            # get_console_records which appends streamed output).
+            if handle.exit_code is None or not records[-1]["output"]:
+                records[-1]["output"] = output
+        total = self._shell_outputs.get(session_id, "")
+        # Session transcript = accumulated history; fall back to live output.
+        if not total:
+            total = output
         return ToolResult(
             success=True,
             message="Shell session output",
-            data={"status": "completed", "output": output},
+            data={
+                "status": "completed",
+                "output": total,
+                "session_id": session_id,
+                "console": list(records) if console else [],
+            },
         )
 
     async def wait_for_process(
         self, session_id: str, seconds: Optional[int] = None
     ) -> ToolResult:
-        handle = self._session(session_id)
-        if handle is None:
+        entry = self._shell_sessions.get(session_id)
+        if entry is None:
             return ToolResult(
                 success=False,
                 message=f"No active shell session: {session_id}",
                 data={"status": "not_found", "returncode": None, "output": None},
             )
         wait_secs = min(max(seconds or 60, 1), 600)
-        try:
-            result = await asyncio.wait_for(handle.wait(), timeout=wait_secs)
-            output = self._ansi_clean(
-                (result.stdout or "") + (("\n" + result.stderr) if result.stderr else "")
+        records = self._shell_consoles.get(session_id, [])
+        record = records[-1] if records else {}
+        waiter = entry.get("waiter")
+        handle = entry.get("handle")
+
+        if waiter is not None and waiter.done():
+            # Already finished — consume it. Accumulate into the transcript
+            # ONLY if nobody consumed this waiter before (exec_command's 5s
+            # window already accumulated its own completion; re-accumulating
+            # would duplicate the output).
+            was_consumed = entry.get("consumed", False)
+            entry["consumed"] = True
+            result, exc = self._waiter_outcome(waiter)
+            return self._completed_result(
+                session_id, record, result, exc, accumulate=not was_consumed
             )
+
+        if waiter is None:
+            # Legacy/no waiter — best effort from live handle output.
+            output = self._ansi_clean(getattr(handle, "stdout", "") or "")
             return ToolResult(
                 success=True,
                 message="Process completed",
                 data={
+                    "session_id": session_id,
                     "status": "completed",
-                    "returncode": result.exit_code,
-                    "output": output,
+                    "returncode": getattr(handle, "exit_code", None) or 0,
+                    "output": output or self._shell_outputs.get(session_id, ""),
                 },
             )
-        except asyncio.TimeoutError:
-            output = self._ansi_clean(handle.stdout or "")
-            return ToolResult(
-                success=True,
-                message="Process still running",
-                data={"status": "running", "returncode": None, "output": output},
-            )
-        except Exception as exc:
-            exit_code = getattr(exc, "exit_code", 1)
-            stdout = getattr(exc, "stdout", "") or ""
-            stderr = getattr(exc, "stderr", "") or ""
-            return ToolResult(
-                success=True,
-                message="Process completed",
-                data={
-                    "status": "completed",
-                    "returncode": exit_code,
-                    "output": self._ansi_clean(stdout + (("\n" + stderr) if stderr else "")),
-                },
-            )
+
+        done, _ = await asyncio.wait({waiter}, timeout=wait_secs)
+        if done:
+            # Mark consumed BEFORE building the result so the accumulation
+            # happens exactly once for this command.
+            entry["consumed"] = True
+            result, exc = self._waiter_outcome(waiter)
+            return self._completed_result(session_id, record, result, exc)
+
+        # Still running after the wait window.
+        output = self._ansi_clean(handle.stdout or "")
+        if records and output:
+            records[-1]["output"] = output
+        return ToolResult(
+            success=True,
+            message="Process still running",
+            data={
+                "session_id": session_id,
+                "status": "running",
+                "returncode": None,
+                "output": output,
+            },
+        )
 
     async def write_to_process(
         self, session_id: str, input_text: str, press_enter: bool = True
@@ -640,7 +762,9 @@ class E2BSandbox:
                 data={"status": "failed"},
             )
         return ToolResult(
-            success=True, message="Input written", data={"status": "completed"}
+            success=True,
+            message="Input written",
+            data={"session_id": session_id, "status": "completed"},
         )
 
     async def kill_process(self, session_id: str) -> ToolResult:
@@ -649,7 +773,7 @@ class E2BSandbox:
             return ToolResult(
                 success=False,
                 message=f"No active shell session: {session_id}",
-                data={"status": "not_found"},
+                data={"session_id": session_id, "status": "not_found"},
             )
         try:
             await handle.kill()
@@ -657,7 +781,9 @@ class E2BSandbox:
             pass
         self._shell_sessions.pop(session_id, None)
         return ToolResult(
-            success=True, message="Process terminated", data={"status": "completed"}
+            success=True,
+            message="Process terminated",
+            data={"session_id": session_id, "status": "completed"},
         )
 
     # ------------------------------------------------------------------
@@ -715,7 +841,8 @@ class E2BSandbox:
             return ToolResult(
                 success=True,
                 message=f"File written: {path}",
-                data={"content": len(content)},
+                # Same keys as the Replit FileWriteResult model.
+                data={"file": path, "bytes_written": len(content.encode("utf-8"))},
             )
         except Exception as exc:
             return ToolResult(
@@ -745,10 +872,13 @@ class E2BSandbox:
             content = "\n".join(lines[start:end])
         if len(content) > 10000:
             content = content[:10000] + "(truncated)"
+        # `file` key is REQUIRED: the aux endpoint POST /sessions/{id}/file
+        # builds FileViewResponse(content, file) from this data — missing key
+        # made file tool views 500 / render blank on E2B.
         return ToolResult(
             success=True,
             message="File read successfully",
-            data={"content": content},
+            data={"content": content, "file": path},
         )
 
     async def file_exists(self, path: str) -> ToolResult:
@@ -844,9 +974,12 @@ class E2BSandbox:
         write = await self.file_write(file, new_content)
         if not write.success:
             return write
+        path = self._norm(file)
         return ToolResult(
             success=True,
             message=f"Replaced {content.count(old_str)} occurrence(s) in {file}",
+            # Same keys as the Replit FileReplaceResult model.
+            data={"file": path, "replaced_count": content.count(old_str)},
         )
 
     async def file_search(
@@ -857,10 +990,29 @@ class E2BSandbox:
         out = await self._cmd(
             f"grep -nE '{esc_regex}' '{path}' | head -50; true", timeout=30
         )
+        # Parse grep -n output into the same shape as the Replit
+        # FileSearchResult model: matches (content lines) + line_numbers.
+        matches: list[str] = []
+        line_numbers: list[int] = []
+        for line in (out or "").splitlines():
+            if ":" in line:
+                lineno_str, _, text = line.partition(":")
+                try:
+                    line_numbers.append(int(lineno_str))
+                    matches.append(text)
+                    continue
+                except ValueError:
+                    pass
+            if line.strip():
+                matches.append(line)
         return ToolResult(
             success=True,
             message="Search completed",
-            data={"matches": out or "(no matches)"},
+            data={
+                "file": path,
+                "matches": matches or [],
+                "line_numbers": line_numbers,
+            },
         )
 
     async def file_find(self, path: str, glob_pattern: str) -> ToolResult:
@@ -874,7 +1026,8 @@ class E2BSandbox:
         return ToolResult(
             success=True,
             message=f"Found {len(files)} file(s)",
-            data={"files": files},
+            # Same keys as the Replit FileFindResult model.
+            data={"path": p, "files": files},
         )
 
     async def file_upload(
@@ -888,7 +1041,10 @@ class E2BSandbox:
             # path is a directory → join filename
             if "YES" in await self._cmd(f"test -d '{p}' && echo YES || echo NO"):
                 p = f"{p}/{filename}"
-        data = file_data.read()
+        # Accept both file-like objects (BinaryIO) and raw bytes —
+        # image_download passes bytes directly, which previously crashed with
+        # "'bytes' object has no attribute 'read'".
+        data = file_data.read() if hasattr(file_data, "read") else file_data
         try:
             parent = "/".join(p.split("/")[:-1]) or "/"
             try:
@@ -897,7 +1053,10 @@ class E2BSandbox:
                 pass
             await self._sbx.files.write(p, data)
             return ToolResult(
-                success=True, message=f"Uploaded: {p}", data={"path": p}
+                success=True,
+                message=f"Uploaded: {p}",
+                # Same keys as the Replit FileUploadResult model.
+                data={"file_path": p, "file_size": len(data), "success": True},
             )
         except Exception as exc:
             return ToolResult(success=False, message=f"Upload failed: {exc}")

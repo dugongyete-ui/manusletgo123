@@ -155,8 +155,9 @@ with the final summary.
 So:
 - NEVER attach files to progress messages (message_notify_user). Keep those
   pure text — you may mention a file's name in a sentence, nothing more.
-- Only list real output files for the user (e.g. /home/runner/report.pdf),
-  never intermediate scripts or temp files.
+- Only list real output files for the user (absolute paths inside your own
+  home directory, e.g. {user_home}/report.pdf), never intermediate scripts
+  or temp files.
 
 PACKAGING RULES — what the user receives at the end:
 1. Information gathering / research task → save the findings as ONE
@@ -273,7 +274,8 @@ Rules:
 - If this task involved gathering or researching information from the internet
   (web browsing, search results, Wikipedia, news, any online data):
     1. Use file_write tool to save a well-formatted Markdown summary to
-       /home/runner/summary_<topic>.md  (pick a short descriptive topic name).
+       {user_home}/summary_<topic>.md  (your home directory as described in
+       <sandbox_environment>; pick a short descriptive topic name).
        The file must contain:
        - Title and date
        - All key facts / data found
@@ -293,19 +295,19 @@ Return format requirements:
 
 TypeScript Interface Definition:
 ```typescript
-interface Response {
+interface Response {{
   /** Response to user's message and thinking about the task, as detailed as possible */
   message: string;
   /** Array of file paths in sandbox for generated files to be delivered to user */
   attachments: string[];
-}
+}}
 ```
 
 EXAMPLE JSON OUTPUT (research task):
 {{
     "message": "Berikut ringkasan informasi yang ditemukan...",
     "attachments": [
-        "/home/runner/summary_persib_bandung.md"
+        "{user_home}/summary_persib_bandung.md"
     ]
 }}
 

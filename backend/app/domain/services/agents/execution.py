@@ -84,6 +84,24 @@ class ExecutionAgent(BaseAgent):
         self._silent_tool_count: int = 0
         self._narration_assist_count: int = 0
         self._narration_lang: str = "en"
+    def _resolve_user_home(self) -> str:
+        """Resolve the home directory of the sandbox actually serving this
+        session (E2B → /home/user, shared Replit → /home/runner/users/<id>).
+
+        Prompts must never carry a hard-coded provider path — the sandbox
+        serving the session is chosen at runtime (and can switch, e.g. when
+        the E2B quota runs out and the hybrid factory falls back to Replit).
+        Defensive getattr because skeleton agents (tests using __new__) have
+        no toolkits attribute at all.
+        """
+        from app.domain.services.tools.file import FileToolkit
+
+        toolkits = getattr(self, "toolkits", None) or ()
+        file_toolkit = next(
+            (tk for tk in toolkits if isinstance(tk, FileToolkit)), None
+        )
+        return getattr(getattr(file_toolkit, "sandbox", None), "user_home", "/home/runner")
+
     @staticmethod
     def _normalize_narration(text: str) -> str:
         """Lowercase, strip punctuation and collapse whitespace for comparison."""
@@ -559,6 +577,7 @@ class ExecutionAgent(BaseAgent):
             message=message.message,
             attachments="\n".join(message.attachments),
             language=plan.language,
+            user_home=self._resolve_user_home(),
         )
 
         vision_content = None
@@ -839,9 +858,7 @@ class ExecutionAgent(BaseAgent):
             # outside the user home cannot be synced back to storage, so the
             # summary .md would silently never reach the user (observed:
             # file_write "succeeded" per log, file_download 404 afterwards).
-            sandbox_home = getattr(
-                file_toolkit.sandbox, "user_home", "/home/runner"
-            )
+            sandbox_home = self._resolve_user_home()
             sandbox_path = f"{sandbox_home}/{filename}"
 
             write_result = await file_toolkit.sandbox.file_write(
@@ -991,7 +1008,12 @@ class ExecutionAgent(BaseAgent):
             )
 
         # Fallback: JSON-based summarize
-        async for event in self.execute(SUMMARIZE_PROMPT):
+        # user_home is injected so the prompt names paths in the sandbox that
+        # is ACTUALLY serving this session (E2B /home/user vs Replit
+        # /home/runner/...) — never a hard-coded provider path.
+        async for event in self.execute(
+            SUMMARIZE_PROMPT.format(user_home=self._resolve_user_home())
+        ):
             if isinstance(event, MessageEvent):
                 logger.debug(f"Execution agent summary: {event.message}")
                 parsed_response = await self._parse_json(event.message)

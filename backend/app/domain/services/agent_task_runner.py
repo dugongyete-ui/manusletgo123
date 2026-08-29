@@ -465,7 +465,29 @@ class AgentTaskRunner(TaskRunner):
                     else:
                         event.tool_content = ShellToolContent(console="(No Console)")
                 elif event.tool_name == "file":
-                    if "file" in event.function_args:
+                    fn = event.function_name
+                    result = event.function_result
+                    if fn in ("file_list_dir", "file_find_by_name"):
+                        # Directory listing / file search: show the real
+                        # listing text instead of a misleading "(No Content)".
+                        # file_list_dir data = {"listing": str, "entries": [...]};
+                        # file_find_by_name data = {"path": str, "files": [...]}.
+                        listing = ""
+                        if result and result.success and isinstance(result.data, dict):
+                            listing = result.data.get("listing", "") or ""
+                            if not listing and fn == "file_find_by_name":
+                                listing = "\n".join(result.data.get("files") or [])
+                        if not listing:
+                            listing = (result.message if result else "") or "(No Content)"
+                        event.tool_content = FileToolContent(content=listing)
+                    elif fn in ("file_delete", "file_move", "file_copy"):
+                        # Status operations: show the actual result message
+                        # (e.g. "Deleted: /path", "Moved: a → b") — the file no
+                        # longer exists at the source so there is no content to
+                        # display, but the viewer must not look empty/blank.
+                        msg = (result.message if result else "") or "(No Content)"
+                        event.tool_content = FileToolContent(content=msg)
+                    elif "file" in event.function_args:
                         file_path = event.function_args["file"]
                         file_read_result = await self._sandbox.file_read(file_path)
                         file_content: str = (file_read_result.data or {}).get("content", "") if (file_read_result and file_read_result.success) else ""

@@ -23,7 +23,7 @@ class MessageToolkit(BaseToolkit):
 
         Args:
             text: Message text to display to user (under 300 characters, plain text)
-            attachments: (Optional) List of sandbox file paths to attach (e.g. ["/home/runner/report.pdf"]). Files are synced to storage and shown as download links.
+            attachments: (Optional) List of real file paths inside your own home directory as described in <sandbox_environment> (e.g. ["~/report.pdf"]). Files are synced to storage and shown as download links.
         """
         return ToolResult(success=True, message="OK")
     
