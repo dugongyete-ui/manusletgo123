@@ -132,9 +132,42 @@ class AgentService:
         if not session:
             logger.error(f"Session {session_id} not found for user {user_id}")
             raise RuntimeError("Session not found")
-        
+
+        # Purge GridFS artifacts referenced by this session's events
+        # (browser screenshots / tool file previews) BEFORE dropping the
+        # document — otherwise they leak forever on the 512MB Atlas free
+        # tier and eventually block ALL writes (quota exhausted).
+        await self._purge_session_files(session, user_id)
+
         await self._session_repository.delete(session_id)
         logger.info(f"Session {session_id} deleted successfully")
+
+    async def _purge_session_files(self, session: Session, user_id: str) -> None:
+        """Best-effort deletion of every GridFS file referenced by a session's events."""
+        try:
+            file_ids = set()
+            for event in getattr(session, "events", []) or []:
+                tool_content = getattr(event, "tool_content", None)
+                if not tool_content:
+                    continue
+                for field in ("screenshot", "file_id"):
+                    fid = getattr(tool_content, field, None)
+                    if fid:
+                        file_ids.add(fid)
+            for file_info in getattr(session, "files", []) or []:
+                if getattr(file_info, "file_id", None):
+                    file_ids.add(file_info.file_id)
+            for file_id in file_ids:
+                try:
+                    await self._file_storage.delete_file(file_id, user_id)
+                except Exception:
+                    # File may already be gone (retention deleted it) — ignore.
+                    pass
+            if file_ids:
+                logger.info(f"Purged {len(file_ids)} GridFS files of session {session.id}")
+        except Exception as e:
+            # Never let cleanup block a user-facing delete.
+            logger.warning(f"File purge for session {session.id} failed: {e}")
 
     async def delete_all_sessions(self, user_id: str) -> int:
         """Delete all sessions for a user"""

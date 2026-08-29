@@ -123,7 +123,16 @@ class ToolSSEEvent(BaseSSEEvent):
         content = event.tool_content
         if isinstance(content, BrowserToolContent):
             from app.interfaces.dependencies import get_file_service
-            signed = await get_file_service().create_signed_url(content.screenshot) if content.screenshot else ""
+            # The referenced screenshot may have been deleted (retention
+            # keeps only the newest per session; session purge on delete).
+            # A missing preview must NEVER break the whole session GET.
+            if content.screenshot:
+                try:
+                    signed = await get_file_service().create_signed_url(content.screenshot)
+                except Exception:
+                    signed = ""
+            else:
+                signed = ""
             content = BrowserToolContent(
                 screenshot=signed,
                 js_code=content.js_code,

@@ -125,6 +125,9 @@ class AgentTaskRunner(TaskRunner):
         # timeout, skip further attempts for a while so tool events keep
         # flowing at full speed (the VNC takeover view still shows the page).
         self._screenshot_skip_until: float = 0.0
+        # Newest screenshot file id for this task (retention: delete the
+        # previous preview when a new one uploads — see _get_browser_screenshot).
+        self._last_screenshot_id: Optional[str] = None
 
         self._flow = PlanActFlow(
             self._agent_id,
@@ -212,6 +215,20 @@ class AgentTaskRunner(TaskRunner):
             return ""
         try:
             result = await self._file_storage.upload_file(screenshot, "screenshot.png", self._user_id)
+            # Retention: browser screenshots are transient panel previews.
+            # Keeping every one (~1.5MB each, dozens per task) exhausted the
+            # 512MB Atlas free tier mid-task and blocked ALL writes (task
+            # died). Keep only the newest per session: delete the previous
+            # one now that the new upload succeeded.
+            prev = self._last_screenshot_id
+            self._last_screenshot_id = result.file_id
+            if prev and prev != result.file_id:
+                try:
+                    await self._file_storage.delete_file(prev, self._user_id)
+                except Exception as del_exc:
+                    # Best-effort only — a stale preview lingering in GridFS
+                    # is harmless compared to breaking the tool event flow.
+                    logger.debug(f"Old screenshot {prev} cleanup skipped: {del_exc}")
             return result.file_id
         except Exception as e:
             logger.warning(f"Browser screenshot upload failed: {e}")
