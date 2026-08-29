@@ -35,6 +35,14 @@ class SessionRepository(Protocol):
         """Update the latest message of a session"""
         ...
 
+    async def update_sandbox_id(self, session_id: str, sandbox_id: Optional[str]) -> None:
+        """Atomically update the sandbox pointer of a session (never touches events)"""
+        ...
+
+    async def update_task_id(self, session_id: str, task_id: Optional[str]) -> None:
+        """Atomically update the task pointer of a session (never touches events)"""
+        ...
+
     async def add_event(self, session_id: str, event: BaseEvent) -> None:
         """Add an event to a session"""
         ...

@@ -25,19 +25,33 @@ class MongoSessionRepository(SessionRepository):
     """MongoDB implementation of SessionRepository"""
     
     async def save(self, session: Session) -> None:
-        """Save or update a session"""
+        """Save or update a session.
+
+        UPDATE path merges SCALAR fields only ($set) — it must NEVER
+        replace the ``events`` and ``files`` arrays.  Those arrays are
+        managed exclusively through the atomic add_event / add_file /
+        remove_file operations ($push / $pull).  The previous
+        whole-document replace (update_from_domain + save) silently
+        wiped concurrently persisted events: e.g. the early-persisted
+        user message was erased when warmup_sandbox() / _create_task()
+        later saved their own older in-memory copy of the session
+        (the "user message bubble disappears" bug).
+        """
         mongo_session = await SessionDocument.find_one(
             SessionDocument.session_id == session.id
         )
-        
+
         if not mongo_session:
             mongo_session = SessionDocument.from_domain(session)
             await mongo_session.save()
             return
-        
-        # Update fields from session domain model
-        mongo_session.update_from_domain(session)
-        await mongo_session.save()
+
+        data = session.model_dump(exclude={"id", "created_at", "events", "files"})
+        result = await SessionDocument.find_one(
+            SessionDocument.session_id == session.id
+        ).update({"$set": {**data, "updated_at": datetime.now(UTC)}})
+        if not result:
+            raise ValueError(f"Session {session.id} not found")
 
 
     async def find_by_id(self, session_id: str) -> Optional[Session]:
@@ -100,6 +114,26 @@ class MongoSessionRepository(SessionRepository):
             SessionDocument.session_id == session_id
         ).update(
             {"$set": {"latest_message": message, "latest_message_at": timestamp, "updated_at": datetime.now(UTC)}}
+        )
+        if not result:
+            raise ValueError(f"Session {session_id} not found")
+
+    async def update_sandbox_id(self, session_id: str, sandbox_id: Optional[str]) -> None:
+        """Atomically update the sandbox pointer of a session (never touches events)"""
+        result = await SessionDocument.find_one(
+            SessionDocument.session_id == session_id
+        ).update(
+            {"$set": {"sandbox_id": sandbox_id, "updated_at": datetime.now(UTC)}}
+        )
+        if not result:
+            raise ValueError(f"Session {session_id} not found")
+
+    async def update_task_id(self, session_id: str, task_id: Optional[str]) -> None:
+        """Atomically update the task pointer of a session (never touches events)"""
+        result = await SessionDocument.find_one(
+            SessionDocument.session_id == session_id
+        ).update(
+            {"$set": {"task_id": task_id, "updated_at": datetime.now(UTC)}}
         )
         if not result:
             raise ValueError(f"Session {session_id} not found")

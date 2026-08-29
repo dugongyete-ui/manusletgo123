@@ -86,7 +86,9 @@ class AgentDomainService:
                     return
                 sandbox = await self._sandbox_cls.create()
                 session.sandbox_id = sandbox.id
-                await self._session_repository.save(session)
+                # Atomic pointer update — a whole-doc save() here would
+                # clobber concurrently persisted events (see save() docstring)
+                await self._session_repository.update_sandbox_id(session_id, sandbox.id)
                 logger.info("[Warmup] Sandbox %s created for session %s — running ensure_sandbox…", sandbox.id, session_id)
                 await sandbox.ensure_sandbox()
                 logger.info("[Warmup] Sandbox %s fully ready for session %s", sandbox.id, session_id)
@@ -135,7 +137,10 @@ class AgentDomainService:
             if not sandbox:
                 sandbox = await self._sandbox_cls.create()
                 session.sandbox_id = sandbox.id
-                await self._session_repository.save(session)
+                # Atomic pointer update — never a whole-doc save(): the
+                # in-memory session.events may be older than what add_event
+                # already persisted (early user-message persist in chat()).
+                await self._session_repository.update_sandbox_id(session.id, sandbox.id)
                 await sandbox.ensure_sandbox()
 
             # Shared sandboxes (Replit singleton) are wrapped with per-user
@@ -155,7 +160,10 @@ class AgentDomainService:
                 logger.error(f"Failed to get browser for Sandbox {sandbox_id}")
                 raise RuntimeError(f"Failed to get browser for Sandbox {sandbox_id}")
 
-            await self._session_repository.save(session)
+            # NOTE: no session save here on purpose — nothing in the session
+            # document changed between this point and the sandbox pointer
+            # update above, and a whole-doc save would race concurrent
+            # add_event() writes (see save() docstring).
 
             # Project instructions: when the session belongs to a project that
             # defines an instruction, inject it into the system prompt so every
@@ -190,7 +198,10 @@ class AgentDomainService:
 
             task = self._task_cls.create(task_runner)
             session.task_id = task.id
-            await self._session_repository.save(session)
+            # Atomic pointer update — never a whole-doc save(): _create_task
+            # can run ~1-7 min after chat() early-persisted the user message
+            # event; saving the stale in-memory copy here used to ERASE it.
+            await self._session_repository.update_task_id(session.id, task.id)
 
             return task
         
