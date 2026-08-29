@@ -17,8 +17,14 @@ class BrowserUseBrowser:
     interface as PlaywrightBrowser so it can be used as a drop-in replacement.
     """
 
-    def __init__(self, cdp_url: str):
+    def __init__(self, cdp_url: str, heal_hook=None):
         self.cdp_url = cdp_url
+        # Optional async callable invoked when the CDP endpoint refuses
+        # connections (e.g. HTTP 502 from the in-VM proxy) — the signature of a
+        # DEAD browser process. The hook (provided by the sandbox layer) relaunches
+        # the browser inside its environment, so mid-task crashes self-heal
+        # instead of exhausting all retries. No-op when not provided.
+        self._heal_hook = heal_hook
         self._session: Optional[BrowserSession] = None
         # Cached actor Page for the currently focused tab.
         # browser_use's session.get_current_page() constructs a NEW Page object
@@ -80,6 +86,21 @@ class BrowserUseBrowser:
                         "Chrome may still be starting. Retrying in %.0fs…",
                         attempt + 1, max_retries, retry_delay,
                     )
+                elif ("502" in exc_str or "rejected" in exc_str.lower()) and self._heal_hook is not None:
+                    # HTTP 502 / WS rejected = the proxy is alive but the browser
+                    # process behind it is DEAD (crashed mid-task, OOM, etc.).
+                    # Plain retries can never fix that — ask the sandbox layer to
+                    # relaunch the browser, then reconnect.
+                    retry_delay = min(retry_delay * 1.5, 15.0)
+                    logger.warning(
+                        "CDP endpoint refuses connections (attempt %d/%d) — "
+                        "invoking browser heal hook to relaunch it: %s",
+                        attempt + 1, max_retries, exc_str[:120],
+                    )
+                    try:
+                        await asyncio.wait_for(self._heal_hook(), timeout=150.0)
+                    except Exception as heal_exc:
+                        logger.warning("Browser heal hook failed: %s", heal_exc)
                 else:
                     retry_delay = min(retry_delay * 1.5, 15.0)
                     logger.warning(

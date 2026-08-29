@@ -432,31 +432,7 @@ class E2BSandbox:
             f"curl -sf --max-time 3 http://127.0.0.1:{_CHROME_DEBUG_PORT}/json/version >/dev/null && echo UP || echo DOWN"
         )
         if "UP" not in chrome_up:
-            await self._cmd(
-                # --restore-last-session: after a pause/resume cycle chromium
-                # reopens the tabs the agent was working on, so the takeover
-                # view shows the real pages instead of about:blank.
-                "rm -f /home/user/chrome-profile/SingletonLock "
-                "/home/user/chrome-profile/SingletonCookie "
-                "/home/user/chrome-profile/SingletonSocket; "
-                f"env DISPLAY={_X_DISPLAY} nohup chromium --no-sandbox --disable-gpu "
-                "--disable-dev-shm-usage --renderer-process-limit=4 "
-                "--window-size=1024,768 --restore-last-session "
-                f"--remote-debugging-port={_CHROME_DEBUG_PORT} "
-                "--remote-debugging-address=127.0.0.1 --remote-allow-origins=* "
-                "--user-data-dir=/home/user/chrome-profile "
-                ">/tmp/chrome.log 2>&1 & echo LAUNCHED"
-            )
-            # wait for CDP to answer (bounded)
-            for _ in range(20):
-                up = await self._cmd(
-                    f"curl -sf --max-time 2 http://127.0.0.1:{_CHROME_DEBUG_PORT}/json/version >/dev/null && echo UP || echo DOWN"
-                )
-                if "UP" in up:
-                    break
-                await asyncio.sleep(1)
-            else:
-                raise RuntimeError("Chromium CDP did not come up inside E2B VM")
+            await self._launch_chromium()
 
         # 5. VNC server + WebSocket bridge up? (live view / user takeover)
         x11vnc_up = await self._cmd("pgrep -x x11vnc >/dev/null && echo UP || echo DOWN")
@@ -505,6 +481,51 @@ class E2BSandbox:
 
         logger.info("E2B sandbox ready: %s", self.id)
 
+    async def _launch_chromium(self) -> None:
+        """Relaunch Chromium inside the VM and wait (bounded) for its CDP."""
+        await self._cmd(
+            # --restore-last-session: after a pause/resume cycle chromium
+            # reopens the tabs the agent was working on, so the takeover
+            # view shows the real pages instead of about:blank.
+            "rm -f /home/user/chrome-profile/SingletonLock "
+            "/home/user/chrome-profile/SingletonCookie "
+            "/home/user/chrome-profile/SingletonSocket; "
+            f"env DISPLAY={_X_DISPLAY} nohup chromium --no-sandbox --disable-gpu "
+            "--disable-dev-shm-usage --renderer-process-limit=4 "
+            "--window-size=1024,768 --restore-last-session "
+            f"--remote-debugging-port={_CHROME_DEBUG_PORT} "
+            "--remote-debugging-address=127.0.0.1 --remote-allow-origins=* "
+            "--user-data-dir=/home/user/chrome-profile "
+            ">/tmp/chrome.log 2>&1 & echo LAUNCHED"
+        )
+        # wait for CDP to answer (bounded)
+        for _ in range(20):
+            up = await self._cmd(
+                f"curl -sf --max-time 2 http://127.0.0.1:{_CHROME_DEBUG_PORT}/json/version >/dev/null && echo UP || echo DOWN"
+            )
+            if "UP" in up:
+                return
+            await asyncio.sleep(1)
+        raise RuntimeError("Chromium CDP did not come up inside E2B VM")
+
+    async def _heal_chrome(self) -> None:
+        """Mid-task browser heal: detect a dead in-VM Chromium and relaunch it.
+
+        Passed as the ``heal_hook`` to BrowserUseBrowser — when the CDP proxy
+        answers 502 (proxy alive, browser dead), the browser layer calls this
+        so a crashed Chromium self-heals instead of failing the whole task.
+        Raises when the relaunch does not come up, which the caller treats as
+        one more failed retry (it keeps its own retry budget).
+        """
+        chrome_up = await self._cmd(
+            f"curl -sf --max-time 3 http://127.0.0.1:{_CHROME_DEBUG_PORT}/json/version >/dev/null && echo UP || echo DOWN"
+        )
+        if "UP" in chrome_up:
+            return  # transient proxy hiccup — nothing to heal
+        logger.warning("E2B chromium is DOWN mid-task — relaunching (browser heal)")
+        await self._launch_chromium()
+        logger.info("E2B chromium heal: CDP is UP again")
+
     # ------------------------------------------------------------------
     # Browser (CDP over public wss proxy)
     # ------------------------------------------------------------------
@@ -523,7 +544,7 @@ class E2BSandbox:
         url = await self._cdp_ws_url()
         if engine == "browser_use":
             logger.info("E2B: BrowserUseBrowser via CDP proxy (%s)", self.id)
-            return BrowserUseBrowser(url)
+            return BrowserUseBrowser(url, heal_hook=self._heal_chrome)
         logger.info("E2B: PlaywrightBrowser via CDP proxy (%s)", self.id)
         return PlaywrightBrowser(url)
 

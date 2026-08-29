@@ -240,7 +240,12 @@ def test_bootstrap_launches_xvfb_at_depth_24():
     src = inspect.getsource(e2b_sandbox.E2BSandbox._bootstrap)
     assert "1024x768x24" in src, "Xvfb must be launched at depth 24"
     assert "1024x768x16" not in src, "depth 16 caused the black VNC screen"
-    assert "--restore-last-session" in src, (
+    # chromium relaunch (with --restore-last-session) lives in its own helper
+    # since the browser-heal refactor — the bootstrap must call it, and the
+    # helper itself must carry the restore flag.
+    assert "_launch_chromium" in src, "bootstrap must delegate chromium relaunch"
+    launch_src = inspect.getsource(e2b_sandbox.E2BSandbox._launch_chromium)
+    assert "--restore-last-session" in launch_src, (
         "chromium should reopen the agent's tabs after resume"
     )
     # depth check + replacement of stale depth-16 servers on resume
