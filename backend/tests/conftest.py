@@ -13,8 +13,10 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 import requests
 import uuid
 
-# Base URL for API testing
-BASE_URL = "http://localhost:8000/api/v1"
+# Base URL for API testing (override for non-Replit deployments, e.g.
+# TEST_API_BASE_URL=http://localhost:3000/api/v1 when the backend serves
+# the frontend in production mode on a single port).
+BASE_URL = os.environ.get("TEST_API_BASE_URL", "http://localhost:8000/api/v1")
 
 @pytest.fixture
 def client():

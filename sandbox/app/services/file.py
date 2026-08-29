@@ -19,9 +19,20 @@ from app.models.file import (
 from app.core.exceptions import AppException, ResourceNotFoundException, BadRequestException
 
 
-PROTECTED_PATHS = [
-    "/home/runner/workspace",
-]
+def _load_protected_paths() -> list:
+    """Protected directories the agent must never touch.
+
+    Defaults to the Replit app-source location (/home/runner/workspace) so
+    behaviour is unchanged on Replit. Other deployments override it via the
+    PROTECTED_PATHS env var (colon/comma-separated).
+    """
+    import os as _os
+    raw = _os.environ.get("PROTECTED_PATHS", "/home/runner/workspace")
+    paths = [p.strip() for sep in (":", ",") for p in raw.replace(",", ":").split(":")]
+    return [p for p in paths if p]
+
+
+PROTECTED_PATHS = _load_protected_paths()
 
 # Per-path write lock: serialises concurrent writes to the same file so an
 # interleaved full-write and append-write can never truncate each other.

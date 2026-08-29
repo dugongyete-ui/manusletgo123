@@ -68,6 +68,12 @@ class Settings(BaseSettings):
     # /home/runner cannot be created) can override it via USER_HOME_ROOT.
     user_home_root: str = "/home/runner/users"
 
+    # App source directory the sandbox agent must NEVER touch (prompt-level
+    # prohibition; hard enforcement lives in the sandbox service's
+    # PROTECTED_PATHS). Colon/comma separated. Defaults to the Replit layout;
+    # other deployments point it at their own app source tree.
+    sandbox_protected_paths: str = "/home/runner/workspace"
+
     # ── Sandbox provider selection ─────────────────────────────────────────
     # "auto"    → prefer E2B (per-user isolated cloud sandbox), fall back to
     #             the shared Replit-local sandbox on any E2B failure/quota.
@@ -187,7 +193,12 @@ def get_settings() -> Settings:
         api_key_val = os.getenv("API_KEY") or settings.api_key
         if api_key_val:
             os.environ["OPENAI_API_KEY"] = api_key_val
-    settings.extra_headers = _parse_extra_headers()
+    # EXTRA_HEADERS: prefer the pydantic-parsed value — pydantic-settings
+    # reads it from BOTH the process environment and the .env file (JSON dict
+    # field). Reading only os.environ here (the old behaviour) silently
+    # dropped EXTRA_HEADERS on deployments that configure via .env file,
+    # sending LLM requests without the required auth headers (HTTP 403).
+    settings.extra_headers = settings.extra_headers or _parse_extra_headers()
     settings.check_required_settings()
     return settings
 

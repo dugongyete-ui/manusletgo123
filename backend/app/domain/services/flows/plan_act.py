@@ -110,9 +110,14 @@ class PlanActFlow(BaseFlow):
         user_home = getattr(sandbox, 'user_home', '/home/runner')
         upload_dir = getattr(sandbox, 'upload_dir', '/home/runner/upload')
         environment = getattr(sandbox, 'provider', 'replit')
+        # Protected app-source dir: default = Replit layout; overridable per
+        # deployment via SANDBOX_PROTECTED_PATHS so the prompt never lies.
+        from app.core.config import get_settings as _get_settings
+        _protected = (_get_settings().sandbox_protected_paths or "").split(":")[0].strip() or None
         base_prompt = get_system_prompt(
             user_home=user_home, upload_dir=upload_dir, environment=environment,
             project_instruction=project_instruction,
+            protected_workspace=_protected,
         )
 
         # Create planner and execution agents

@@ -19,9 +19,19 @@ from app.core.exceptions import AppException, ResourceNotFoundException, BadRequ
 # Set up logger
 logger = logging.getLogger(__name__)
 
-PROTECTED_PATHS = [
-    "/home/runner/workspace",
-]
+def _load_protected_paths() -> list:
+    """Protected directories the agent must never touch.
+
+    Defaults to the Replit app-source location (/home/runner/workspace) so
+    behaviour is unchanged on Replit. Other deployments override it via the
+    PROTECTED_PATHS env var (colon/comma-separated).
+    """
+    raw = os.environ.get("PROTECTED_PATHS", "/home/runner/workspace")
+    paths = [p.strip() for sep in (":", ",") for p in raw.replace(",", ":").split(":")]
+    return [p for p in paths if p]
+
+
+PROTECTED_PATHS = _load_protected_paths()
 
 def _is_protected_exec_dir(path: str) -> bool:
     """Return True if exec_dir is inside a protected directory."""
@@ -38,10 +48,14 @@ def _is_protected_exec_dir(path: str) -> bool:
 def _command_targets_protected_path(command: str) -> bool:
     """Return True if the command references a protected path."""
     import re
-    patterns = [
-        r'/home/runner/workspace',
-        r'~/workspace(?:/|$)',
-    ]
+    patterns = []
+    for protected in PROTECTED_PATHS:
+        # Direct reference: /home/runner/workspace or any path under it
+        patterns.append(re.escape(protected) + r'(?![^/])')
+        # Shorthand form ~/workspace for the classic Replit layout
+        shorthand = "/" + protected.lstrip("/").split("/")[-1] if protected else ""
+        if shorthand:
+            patterns.append(r'~' + re.escape(shorthand) + r'(?:/|$)')
     for pattern in patterns:
         if re.search(pattern, command):
             return True
