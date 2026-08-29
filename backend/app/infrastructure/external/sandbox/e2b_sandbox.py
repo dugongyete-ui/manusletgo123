@@ -242,6 +242,15 @@ class E2BSandbox:
         await wrapper.ensure_sandbox()
         return wrapper
 
+    # E2B control-plane calls (connect/resume, pause, set_timeout) have been
+    # observed to hang indefinitely when the platform is slow — connect while
+    # holding the class-wide registry lock once DEADLOCKED the whole agent
+    # (every other sandbox operation blocked on the lock forever). All three
+    # calls are therefore bounded with asyncio.wait_for.
+    _CONNECT_TIMEOUT = 90
+    _PAUSE_TIMEOUT = 30
+    _SET_TIMEOUT_CALL = 15
+
     @classmethod
     async def get(cls, id: str) -> "E2BSandbox":
         """Reconnect to an existing (possibly paused) E2B sandbox by id.
@@ -256,7 +265,25 @@ class E2BSandbox:
             cached = cls._registry.get(raw)
             if cached is not None:
                 return cached
-            sbx = await AsyncSandbox.connect(raw, api_key=cls._api_key())
+        # Connect OUTSIDE the registry lock (double-checked below):
+        # AsyncSandbox.connect auto-resumes a paused microVM and can hang on
+        # the E2B control plane — holding the class lock during that hang
+        # stalled every other sandbox operation (total agent deadlock).
+        try:
+            sbx = await asyncio.wait_for(
+                AsyncSandbox.connect(raw, api_key=cls._api_key()),
+                timeout=cls._CONNECT_TIMEOUT,
+            )
+        except asyncio.TimeoutError as exc:
+            raise RuntimeError(
+                f"E2B connect to {raw} timed out after {cls._CONNECT_TIMEOUT}s"
+            ) from exc
+        async with cls._registry_lock:
+            cached = cls._registry.get(raw)
+            if cached is not None:
+                # Another coroutine won the race — drop our duplicate client
+                # handle (harmless: it is an API client, not the VM itself).
+                return cached
             wrapper = cls(sbx)
             cls._registry[raw] = wrapper
         logger.info("E2BSandbox reconnected: %s", wrapper.id)
@@ -281,7 +308,10 @@ class E2BSandbox:
         the reconnect builds a fresh one instead of touching a stale handle.
         """
         try:
-            await self._sbx.pause()
+            await asyncio.wait_for(self._sbx.pause(), timeout=self._PAUSE_TIMEOUT)
+        except asyncio.TimeoutError:
+            logger.warning("E2BSandbox.pause(%s) timed out after %ss", self.id, self._PAUSE_TIMEOUT)
+            return False
         except Exception as exc:
             logger.warning("E2BSandbox.pause(%s) failed: %s", self.id, exc)
             return False
@@ -302,8 +332,11 @@ class E2BSandbox:
             if self._bootstrapped:
                 # keepalive only — cheap
                 try:
-                    await self._sbx.set_timeout(
-                        max(60, int(get_settings().e2b_sandbox_timeout or 3600))
+                    await asyncio.wait_for(
+                        self._sbx.set_timeout(
+                            max(60, int(get_settings().e2b_sandbox_timeout or 3600))
+                        ),
+                        timeout=self._SET_TIMEOUT_CALL,
                     )
                 except Exception:
                     pass
@@ -326,8 +359,11 @@ class E2BSandbox:
     async def _bootstrap(self) -> None:
         settings = get_settings()
         try:
-            await self._sbx.set_timeout(
-                max(60, int(settings.e2b_sandbox_timeout or 3600))
+            await asyncio.wait_for(
+                self._sbx.set_timeout(
+                    max(60, int(settings.e2b_sandbox_timeout or 3600))
+                ),
+                timeout=self._SET_TIMEOUT_CALL,
             )
         except Exception:
             pass

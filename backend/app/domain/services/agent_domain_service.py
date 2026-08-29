@@ -258,34 +258,72 @@ class AgentDomainService:
                         session_id,
                     )
                 else:
-                    if session.status != SessionStatus.RUNNING or task is None:
-                        task = await self._create_task(session)
-                        if not task:
-                            raise RuntimeError("Failed to create task")
+                    async def _setup_and_start() -> None:
+                        """Create the task, queue the message, start the agent.
 
-                    assert task is not None, "task must not be None after creation guard"
-                    await self._session_repository.update_latest_message(session_id, message, timestamp or datetime.now())
+                        Runs under asyncio.shield() below: sandbox bootstrap
+                        (first-boot apt install can take up to 7 minutes) must
+                        SURVIVE an SSE client disconnect. Without the shield a
+                        disconnect during bootstrap cancelled the whole setup,
+                        session.task_id was never saved, the queued message was
+                        orphaned and the task silently never ran.
+                        """
+                        nonlocal task
+                        if session.status != SessionStatus.RUNNING or task is None:
+                            task = await self._create_task(session)
+                            if not task:
+                                raise RuntimeError("Failed to create task")
 
-                    message_event = MessageEvent(
-                        message=message,
-                        role="user",
-                        attachments=[
-                            FileInfo(
-                                file_id=attachment.get("file_id"),
-                                filename=attachment.get("filename"),
-                                content_type=attachment.get("content_type"),
-                                size=attachment.get("size"),
-                            )
-                            for attachment in attachments
-                        ] if attachments else None
-                    )
+                        assert task is not None, "task must not be None after creation guard"
+                        await self._session_repository.update_latest_message(session_id, message, timestamp or datetime.now())
 
+                        message_event = MessageEvent(
+                            message=message,
+                            role="user",
+                            attachments=[
+                                FileInfo(
+                                    file_id=attachment.get("file_id"),
+                                    filename=attachment.get("filename"),
+                                    content_type=attachment.get("content_type"),
+                                    size=attachment.get("size"),
+                                )
+                                for attachment in attachments
+                            ] if attachments else None
+                        )
+
+                        event_id = await task.input_stream.put(message_event.model_dump_json())
+                        message_event.id = event_id
+                        await self._session_repository.add_event(session_id, message_event)
+
+                        await task.run()
+
+                    await asyncio.shield(_setup_and_start())
+                    logger.debug(f"Put message into Session {session_id}'s event queue: {message[:50]}...")
+            elif task is None and session.latest_message and session.status not in (SessionStatus.COMPLETED, SessionStatus.WAITING):
+                # Re-subscribe with no new message, but the session has an
+                # unprocessed user message and NO live task — the original
+                # SSE client disconnected during task setup (shielded setup
+                # may still have been mid-bootstrap, or was killed by an old
+                # unshielded build). Rebuild the task and re-queue the last
+                # user message so the work is not lost.
+                logger.warning(
+                    "[Recovery] Session %s: no live task but unprocessed user "
+                    "message found — rebuilding task and re-queuing", session_id,
+                )
+                last_message = session.latest_message
+
+                async def _recover() -> None:
+                    nonlocal task
+                    task = await self._create_task(session)
+                    if not task:
+                        raise RuntimeError("Failed to create task during recovery")
+                    message_event = MessageEvent(message=last_message, role="user")
                     event_id = await task.input_stream.put(message_event.model_dump_json())
                     message_event.id = event_id
                     await self._session_repository.add_event(session_id, message_event)
-
                     await task.run()
-                    logger.debug(f"Put message into Session {session_id}'s event queue: {message[:50]}...")
+
+                await asyncio.shield(_recover())
             
             logger.info(f"Session {session_id} started")
             logger.debug(f"Session {session_id} task: {task}")
