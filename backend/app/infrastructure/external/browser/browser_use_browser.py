@@ -36,6 +36,12 @@ class BrowserUseBrowser:
         # Targets that already have the console-capture init script registered
         # via Page.addScriptToEvaluateOnNewDocument (avoids duplicate scripts).
         self._console_capture_targets: set = set()
+        # Signature (frozen tuple) of the interactive-element list from the
+        # most recent observation — used to tell the model whether a click
+        # VISIBLY changed the page (menu opened/closed, modal, new items),
+        # not just whether the URL changed. browser-use exposes the same
+        # signal implicitly via its DOM snapshot diffing.
+        self._last_elements_signature: Optional[tuple] = None
 
     # ------------------------------------------------------------------
     # Session lifecycle
@@ -896,6 +902,11 @@ class BrowserUseBrowser:
                     f"... (truncated, showing first {self._MAX_INTERACTIVE_ELEMENTS} of {len(selector_map)} elements — use coordinates or scroll to reach others)"
                 )
 
+            # Element-diff baseline: browser_view is the agent's canonical
+            # observation, so the next click compares against THIS state
+            # (set AFTER the empty-snapshot retry so the baseline is final).
+            self._last_elements_signature = tuple(interactive_elements)
+
             # Build tab summary so the agent always knows which tabs are open
             # and can use browser_switch_tab instead of browser_navigate
             tabs_info = []
@@ -941,6 +952,11 @@ class BrowserUseBrowser:
             # agent immediately reads the page it landed on — no extra
             # browser_view round-trip, no acting blind on an unfamiliar site.
             observed = await self._observe_page_state(session, include_content=True)
+            # New page → reset the element-diff baseline to THIS state so the
+            # next click's change-detection compares against the right page.
+            self._last_elements_signature = tuple(
+                observed.get("interactive_elements") or []
+            )
             return ToolResult(success=True, data=observed)
         except Exception as exc:
             return ToolResult(success=False, message=f"Failed to navigate to {url}: {exc}")
@@ -1037,7 +1053,27 @@ class BrowserUseBrowser:
                         observed = await self._observe_page_state(
                             session2, include_content=navigated
                         )
-                        observed["page_changed"] = navigated
+                        # Element-diff awareness: menus/modals change the
+                        # element list WITHOUT changing the URL. Telling the
+                        # model "no visible change" stops blind re-clicks on
+                        # toggle widgets (observed live: 10 identical clicks
+                        # on a dropdown trigger that toggled itself shut).
+                        els = observed.get("interactive_elements") or []
+                        els_sig = tuple(els)
+                        elements_changed = (
+                            self._last_elements_signature is not None
+                            and els_sig != self._last_elements_signature
+                        )
+                        self._last_elements_signature = els_sig
+                        observed["page_changed"] = navigated or elements_changed
+                        if not navigated and not elements_changed:
+                            observed["note"] = (
+                                "No visible change after this click. The element "
+                                "may have toggled something back shut, or it "
+                                "needs a different interaction. Do NOT repeat "
+                                "the same click — re-observe or change strategy "
+                                "(e.g. browser_smart_select for dropdowns)."
+                            )
                         return ToolResult(
                             success=True,
                             message=f"Clicked element {index} via [{strategy}]",
@@ -1241,6 +1277,11 @@ class BrowserUseBrowser:
             target_id = target._target_id
             await session.on_SwitchTabEvent(SwitchTabEvent(target_id=target_id))
             await asyncio.sleep(0.3)
+            # Different tab → the element-diff baseline from the old tab is
+            # stale; clear it so the next click's change detection starts
+            # fresh (no false "no visible change" notes across tabs).
+            self._cached_page = None  # force re-resolve against the new focus
+            self._last_elements_signature = None
             try:
                 url = await target.get_url()
             except Exception:

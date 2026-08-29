@@ -1,0 +1,293 @@
+"""Unit tests for the adaptive-loop instrumentation ported from browser-use.
+
+Covers (see agents/loop_detector.py + BaseAgent.execute()):
+  1. ActionLoopDetector — hash stability, exempt tools, escalation 5/8/12,
+     result-stagnation, window trimming.
+  2. execute() injections — repetition nudges, failure-budget annotations,
+     BUDGET WARNING at >=75%, LAST ROUNDS wrap-up, user-visible loop event.
+"""
+
+import pytest
+from unittest.mock import AsyncMock
+
+from langchain.messages import AIMessage, HumanMessage, ToolMessage
+
+from app.domain.models.tool_result import ToolResult
+from app.domain.models.event import MessageEvent, ErrorEvent
+from app.domain.services.agents.execution import ExecutionAgent
+from app.domain.services.agents.loop_detector import (
+    ActionLoopDetector,
+    compute_action_hash,
+)
+
+# ───────────────────────── 1. ActionLoopDetector ─────────────────────────
+
+
+def test_action_hash_is_stable_and_brief_insensitive():
+    h1 = compute_action_hash("browser_click", {"index": 5})
+    h2 = compute_action_hash("browser_click", {"index": 5, "brief": "klik tombol"})
+    h3 = compute_action_hash("browser_click", {"index": 5})
+    assert h1 == h2 == h3
+    assert h1 != compute_action_hash("browser_click", {"index": 6})
+    # whitespace noise collapsed
+    assert compute_action_hash("x", {"t": "a  b"}) == compute_action_hash("x", {"t": "a b"})
+
+
+def test_exempt_tools_are_not_tracked():
+    d = ActionLoopDetector()
+    for _ in range(10):
+        d.record_action("browser_view", {})
+    assert d.max_repetition_count == 0
+    assert d.get_nudge_message() is None
+
+
+def test_nudge_escalation_5_8_12():
+    d = ActionLoopDetector()
+    for _ in range(5):
+        d.record_action("browser_click", {"index": 3})
+    msg = d.get_nudge_message()
+    assert msg and "similar action" in msg
+
+    for _ in range(3):  # total 8
+        d.record_action("browser_click", {"index": 3})
+    assert "LOOP WARNING" in d.get_nudge_message()
+
+    for _ in range(4):  # total 12
+        d.record_action("browser_click", {"index": 3})
+    assert "LOOP ALERT" in d.get_nudge_message()
+
+
+def test_result_stagnation_detection():
+    d = ActionLoopDetector()
+    for i in range(4):
+        d.record_action("browser_click", {"index": i})
+        d.record_result("browser_click", "identical-result")
+    msg = d.get_nudge_message()
+    assert msg and "no effect" in msg
+
+
+def test_changing_results_are_not_stagnation():
+    d = ActionLoopDetector()
+    for i in range(6):
+        d.record_action("browser_click", {"index": i})
+        d.record_result("browser_click", f"result-{i}")
+    assert d.get_nudge_message() is None
+
+
+def test_window_trims_to_size():
+    d = ActionLoopDetector(window_size=5)
+    for i in range(20):
+        d.record_action("shell_exec", {"cmd": f"x{i % 3}"})
+    assert len(d.recent_action_hashes) == 5
+
+
+# ───────────────────────── 2. execute() injections ───────────────────────
+
+
+class _FakeToolkit:
+    name = "fake"
+
+
+class _FakeTool:
+    """Fails or succeeds on demand so we can drive failure streaks."""
+
+    def __init__(self, name: str, success: bool):
+        self.name = name
+        self.success = success
+        self.toolkit = _FakeToolkit()
+
+    async def ainvoke(self, tool_call):
+        artifact = ToolResult(success=self.success, message="boom" if not self.success else "ok")
+        content = artifact.model_dump_json()
+        return ToolMessage(tool_call_id=tool_call["id"], name=self.name, content=content, artifact=artifact)
+
+
+def _make_agent(max_iterations: int = 10) -> ExecutionAgent:
+    agent = ExecutionAgent.__new__(ExecutionAgent)
+    agent._deferred_attachments = []
+    agent._last_narration_norm = None
+    agent._suppressed_notify_ids = set()
+    agent._user_request_words = None
+    agent._silent_activities = []
+    agent._silent_tool_count = 0
+    agent._narration_assist_count = 0
+    agent._narration_lang = "en"
+    agent.toolkits = []
+    agent.max_iterations = max_iterations
+    return agent
+
+
+def _click_msg(round_id: int) -> AIMessage:
+    return AIMessage(
+        content="",
+        tool_calls=[{
+            "name": "browser_click",
+            "args": {"index": 3},
+            "id": f"call-{round_id}",
+            "type": "tool_call",
+        }],
+    )
+
+
+@pytest.mark.asyncio
+async def test_repetition_nudge_and_failure_annotation_injected():
+    """Model retries the same failing click forever → the conversation must
+    receive the loop nudge + failure-budget annotation; the user must see the
+    self-correction progress line once repetition hits 8."""
+    agent = _make_agent(max_iterations=10)
+    agent.ask = AsyncMock(return_value=_click_msg(0))
+
+    captured: list = []
+
+    async def _fake_ask(messages, format=None):
+        captured.append(list(messages))
+        # Rounds 0..8 keep retrying; round 9 wraps up.
+        if len(captured) < 9:
+            return _click_msg(len(captured))
+        return AIMessage(content='{"success": true, "result": "done"}')
+
+    agent.ask_with_messages = AsyncMock(side_effect=_fake_ask)
+    agent.get_tool = lambda name: _FakeTool("browser_click", success=False)
+
+    events = [e async for e in agent.execute("do the thing")]
+
+    # Failure annotation appears from the 2nd failed round onwards.
+    annotated = [m for m in captured[1] if isinstance(m, ToolMessage) and "SYSTEM NOTE: this action failed" in str(m.content)]
+    assert annotated, "failure-budget annotation missing on repeated failures"
+
+    # Repetition nudge: 5 identical calls by round 4 → NOTE in round-4 ask.
+    round4 = " ".join(str(getattr(m, "content", "")) for m in captured[4])
+    assert "similar action" in round4
+
+    # Escalation: 8 identical calls by round 7 → LOOP WARNING + user-visible event.
+    round7 = " ".join(str(getattr(m, "content", "")) for m in captured[7])
+    assert "LOOP WARNING" in round7
+    assert any(
+        isinstance(e, MessageEvent) and e.is_progress and "repeated-action loop" in e.message
+        for e in events
+    )
+
+    # Task finished with the final JSON (not the hard iteration error).
+    assert not any(isinstance(e, ErrorEvent) and "Maximum iteration" in e.error for e in events)
+
+
+@pytest.mark.asyncio
+async def test_budget_warning_and_last_rounds_injected():
+    """4-round budget → BUDGET WARNING + LAST ROUNDS appear at rounds 3-4."""
+    agent = _make_agent(max_iterations=4)
+    agent.ask = AsyncMock(return_value=_click_msg(0))
+
+    captured: list = []
+
+    async def _fake_ask(messages, format=None):
+        captured.append(list(messages))
+        if len(captured) < 3:
+            return _click_msg(len(captured))
+        return AIMessage(content='{"success": true, "result": "done"}')
+
+    agent.ask_with_messages = AsyncMock(side_effect=_fake_ask)
+    agent.get_tool = lambda name: _FakeTool("browser_click", success=True)
+
+    events = [e async for e in agent.execute("do the thing")]
+
+    # Round 3 = 3/4 = 75% budget.
+    round3 = " ".join(str(getattr(m, "content", "")) for m in captured[2])
+    assert "BUDGET WARNING" in round3
+    assert "LAST ROUNDS" in round3
+
+    # No loop nudge for healthy distinct actions (index changes each round
+    # via call id; args identical though — that's fine, budget test only).
+    assert not any(isinstance(e, ErrorEvent) for e in events)
+
+
+@pytest.mark.asyncio
+async def test_success_resets_failure_streak():
+    """Alternating success/failure rounds never accumulate a streak →
+    no STRATEGY CHANGE advisory ever appears."""
+    agent = _make_agent(max_iterations=10)
+    agent.ask = AsyncMock(return_value=_click_msg(0))
+
+    captured: list = []
+
+    async def _fake_ask(messages, format=None):
+        captured.append(list(messages))
+        if len(captured) < 6:
+            return _click_msg(len(captured))
+        return AIMessage(content='{"success": true, "result": "done"}')
+
+    agent.ask_with_messages = AsyncMock(side_effect=_fake_ask)
+
+    calls = {"n": 0}
+
+    class _Alternating:
+        name = "browser_click"
+        toolkit = _FakeToolkit()
+
+        async def ainvoke(self, tool_call):
+            calls["n"] += 1
+            ok = calls["n"] % 2 == 0
+            artifact = ToolResult(success=ok, message="ok" if ok else "boom")
+            return ToolMessage(tool_call_id=tool_call["id"], name=self.name,
+                               content=artifact.model_dump_json(), artifact=artifact)
+
+    agent.get_tool = lambda name: _Alternating()
+
+    [e async for e in agent.execute("do the thing")]
+
+    all_messages = [str(getattr(m, "content", "")) for batch in captured for m in batch]
+    assert not any("STRATEGY CHANGE REQUIRED" in m for m in all_messages)
+    # With perfect alternation the streak never accumulates (each success
+    # resets it), so NO failure annotation is ever attached either — the
+    # annotation only fires when a call fails while already inside a streak.
+    assert not any("SYSTEM NOTE: this action failed" in m for m in all_messages)
+
+
+@pytest.mark.asyncio
+async def test_strategy_change_after_consecutive_failures():
+    """3 consecutive all-failed rounds (default budget) → STRATEGY CHANGE
+    advisory injected so the model is told to switch approach."""
+    agent = _make_agent(max_iterations=10)
+    agent.ask = AsyncMock(return_value=_click_msg(0))
+
+    captured: list = []
+
+    async def _fake_ask(messages, format=None):
+        captured.append(list(messages))
+        if len(captured) < 5:
+            return _click_msg(len(captured))
+        return AIMessage(content='{"success": true, "result": "done"}')
+
+    agent.ask_with_messages = AsyncMock(side_effect=_fake_ask)
+    agent.get_tool = lambda name: _FakeTool("browser_click", success=False)
+
+    [e async for e in agent.execute("do the thing")]
+
+    # Round 3's ask happens after 3 failed rounds (0,1,2) → advisory present.
+    round3 = " ".join(str(getattr(m, "content", "")) for m in captured[3])
+    assert "STRATEGY CHANGE REQUIRED" in round3
+
+
+@pytest.mark.asyncio
+async def test_advisory_arrives_as_human_message_after_tool_messages():
+    """Message-ordering contract: nudges are appended AFTER the round's
+    ToolMessages (OpenAI/Anthropic-compatible ordering)."""
+    agent = _make_agent(max_iterations=10)
+    agent.ask = AsyncMock(return_value=_click_msg(0))
+
+    captured: list = []
+
+    async def _fake_ask(messages, format=None):
+        captured.append(list(messages))
+        if len(captured) < 6:
+            return _click_msg(len(captured))
+        return AIMessage(content='{"success": true, "result": "done"}')
+
+    agent.ask_with_messages = AsyncMock(side_effect=_fake_ask)
+    agent.get_tool = lambda name: _FakeTool("browser_click", success=False)
+
+    [e async for e in agent.execute("do the thing")]
+
+    # Round 4 (5 identical failures) must end with the HumanMessage nudge.
+    last_batch = captured[4]
+    assert isinstance(last_batch[-1], HumanMessage)
+    assert any(isinstance(m, ToolMessage) for m in last_batch[:-1])

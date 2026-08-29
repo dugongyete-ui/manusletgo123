@@ -508,6 +508,26 @@ class BaseAgent(ABC):
     async def execute(self, request: Union[str, list], format: Optional[str] = None) -> AsyncGenerator[BaseEvent, None]:
         format = format or self.format
         message = await self.ask(request, format)
+
+        # ── Adaptive-loop instrumentation (ported from browser-use) ──────
+        # The flat tool loop below lets a model burn its entire iteration
+        # budget retrying one failing action (observed live: 25 identical
+        # el.click() retries on a React dropdown until "Maximum iteration
+        # count reached"). browser-use solves this with soft signals fed
+        # back into the conversation; we port the same three:
+        #   1. action repetition / stagnation nudges (ActionLoopDetector)
+        #   2. consecutive-failure budget annotated on failed results
+        #   3. step-budget warnings (>=75% used / last rounds)
+        from app.domain.services.agents.loop_detector import ActionLoopDetector
+
+        loop_detector = ActionLoopDetector()
+        _consecutive_failed_rounds = 0
+        _settings = get_settings()
+        # Display-only budget for the failure annotations (browser-use uses
+        # settings.max_failures the same way). Hard stops stay upstream in
+        # the plan-act flow, which already tracks step-level failures.
+        _failure_budget = max(1, int(_settings.max_consecutive_failures))
+
         for iteration in range(self.max_iterations):
             if not message.tool_calls:
                 break
@@ -533,6 +553,8 @@ class BaseAgent(ABC):
                     is_progress=True,
                     role="assistant",
                 )
+            _round_had_success = False
+            _round_had_failure = False
             tool_responses = []
             for tool_call in message.tool_calls:
                 function_name = tool_call["name"]
@@ -595,6 +617,36 @@ class BaseAgent(ABC):
 
                 tool_result = await self.invoke_tool(tool, tool_call)
 
+                # ── Adaptive-loop bookkeeping ──────────────────────────
+                # A call "failed" when its ToolResult carries success=False
+                # or when invoke_tool returned an exception payload (no
+                # artifact). Feeds the failure budget + loop detector.
+                _artifact = getattr(tool_result, "artifact", None)
+                _call_failed = _artifact is None or (
+                    hasattr(_artifact, "success") and _artifact.success is False
+                )
+                # Signature captured BEFORE any annotation is appended below,
+                # so byte-identical failing results still hash identically
+                # (stagnation detection depends on this).
+                _content_signature = tool_result.content
+                if _call_failed:
+                    _round_had_failure = True
+                    if _consecutive_failed_rounds >= 1:
+                        # browser-use style budget on the feedback itself so
+                        # the model knows how deep it is in a failure streak.
+                        tool_result.content = (
+                            f"{tool_result.content}\n\n"
+                            f"[SYSTEM NOTE: this action failed. Failed action "
+                            f"rounds so far: {_consecutive_failed_rounds}/"
+                            f"{_failure_budget}. Repeating identical arguments "
+                            f"will not help - change strategy or pick a "
+                            f"different tool.]"
+                        )
+                else:
+                    _round_had_success = True
+                loop_detector.record_action(function_name, function_args)
+                loop_detector.record_result(function_name, _content_signature)
+
                 # Generate event after tool call
                 yield ToolEvent(
                     status=ToolStatus.CALLED,
@@ -608,11 +660,91 @@ class BaseAgent(ABC):
 
                 tool_responses.append(tool_result)
 
+            # Round-level failure accounting (browser-use counts failed
+            # single-action steps; any success resets the streak).
+            if _round_had_failure and not _round_had_success:
+                _consecutive_failed_rounds += 1
+            elif _round_had_success:
+                _consecutive_failed_rounds = 0
+
             # Periodically compact browser tool results mid-step to prevent
             # "Payload Too Large" errors on pages with hundreds of elements.
             if (iteration + 1) % self._COMPACT_EVERY_N_ITERATIONS == 0:
                 logger.debug(f"Mid-step compact at iteration {iteration + 1}")
                 await self.compact_memory()
+
+            # ── Adaptive-loop context injections (browser-use nudges) ──
+            # Soft advisories appended AFTER the ToolMessages (valid message
+            # ordering for OpenAI/Anthropic) so the model sees them on its
+            # very next decision — this is what makes the loop "aware".
+            _advisories: List[str] = []
+            _nudge = loop_detector.get_nudge_message()
+            if _nudge:
+                _advisories.append(_nudge)
+                if loop_detector.max_repetition_count >= 8:
+                    # Let the user see the self-correction happening live.
+                    yield MessageEvent(
+                        message=(
+                            f"Detected a repeated-action loop "
+                            f"({loop_detector.max_repetition_count}x) - "
+                            f"switching strategy."
+                        ),
+                        is_progress=True,
+                        role="assistant",
+                    )
+
+            # Step-budget awareness (browser-use _inject_budget_warning).
+            _rounds_used = iteration + 1
+            if (
+                self.max_iterations > 0
+                and _rounds_used < self.max_iterations
+                and _rounds_used / self.max_iterations >= 0.75
+            ):
+                _remaining = self.max_iterations - _rounds_used
+                _advisories.append(
+                    f"BUDGET WARNING: you have used {_rounds_used}/"
+                    f"{self.max_iterations} action rounds "
+                    f"({int(_rounds_used / self.max_iterations * 100)}%). "
+                    f"{_remaining} rounds remain. If the step cannot be "
+                    f"fully completed in the remaining budget, prioritise "
+                    f"consolidating what you already have and finish with an "
+                    f"honest partial result - partial results are far more "
+                    f"valuable than exhausting the budget with retries."
+                )
+
+            # Last-rounds wrap-up (browser-use _force_done_after_last_step,
+            # adapted: we ask for the final result JSON instead of a done()
+            # tool call, matching this executor's output contract).
+            if iteration >= self.max_iterations - 2:
+                _advisories.append(
+                    "LAST ROUNDS: you are at the end of this step's action "
+                    "budget. Do NOT start anything new. Unless one final "
+                    "action completes the step, stop calling tools and emit "
+                    "your final result now, summarising what was accomplished "
+                    "and what remains incomplete."
+                )
+
+            # Strategy-change advisory on failure streaks (browser-use's
+            # replan nudge, in-loop because our replanning lives one level
+            # up in the plan-act flow).
+            if _consecutive_failed_rounds >= _failure_budget:
+                _advisories.append(
+                    f"STRATEGY CHANGE REQUIRED: {_consecutive_failed_rounds} "
+                    "consecutive action rounds have failed. The current "
+                    "approach is not working. Choose a fundamentally "
+                    "different method (different tool, different element, "
+                    "JavaScript or shell fallback) - or conclude the step "
+                    "honestly with the data collected so far."
+                )
+
+            if _advisories:
+                tool_responses.append(HumanMessage(content="\n\n".join(_advisories)))
+                logger.info(
+                    "Adaptive-loop advisory injected (round %d/%d): %s",
+                    _rounds_used,
+                    self.max_iterations,
+                    " | ".join(a.splitlines()[0][:80] for a in _advisories),
+                )
 
             message = await self.ask_with_messages(tool_responses)
         else:
