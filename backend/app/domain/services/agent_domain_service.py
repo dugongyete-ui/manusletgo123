@@ -29,6 +29,14 @@ class AgentDomainService:
     # session (warmup task vs first-chat _create_task race condition — M1).
     _session_locks: dict[str, asyncio.Lock] = {}
 
+    # Per-session in-flight FIRST-MESSAGE setups (shielded _setup_and_start
+    # coroutines). Keyed by session_id so a reconnecting SSE client (page
+    # reload during the 1–7 min sandbox first-boot) can wait for the running
+    # setup and subscribe to the task it publishes, instead of either (a)
+    # instantly completing with zero events (the "empty chat after reload"
+    # bug) or (b) re-queueing the message and double-processing it.
+    _inflight_setups: dict[str, asyncio.Task] = {}
+
     def _get_session_lock(self, session_id: str) -> asyncio.Lock:
         """Return (creating if needed) the asyncio.Lock for a given session."""
         if session_id not in self._session_locks:
@@ -258,6 +266,59 @@ class AgentDomainService:
                         session_id,
                     )
                 else:
+                    # ── Persist the user message IMMEDIATELY (fast path) ────────
+                    # _create_task() below can block for 1–7 minutes on the
+                    # sandbox first boot (E2B apt-get install). The message and
+                    # its latest_message pointer must reach the DB BEFORE that
+                    # so a page reload (restoreSession → GET /sessions/{id})
+                    # renders the user's message right away, and the reconnect
+                    # handler below can find an unprocessed message to recover.
+                    # The event id uses the Redis-stream format "<millis>-0" so
+                    # it stays a VALID reconnect cursor for output_stream.get()
+                    # (an id Redis cannot parse is reset to "0", replaying the
+                    # whole stream and duplicating every bubble in the UI).
+                    import time as _time
+                    await self._session_repository.update_latest_message(
+                        session_id, message, timestamp or datetime.now()
+                    )
+                    message_event = MessageEvent(
+                        message=message,
+                        role="user",
+                        attachments=[
+                            FileInfo(
+                                file_id=attachment.get("file_id"),
+                                filename=attachment.get("filename"),
+                                content_type=attachment.get("content_type"),
+                                size=attachment.get("size"),
+                            )
+                            for attachment in attachments
+                        ] if attachments else None,
+                    )
+                    message_event.id = f"{int(_time.time() * 1000)}-0"
+                    await self._session_repository.add_event(session_id, message_event)
+
+                    # If a previous first-message setup is STILL in flight
+                    # (user reloaded and sent another message during sandbox
+                    # boot), wait for it so this message joins the same task
+                    # instead of racing it through _create_task.
+                    inflight = self._inflight_setups.get(session_id)
+                    if inflight is not None and not inflight.done():
+                        logger.info(
+                            "[Setup] Session %s: previous setup still in flight — "
+                            "waiting before queueing the new message", session_id,
+                        )
+                        try:
+                            await asyncio.shield(inflight)
+                        except Exception as exc:
+                            logger.warning(
+                                "[Setup] Session %s: in-flight setup failed (%s) — "
+                                "proceeding with a fresh one", session_id, exc,
+                            )
+                        # Re-fetch: the setup saved session.task_id to the DB
+                        # AFTER this generator loaded its (now stale) copy.
+                        session = await self._session_repository.find_by_id_and_user_id(session_id, user_id)
+                        task = await self._get_task(session)
+
                     async def _setup_and_start() -> None:
                         """Create the task, queue the message, start the agent.
 
@@ -269,61 +330,74 @@ class AgentDomainService:
                         orphaned and the task silently never ran.
                         """
                         nonlocal task
-                        if session.status != SessionStatus.RUNNING or task is None:
-                            task = await self._create_task(session)
-                            if not task:
-                                raise RuntimeError("Failed to create task")
+                        try:
+                            if session.status != SessionStatus.RUNNING or task is None:
+                                task = await self._create_task(session)
+                                if not task:
+                                    raise RuntimeError("Failed to create task")
 
-                        assert task is not None, "task must not be None after creation guard"
-                        await self._session_repository.update_latest_message(session_id, message, timestamp or datetime.now())
+                            assert task is not None, "task must not be None after creation guard"
+                            event_id = await task.input_stream.put(message_event.model_dump_json())
+                            message_event.id = event_id
 
-                        message_event = MessageEvent(
-                            message=message,
-                            role="user",
-                            attachments=[
-                                FileInfo(
-                                    file_id=attachment.get("file_id"),
-                                    filename=attachment.get("filename"),
-                                    content_type=attachment.get("content_type"),
-                                    size=attachment.get("size"),
-                                )
-                                for attachment in attachments
-                            ] if attachments else None
+                            await task.run()
+                        finally:
+                            # Registry cleanup must live INSIDE the coroutine:
+                            # the awaiting generator may be cancelled at any
+                            # time (client disconnect) while this shielded
+                            # setup keeps running in the background.
+                            if self._inflight_setups.get(session_id) is setup_task:
+                                self._inflight_setups.pop(session_id, None)
+
+                    setup_task = asyncio.ensure_future(_setup_and_start())
+                    self._inflight_setups[session_id] = setup_task
+                    await asyncio.shield(setup_task)
+                    logger.debug(f"Put message into Session {session_id}'s event queue: {message[:50]}...")
+            elif task is None and session.latest_message and session.status not in (SessionStatus.COMPLETED, SessionStatus.WAITING):
+                # Re-subscribe with no new message. Two sub-cases:
+                #  1. The first-message setup is STILL RUNNING in the background
+                #     (page reload during the 1–7 min sandbox first boot; the
+                #     shielded setup survived the disconnect). Wait for it and
+                #     subscribe to the task it publishes — the queued message
+                #     is already owned by that setup, re-queueing would
+                #     duplicate the work (two replies, two titles).
+                #  2. No live setup (old build lost it, or the process
+                #     restarted): rebuild the task and re-queue the last user
+                #     message so the work is not lost.
+                inflight = self._inflight_setups.get(session_id)
+                if inflight is not None and not inflight.done():
+                    logger.info(
+                        "[Reconnect] Session %s: first-message setup still in flight — "
+                        "waiting for its task, then subscribing", session_id,
+                    )
+                    await asyncio.shield(inflight)
+                    # Re-fetch the session — the in-flight setup saved
+                    # session.task_id AFTER this generator loaded its stale copy.
+                    session = await self._session_repository.find_by_id_and_user_id(session_id, user_id)
+                    task = await self._get_task(session)
+                    if task is None:
+                        raise RuntimeError(
+                            "First-message setup completed but published no task"
                         )
+                else:
+                    logger.warning(
+                        "[Recovery] Session %s: no live task but unprocessed user "
+                        "message found — rebuilding task and re-queuing", session_id,
+                    )
+                    last_message = session.latest_message
 
+                    async def _recover() -> None:
+                        nonlocal task
+                        task = await self._create_task(session)
+                        if not task:
+                            raise RuntimeError("Failed to create task during recovery")
+                        message_event = MessageEvent(message=last_message, role="user")
                         event_id = await task.input_stream.put(message_event.model_dump_json())
                         message_event.id = event_id
                         await self._session_repository.add_event(session_id, message_event)
-
                         await task.run()
 
-                    await asyncio.shield(_setup_and_start())
-                    logger.debug(f"Put message into Session {session_id}'s event queue: {message[:50]}...")
-            elif task is None and session.latest_message and session.status not in (SessionStatus.COMPLETED, SessionStatus.WAITING):
-                # Re-subscribe with no new message, but the session has an
-                # unprocessed user message and NO live task — the original
-                # SSE client disconnected during task setup (shielded setup
-                # may still have been mid-bootstrap, or was killed by an old
-                # unshielded build). Rebuild the task and re-queue the last
-                # user message so the work is not lost.
-                logger.warning(
-                    "[Recovery] Session %s: no live task but unprocessed user "
-                    "message found — rebuilding task and re-queuing", session_id,
-                )
-                last_message = session.latest_message
-
-                async def _recover() -> None:
-                    nonlocal task
-                    task = await self._create_task(session)
-                    if not task:
-                        raise RuntimeError("Failed to create task during recovery")
-                    message_event = MessageEvent(message=last_message, role="user")
-                    event_id = await task.input_stream.put(message_event.model_dump_json())
-                    message_event.id = event_id
-                    await self._session_repository.add_event(session_id, message_event)
-                    await task.run()
-
-                await asyncio.shield(_recover())
+                    await asyncio.shield(_recover())
             
             logger.info(f"Session {session_id} started")
             logger.debug(f"Session {session_id} task: {task}")
