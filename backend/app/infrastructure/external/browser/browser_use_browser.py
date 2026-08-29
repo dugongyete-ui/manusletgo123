@@ -800,6 +800,40 @@ class BrowserUseBrowser:
     # Keeps LLM context payload manageable for complex pages (e.g. Facebook).
     _MAX_INTERACTIVE_ELEMENTS = 300
 
+    async def _observe_page_state(self, session, include_content: bool) -> dict:
+        """Serialise the page exactly the way the LLM "sees" it after an action.
+
+        This is the post-action awareness payload: current URL, page title and
+        the fresh interactive elements (indices may have shifted after a click
+        or navigation). When ``include_content`` is True the DOM text
+        representation is included too — used when the action changed the page
+        (navigation / submit), so the agent reads what a human would read.
+        Retries once on an empty snapshot (navigation race), same as view_page.
+        """
+        state = await session.get_browser_state_summary(include_screenshot=False)
+        if include_content:
+            repr_ = (state.dom_state.llm_representation() if state.dom_state is not None else "") or ""
+            if not repr_.strip():
+                await self._wait_for_page_ready(timeout=8.0)
+                await self._wait_for_dom_settle(timeout=1.0)
+                state = await session.get_browser_state_summary(include_screenshot=False)
+        selector_map = (state.dom_state.selector_map if state.dom_state is not None else None) or {}
+        elements = self._format_selector_map(selector_map)
+        if len(elements) > self._MAX_INTERACTIVE_ELEMENTS:
+            elements = elements[: self._MAX_INTERACTIVE_ELEMENTS]
+            elements.append(
+                f"... (truncated, showing first {self._MAX_INTERACTIVE_ELEMENTS} of {len(selector_map)} elements)"
+            )
+        content = ""
+        if include_content and state.dom_state is not None:
+            content = state.dom_state.llm_representation() or ""
+        return {
+            "url": state.url or "",
+            "title": state.title or "",
+            "interactive_elements": elements,
+            "content": content,
+        }
+
     async def view_page(self) -> ToolResult:
         """Return the current page content and interactive elements."""
         try:
@@ -874,24 +908,11 @@ class BrowserUseBrowser:
             await self._ensure_console_capture()
             await session.navigate_to(url)
             await self._wait_for_page_ready()
-            # navigate_to() completes before the DOM watchdog has serialised the new page,
-            # so _cached_selector_map is empty at this point.  Calling
-            # get_browser_state_summary() triggers DOM serialisation and populates the
-            # selector map so the caller immediately receives the correct element list.
-            state = await session.get_browser_state_summary(include_screenshot=False)
-            interactive_elements: List[str] = []
-            if state.dom_state is not None:
-                selector_map = state.dom_state.selector_map or {}
-                interactive_elements = self._format_selector_map(selector_map)
-                if len(interactive_elements) > self._MAX_INTERACTIVE_ELEMENTS:
-                    interactive_elements = interactive_elements[:self._MAX_INTERACTIVE_ELEMENTS]
-                    interactive_elements.append(
-                        f"... (truncated, showing first {self._MAX_INTERACTIVE_ELEMENTS} of {len(selector_map)} elements)"
-                    )
-            return ToolResult(
-                success=True,
-                data={"interactive_elements": interactive_elements},
-            )
+            # Return the full observed state (url/title/elements/content) so the
+            # agent immediately reads the page it landed on — no extra
+            # browser_view round-trip, no acting blind on an unfamiliar site.
+            observed = await self._observe_page_state(session, include_content=True)
+            return ToolResult(success=True, data=observed)
         except Exception as exc:
             return ToolResult(success=False, message=f"Failed to navigate to {url}: {exc}")
 
@@ -966,14 +987,39 @@ class BrowserUseBrowser:
                     pass  # Not a select or probe failed — fall through to click chain
 
                 # ── Manus-style 3-strategy fallback chain ────────────────────
+                try:
+                    pre_url = await page.get_url()
+                except Exception:
+                    pre_url = ""
                 ok, strategy = await self._click_with_fallback(element, index)
                 if ok:
                     logger.info("CLICK[%d] ✓ via [%s]", index, strategy)
                     await self._wait_for_dom_settle()
-                    return ToolResult(
-                        success=True,
-                        message=f"Clicked element {index} via [{strategy}]",
-                    )
+                    # Post-action awareness: show the agent what the click led
+                    # to (URL/title/fresh elements; full text when it navigated).
+                    try:
+                        session2 = await self._ensure_session()
+                        now_url = ""
+                        try:
+                            now_url = await (await self._get_current_page()).get_url()
+                        except Exception:
+                            pass
+                        navigated = bool(now_url) and now_url != pre_url
+                        observed = await self._observe_page_state(
+                            session2, include_content=navigated
+                        )
+                        observed["page_changed"] = navigated
+                        return ToolResult(
+                            success=True,
+                            message=f"Clicked element {index} via [{strategy}]",
+                            data=observed,
+                        )
+                    except Exception as obs_exc:
+                        logger.debug("post-click observe failed: %s", obs_exc)
+                        return ToolResult(
+                            success=True,
+                            message=f"Clicked element {index} via [{strategy}]",
+                        )
                 logger.warning("CLICK[%d] ✗ all strategies exhausted", index)
                 return ToolResult(success=False, message=f"Click failed for element {index}: {strategy}")
 
@@ -997,6 +1043,10 @@ class BrowserUseBrowser:
         """
         try:
             page = await self._get_current_page()
+            try:
+                pre_url = await page.get_url()
+            except Exception:
+                pre_url = ""
 
             if coordinate_x is not None and coordinate_y is not None:
                 # CDP click-to-focus then insertText
@@ -1075,6 +1125,24 @@ class BrowserUseBrowser:
                 logger.info("INPUT press_enter=True")
 
             await self._wait_for_dom_settle()
+            # press_enter usually submits a form / triggers a search — show the
+            # agent the resulting page state (full text when it navigated).
+            if press_enter and index is not None:
+                try:
+                    session2 = await self._ensure_session()
+                    now_url = ""
+                    try:
+                        now_url = await (await self._get_current_page()).get_url()
+                    except Exception:
+                        pass
+                    navigated = bool(now_url) and now_url != pre_url
+                    observed = await self._observe_page_state(
+                        session2, include_content=navigated
+                    )
+                    observed["page_changed"] = navigated
+                    return ToolResult(success=True, data=observed)
+                except Exception as obs_exc:
+                    logger.debug("post-input observe failed: %s", obs_exc)
             return ToolResult(success=True)
         except Exception as exc:
             logger.warning("INPUT[%s] ✗ %s", index, exc)

@@ -27,6 +27,7 @@ class BrowserToolkit(BaseToolkit):
     @tool(parse_docstring=True)
     async def browser_navigate(self, url: str) -> ToolResult:
         """Navigate browser to specified URL. Use when accessing new pages is needed.
+        The result includes the OBSERVED page right after load: url, title, all interactive elements, and the page text content — READ it before acting so you react to what the page actually shows.
         
         Args:
             url: Complete URL to visit. Must include protocol prefix.
@@ -50,6 +51,7 @@ class BrowserToolkit(BaseToolkit):
         coordinate_y: Optional[float] = None
     ) -> ToolResult:
         """Click on elements in the current browser page. Use when clicking page elements is needed.
+        On success the result carries the observed page state afterwards: url, title, page_changed flag, fresh interactive elements (and page text when the click navigated). Read it to see what your click actually did before the next action.
         
         Args:
             index: (Optional) Index number of the element to click
@@ -68,6 +70,7 @@ class BrowserToolkit(BaseToolkit):
         coordinate_y: Optional[float] = None
     ) -> ToolResult:
         """Overwrite text in editable elements on the current browser page. Use when filling content in input fields.
+        With press_enter=true the result includes the observed page state after the submit (url, title, fresh elements, page text when the page changed) — read it to see how the site responded.
         
         Args:
             index: (Optional) Index number of the element to overwrite text
