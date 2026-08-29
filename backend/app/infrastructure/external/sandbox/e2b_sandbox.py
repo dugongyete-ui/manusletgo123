@@ -491,7 +491,12 @@ class E2BSandbox:
             "/home/user/chrome-profile/SingletonCookie "
             "/home/user/chrome-profile/SingletonSocket; "
             f"env DISPLAY={_X_DISPLAY} nohup chromium --no-sandbox --disable-gpu "
-            "--disable-dev-shm-usage --renderer-process-limit=4 "
+            "--disable-dev-shm-usage --renderer-process-limit=2 "
+            # BackForwardCache keeps a frozen renderer per navigation alive in
+            # RAM — on a ~0.5 GB microVM that thrashes kswapd and stalls every
+            # CDP call. Disabling it trades a little back/forward speed for
+            # stable latency.
+            "--disable-features=BackForwardCache "
             "--window-size=1024,768 --restore-last-session "
             f"--remote-debugging-port={_CHROME_DEBUG_PORT} "
             "--remote-debugging-address=127.0.0.1 --remote-allow-origins=* "

@@ -153,9 +153,13 @@ class BrowserUseBrowser:
                 return self._cached_page
             logger.info("Cached page session is stale — re-attaching a fresh CDP session")
             self._cached_page = None
-        page = await session.get_current_page()
+        # get_current_page()/new_page() go through the CDP websocket (possibly
+        # via a remote proxy). When the browser VM stalls, the underlying CDP
+        # send can hang for minutes with no internal timeout — bound them so
+        # the tool call fails fast and the agent's retry budget kicks in.
+        page = await self._call_with_deadline(session.get_current_page(), timeout=30.0)
         if page is None:
-            page = await session.new_page()
+            page = await self._call_with_deadline(session.new_page(), timeout=30.0)
         self._cached_page = page
         return page
 
@@ -179,7 +183,11 @@ class BrowserUseBrowser:
     async def _get_cdp_session(self) -> CDPSession:
         """Return the CDPSession for the currently focused tab."""
         session = await self._ensure_session()
-        return await session.get_or_create_cdp_session()
+        # Bounded: get_or_create_cdp_session can stall indefinitely on a hung
+        # CDP websocket (same class of hang as get_current_page).
+        return await self._call_with_deadline(
+            session.get_or_create_cdp_session(), timeout=30.0
+        )
 
     async def _call_with_deadline(self, coro, timeout: float):
         """Await `coro` with a hard deadline, ABANDONING it on timeout.

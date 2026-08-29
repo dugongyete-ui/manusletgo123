@@ -120,6 +120,12 @@ class AgentTaskRunner(TaskRunner):
         # captured when a file_write / file_str_replace CALLING event arrives,
         # consumed when the matching CALLED event is enriched with content.
         self._file_old_by_call: Dict[str, str] = {}
+        # Circuit breaker for panel-preview screenshots: when the browser VM is
+        # under load each failed capture costs a full 10 s deadline. After a
+        # timeout, skip further attempts for a while so tool events keep
+        # flowing at full speed (the VNC takeover view still shows the page).
+        self._screenshot_skip_until: float = 0.0
+
         self._flow = PlanActFlow(
             self._agent_id,
             self._repository,
@@ -185,12 +191,20 @@ class AgentTaskRunner(TaskRunner):
         and return "" so the tool event still flows through immediately.
         """
         try:
+            import time as _time
+            if _time.monotonic() < self._screenshot_skip_until:
+                # A recent capture timed out — the browser is busy/thrashing;
+                # skip preview attempts until the breaker window expires.
+                return ""
             screenshot = await asyncio.wait_for(
                 self._browser.screenshot(), timeout=10.0
             )
         except asyncio.TimeoutError:
+            import time as _time
+            self._screenshot_skip_until = _time.monotonic() + 120.0
             logger.warning(
-                "Browser screenshot timed out (10s) — skipping panel preview"
+                "Browser screenshot timed out (10s) — skipping panel preview "
+                "for 120s (circuit breaker)"
             )
             return ""
         except Exception as e:
