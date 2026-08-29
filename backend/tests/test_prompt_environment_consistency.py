@@ -57,7 +57,10 @@ def test_summarize_prompt_formats_with_any_home():
     """SUMMARIZE_PROMPT resolves the summary path for the live sandbox."""
     e2b = SUMMARIZE_PROMPT.format(user_home="/home/user")
     assert "/home/user/summary_" in e2b
-    assert "/home/user/summary_persib_bandung.md" in e2b
+    # The example must stay GENERIC — the topic is a placeholder (<topic>),
+    # never a hard-coded deliverable name like a specific research subject.
+    assert "/home/user/summary_<topic>.md" in e2b
+    assert "persib" not in e2b.lower()
     assert "{user_home}" not in e2b
 
     replit = SUMMARIZE_PROMPT.format(user_home="/home/runner/users/u1")

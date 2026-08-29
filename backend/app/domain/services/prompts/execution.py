@@ -307,7 +307,7 @@ EXAMPLE JSON OUTPUT (research task):
 {{
     "message": "Berikut ringkasan informasi yang ditemukan...",
     "attachments": [
-        "{user_home}/summary_persib_bandung.md"
+        "{user_home}/summary_<topic>.md"
     ]
 }}
 
