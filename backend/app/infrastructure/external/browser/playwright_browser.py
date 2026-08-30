@@ -1167,7 +1167,22 @@ class PlaywrightBrowser:
         await self._ensure_page()
         try:
             if not os.path.isfile(file_path):
-                return ToolResult(success=False, message=f"File not found: {file_path}")
+                # NOTE: the Playwright engine reads the file on the BACKEND
+                # host and transmits its bytes over CDP. On the shared Replit
+                # sandbox this is the same filesystem as the agent's home, but
+                # on an E2B microVM the agent's files live inside the VM and
+                # are NOT visible here — those setups must use the
+                # browser_use engine (default), which resolves the path inside
+                # Chrome itself (Chrome runs inside the VM there).
+                return ToolResult(
+                    success=False,
+                    message=(
+                        f"File not found on the backend host: {file_path}. "
+                        "Verify the path with shell_exec('ls ~'). (If this "
+                        "sandbox is E2B, browser file upload requires the "
+                        "browser_use engine.)"
+                    ),
+                )
             element = await self._get_element_by_index(index)
             if not element:
                 return ToolResult(success=False, message=f"Cannot find element with index {index}")

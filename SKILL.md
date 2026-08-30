@@ -65,9 +65,10 @@ Aturan Bagian 2 berlaku sama. Docstring menjelaskan:
 1. **Bukti dulu**: reproduksi / dump session events / log / live test.
    Jangan menebak dari gejala.
 2. **Akar masalah**, bukan gejala. Perbaikan minimal & terarah.
-3. **Verifikasi**: syntax check + unit test (baseline: 155 pass,
+3. **Verifikasi**: syntax check + unit test (baseline: 280 pass,
    14 failed + 19 errors adalah pre-existing live-server tests) +
-   live test bila menyangkut browser/agent loop.
+   live test bila menyangkut browser/agent loop
+   (`scripts/langgraph_e2e_smoke.py`, `scripts/verify_all_tools.py`).
 4. **Commit + push** ke GitHub, tulis worklog di
    `/home/z/my-project/worklog.md`.
 5. JANGAN refactor di luar lingkup bug. JANGAN menambah aturan prompt

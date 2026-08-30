@@ -38,9 +38,9 @@ curl -s http://localhost:3000/health   # → 200
 - **MongoDB Atlas** (db `manus`) — sessions, events, GridFS artifacts (fs.files/fs.chunks). Junk uploads (node_modules etc.) are filtered before sync; quota 512MB.
 - **Redis Cloud** — queue/cache.
 
-## No Docker, no E2B
+## No Docker; E2B optional (hybrid provider)
 
-`SANDBOX_PROVIDER=replit` (in-process supervisord sandbox). Never suggest `docker ...` or E2B. Agent files are written under the user's sandbox home, not `/tmp`.
+`SANDBOX_PROVIDER=replit` is the CURRENT setting (in-process supervisord sandbox, user-scoped). E2B is NOT removed — `HybridSandboxFactory` supports `auto`/`e2b`/`replit` with per-user microVMs and automatic fallback; the E2B key is configured and quota verified 2026-08-30 (57/57 tool checks pass identically on both providers — see [tool-verification.md](tool-verification.md)). Never suggest `docker ...`. Agent files are written under the user's sandbox home, not `/tmp`.
 
 ## Key agent env knobs (backend/.env — defaults shown)
 
@@ -53,8 +53,10 @@ curl -s http://localhost:3000/health   # → 200
 | `BROWSER_ENGINE` | `browser_use` | browser_use (CDP + selector map) or playwright |
 | `LOG_LEVEL` | `INFO` | DEBUG for verbose agent traces |
 
-## Test suite state (2026-08-30)
+## Test suite state (2026-08-30, after Task 27)
 
-`cd backend && python -m pytest tests/ -q` → **265 passed**; the 14 failed + 19 errors are ALL pre-existing in `test_api_file.py` / `test_auth_routes.py` (they need the live auth service + seeded DB — unrelated to agent code; verified identical via `git stash` on a clean tree).
+`cd backend && python -m pytest tests/ -q` → **280 passed**; the 14 failed + 19 errors are ALL pre-existing in `test_api_file.py` / `test_auth_routes.py` (they need the live auth service + seeded DB — unrelated to agent code; verified identical via `git stash` on a clean tree).
 
 E2E smoke (real LLM + sandbox): `python /home/z/my-project/scripts/langgraph_e2e_smoke.py` — expects `SMOKE PASSED`, checks full plan lifecycle → done event.
+
+Full tool verification (every tool × both providers): `python /home/z/my-project/scripts/verify_all_tools.py --provider both` — 57 checks per provider incl. UI-visible assertions; and `python /home/z/my-project/scripts/verify_tool_events_e2e.py` — real agent tasks, verifies every persisted ToolEvent has non-null function_result + visible tool_content.

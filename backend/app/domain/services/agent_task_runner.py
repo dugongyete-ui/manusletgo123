@@ -529,14 +529,33 @@ class AgentTaskRunner(TaskRunner):
                 elif event.tool_name == "search":
                     search_results: ToolResult[SearchResults] = event.function_result
                     logger.debug(f"Search tool results: {search_results}")
-                    event.tool_content = SearchToolContent(results=search_results.data.results)
+                    # Guard: a FAILED search (engine error, WAF block, invalid
+                    # args) has data=None — .data.results would raise and the
+                    # except below would leave tool_content EMPTY (blank UI).
+                    search_items: list = []
+                    if (
+                        search_results is not None
+                        and search_results.success
+                        and search_results.data is not None
+                        and hasattr(search_results.data, "results")
+                    ):
+                        search_items = search_results.data.results or []
+                    event.tool_content = SearchToolContent(results=search_items)
                 elif event.tool_name == "shell":
                     if "id" in event.function_args:
                         shell_result = await self._sandbox.view_shell(event.function_args["id"], console=True)
                         console_data = (shell_result.data or {}).get("console", []) if (shell_result and shell_result.success) else []
                         event.tool_content = ShellToolContent(console=console_data)
                     else:
-                        event.tool_content = ShellToolContent(console="(No Console)")
+                        # No shell `id` in the call — usually a FAILED
+                        # invocation (e.g. shell_exec missing the required id
+                        # arg). Surface the actual error message instead of
+                        # the misleading "(No Console)".
+                        fr = event.function_result
+                        err_msg = ""
+                        if fr is not None and getattr(fr, "success", True) is False and getattr(fr, "message", None):
+                            err_msg = fr.message
+                        event.tool_content = ShellToolContent(console=err_msg or "(No Console)")
                 elif event.tool_name == "file":
                     fn = event.function_name
                     result = event.function_result

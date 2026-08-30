@@ -69,9 +69,10 @@ Copy `.env.example` to `backend/.env` and fill in the values:
 ```
 # LLM provider
 API_KEY=your_api_key_here
-API_BASE=https://your-llm-gateway/v1
-MODEL_NAME=kimi-k2
-VISION_MODEL_NAME=kimi-k2
+API_BASE=https://integrate.api.nvidia.com/v1
+MODEL_NAME=nvidia/nemotron-3-super-120b-a12b
+VISION_MODEL_NAME=meta/llama-3.2-11b-vision-instruct
+SSL_VERIFY=false
 
 # Database
 MONGODB_URI=mongodb+srv://...
@@ -84,6 +85,7 @@ SEARCH_PROVIDER=tavily
 TAVILY_API_KEY=your_tavily_key
 
 # Sandbox
+SANDBOX_PROVIDER=replit
 SANDBOX_BASE_URL=http://localhost:8080
 SANDBOX_VNC_URL=ws://localhost:5901
 SANDBOX_CDP_URL=http://localhost:8222
@@ -95,20 +97,22 @@ JWT_SECRET_KEY=your-secret-key-here
 
 ## Running the Service
 
-### Development Environment (Replit)
+### Production (z-container, master supervisord)
 
-The **Backend API** workflow starts the server automatically:
 ```bash
-cd backend && python3 -m uvicorn app.main:app --host localhost --port 8000
+/home/z/.venv/bin/supervisorctl -c /home/z/my-project/.infra/master_supervisord.conf restart services:backend
+curl -s http://localhost:3000/health   # → 200
 ```
+
+The backend also serves the compiled frontend from `frontend/dist` on the same port (3000).
 
 ### Manual Start
 ```bash
 cd backend
-python3 -m uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+python3 -m uvicorn app.main:app --host 0.0.0.0 --port 3000 --reload
 ```
 
-The service will start at http://localhost:8000.
+The service will start at http://localhost:3000.
 
 ## API Documentation
 

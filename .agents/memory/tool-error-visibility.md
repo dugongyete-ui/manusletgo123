@@ -24,3 +24,11 @@ If the error message had been assigned into `file_content`, the `if file_content
 ## Tests
 
 `tests/test_tool_error_visibility.py` (9): actionable missing-arg message, unexpected-kwarg message, success path untouched, no-retry on TypeError, artifact after retries, UI error text for both incident shapes, success sync regression, display-only error never synced.
+
+## Task 27 refinements (2026-08-30, same-day follow-up)
+
+Full-tool verification (see [tool-verification.md](tool-verification.md)) extended the same principle to two more branches, plus live confirmation:
+
+- **Shell without `id`**: `_handle_tool_event` now shows `result.message` of the failed ToolResult instead of "(No Console)" — same display-only pattern (the error never pollutes console data).
+- **Failed search**: `SearchToolContent(results=[])` instead of an AttributeError on `data=None` that left the pill blank.
+- **Live E2E proof**: a real agent task called shell_exec without `id`, received the actionable error, and self-corrected in ONE round — exactly the designed loop. Regression tests: `tests/test_tool_result_richness.py`.

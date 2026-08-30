@@ -1,36 +1,37 @@
 # AGENTS.md
 
 > Canonical guide for AI coding agents working on the **AI Dzeck** codebase.
+> Updated 2026-08-30 to match the ACTUAL runtime (z-container, NOT Replit workflows anymore).
 
 ---
 
 ## Project Overview
 
-AI Dzeck is a general-purpose AI Agent platform running on **Replit**. It comprises three active services:
+AI Dzeck is a general-purpose AI Agent platform (Manus.im-style). It runs in a single Linux container (`z` user, `/home/z/my-project/`) with all services managed by **one master supervisord**:
 
-| Service | Stack | Port (dev) | Entry Point |
+| Service | Stack | Port | Entry Point |
 |---|---|---|---|
-| **Frontend** | Vue 3 + TypeScript, Vite 4, Tailwind CSS | 5000 | `frontend/src/main.ts` |
-| **Backend** | Python 3.12, FastAPI, LangChain, Beanie/Motor | 8000 | `backend/app/main.py` |
-| **Sandbox** | Python 3.10, FastAPI, Xvfb/Chrome/VNC | 8080 (API), 5901 (VNC WS) | `sandbox/app/main.py` |
+| **Backend + Frontend** | Python 3.12, FastAPI, LangChain, Beanie/Motor — serves the compiled Vue dist | **3000** | `backend/app/main.py` |
+| **Sandbox** | Python, FastAPI, Xvfb/Chrome/VNC (supervisord-managed) | 8080 (API), 8222 (Chrome CDP), 5901 (VNC WS) | `sandbox/app/main.py` |
 
-Infrastructure: **MongoDB Atlas** (cloud), **Redis Cloud** (Asia Southeast). No local Docker required.
+Infrastructure: **MongoDB Atlas** (db `manus`, GridFS artifacts), **Redis Cloud**. No Docker, no Replit workflows.
 
-Additional (dev-only):
-| Service | Stack | Port (dev) | Entry Point |
-|---|---|---|---|
-| **Mockserver** | Python, FastAPI | 8090 | `mockserver/main.py` |
+Additional (dev-only): **Mockserver** (FastAPI, port 8090, `mockserver/main.py`) for LLM-free development.
+
+Agent execution: two interchangeable orchestration engines — `PlanActGraphFlow` (**LangGraph**, default) and `PlanActFlow` (custom state machine), switched by `AGENT_FLOW_ENGINE`; parity machine-checked by `tests/test_flow_engine_parity.py`.
+
+Sandbox provider is hybrid: `SANDBOX_PROVIDER` = `replit` (current: shared local sandbox with per-user path isolation via `UserScopedSandbox`) / `e2b` (per-user microVM) / `auto` (E2B first, transparent fallback). Tool behavior is verified IDENTICAL on both providers (`scripts/verify_all_tools.py --provider both` → 57/57 each).
 
 ---
 
 ## Directory Structure
 
 ```
-dzeck/
-├── frontend/          # Vue 3 SPA (Vite, TypeScript, Tailwind)
+manusletgo123/
+├── frontend/          # Vue 3 SPA (Vite, TypeScript, Tailwind) — built to frontend/dist, served BY the backend
 ├── backend/           # FastAPI backend (DDD layout)
 │   └── app/
-│       ├── domain/           # Models, services, tools, agents, repositories
+│       ├── domain/           # Models, services, tools, agents, flows, repositories
 │       ├── application/      # Application services (auth, agent, file, token, email)
 │       ├── infrastructure/   # External integrations (search, browser, sandbox, DB, cache)
 │       ├── interfaces/       # API routes, schemas, error handlers, dependencies
@@ -38,44 +39,53 @@ dzeck/
 │       └── main.py
 ├── sandbox/           # Sandbox service (shell, file, supervisor APIs)
 ├── mockserver/        # Mock LLM server for dev/testing
+├── .agents/memory/    # Deep-dive engineering memory (indexed by MEMORY.md)
 ├── .cursor/skills/    # Cursor agent skills
-├── .env.example       # Environment variable template
-└── replit.md          # Replit project overview and user preferences
+├── scripts/e2e/       # Browser E2E harness
+└── SKILL.md           # Development contract for prompts/tools (READ BEFORE touching prompts)
 ```
 
 ---
 
-## Development Environment (Replit)
+## Development Environment (z-container)
 
 ### Running Services
 
-All services are managed by **Replit Workflows**. They start automatically:
+All services live under the master supervisord:
 
-| Workflow | Command | Port |
-|---|---|---|
-| **Start application** | `cd frontend && pnpm dev` | 5000 |
-| **Backend API** | `cd backend && python3 -m uvicorn app.main:app --host localhost --port 8000` | 8000 |
-| **Sandbox Services** | `cd sandbox && supervisord -n -c replit_supervisord.conf` | 8080/5901 |
+```bash
+SUP=/home/z/.venv/bin/supervisorctl
+CONF=/home/z/my-project/.infra/master_supervisord.conf
 
-To restart a workflow, use the Replit workflow UI or the `restart_workflow` agent tool.
+$SUP -c $CONF status                    # backend, chrome, sandbox-app, websockify, x11vnc, xvfb
+$SUP -c $CONF restart services:backend  # after backend code changes
+curl -s http://localhost:3000/health    # → 200 when healthy
+```
 
-### Key Environment Variables (already configured in Replit)
+Frontend changes: `cd frontend && pnpm build` (backend serves `dist/`; restart not required for static assets).
+
+### Key Environment Variables (backend/.env)
 
 | Variable | Value / Purpose |
 |---|---|
-| `API_KEY` | LLM API key |
-| `API_BASE` | LLM API base URL |
-| `MODEL_NAME` | `kimi-k2` |
-| `VISION_MODEL_NAME` | `kimi-k2` |
+| `API_KEY` / `API_BASE` | NVIDIA NIM gateway (`https://integrate.api.nvidia.com/v1`) |
+| `MODEL_NAME` | `nvidia/nemotron-3-super-120b-a12b` |
+| `VISION_MODEL_NAME` | `meta/llama-3.2-11b-vision-instruct` |
+| `SSL_VERIFY` | `false` — REQUIRED (gateway cert fails Python CA check) |
 | `MONGODB_URI` | MongoDB Atlas connection string |
 | `REDIS_HOST` / `REDIS_PORT` / `REDIS_PASSWORD` | Redis Cloud credentials |
 | `TAVILY_API_KEY` | Web search |
+| `E2B_API_KEY` | E2B microVM provider (optional; quota verified 2026-08-30) |
 | `AUTH_PROVIDER` | `password` (JWT-based auth) |
+| `SANDBOX_PROVIDER` | `replit` (current) / `e2b` / `auto` |
 | `SANDBOX_BASE_URL` | `http://localhost:8080` |
 | `SANDBOX_VNC_URL` | `ws://localhost:5901` |
 | `SANDBOX_CDP_URL` | `http://localhost:8222` |
 | `SEARCH_PROVIDER` | `tavily` |
-| `BROWSER_ENGINE` | `browser_use` |
+| `BROWSER_ENGINE` | `browser_use` (CDP + selector map) or `playwright` |
+| `AGENT_FLOW_ENGINE` | `langgraph` (default) / `custom` |
+| `AGENT_CONTEXT_SOFT_LIMIT_CHARS` | 280000 — proactive compaction threshold (0 = off) |
+| `AGENT_TOOL_RESULT_MAX_CHARS` | 48000 — per-tool-result LLM context cap (0 = off) |
 
 For development without a real LLM, set `API_BASE=http://localhost:8090/v1` and start the mockserver manually.
 
@@ -83,31 +93,22 @@ For development without a real LLM, set `API_BASE=http://localhost:8090/v1` and 
 
 ## Testing
 
-### Backend Tests (pytest — integration-style)
-
-Tests live in `backend/tests/` and hit a **running** backend at `http://localhost:8000`.
+### Backend Tests (pytest — NO server needed)
 
 ```bash
-# Ensure backend is running first (Backend API workflow)
 cd backend
-python3 -m pytest                               # all tests
-python3 -m pytest tests/test_auth_routes.py     # specific file
-python3 -m pytest -m file_api                   # by marker
+python -m pytest tests/ -q          # 280 passed expected
+python -m pytest tests/test_context_overflow.py -q   # single file
 ```
 
-Key test files:
-- `tests/test_auth_routes.py` — auth endpoints
-- `tests/test_api_file.py` — file upload/download
-- `tests/test_sandbox_file.py` — sandbox file operations
+**Known pre-existing failures (do NOT chase):** `test_api_file.py` + `test_auth_routes.py` (14 failed + 19 errors) — they require the live auth service / seeded DB and fail identically on a clean tree.
 
-Config: `backend/pytest.ini` (`asyncio_mode = auto`, markers: `file_api`).
+Key test files (agent behavior): `test_flow_engine_parity.py`, `test_context_overflow.py`, `test_conversation_context.py`, `test_tool_error_visibility.py`, `test_tool_result_richness.py`, `test_artifact_sync_nonblocking.py`, `test_plan_progress.py`.
 
 ### Sandbox Tests (pytest)
 
 ```bash
-# Ensure Sandbox Services workflow is running
-cd sandbox
-python3 -m pytest
+cd sandbox && python -m pytest
 ```
 
 ### Frontend (No Automated Test Runner)
@@ -118,13 +119,22 @@ pnpm type-check    # vue-tsc type checking
 pnpm build         # production build (catches TS + template errors)
 ```
 
+### E2E / Live Verification (real LLM + real sandbox)
+
+```bash
+python /home/z/my-project/scripts/langgraph_e2e_smoke.py        # create+read file task → SMOKE PASSED
+python /home/z/my-project/scripts/context_e2e_smoke.py          # 2-turn conversation memory
+python /home/z/my-project/scripts/verify_all_tools.py --provider both   # EVERY tool × Replit + E2B
+python /home/z/my-project/scripts/verify_tool_events_e2e.py     # ToolEvent function_result/tool_content audit
+```
+
 ### Full-Stack Integration Test
 
-1. Ensure all 3 workflows are running
-2. Open the app preview (port 5000)
+1. Ensure services are RUNNING (`$SUP -c $CONF status`)
+2. Open the preview URL (proxied to port 3000) or `http://localhost:3000`
 3. Register/login (or set `AUTH_PROVIDER=none`)
 4. Create session, send message
-5. Check backend logs in the **Backend API** workflow console
+5. Check `/home/z/my-project/.infra/logs/backend.log` + `backend_err.log`
 
 ---
 
@@ -146,7 +156,7 @@ pnpm build         # production build (catches TS + template errors)
 - **TypeScript** throughout
 - **Tailwind CSS** for styling, **reka-ui** component library
 - Path alias: `@/` → `src/`
-- **vue-i18n** for internationalization (Chinese + English)
+- **vue-i18n** for internationalization (Indonesian + English)
 - Dependency management: **pnpm** + `package.json`
 - No ESLint or Prettier configured
 
@@ -156,15 +166,25 @@ pnpm build         # production build (catches TS + template errors)
 - Runs via **supervisord** managing Chrome, Xvfb, VNC, and the API
 - Dependency management: **uv** + `pyproject.toml`
 
+### Agent / Prompt Contract
+
+`SKILL.md` (repo root) is the binding contract for prompt and tool-docstring changes — read it BEFORE touching system prompts, tool docstrings, planner, or the agent loop. Deep-dive engineering memory lives in `.agents/memory/` (index: `MEMORY.md`).
+
 ---
 
 ## Debugging
 
-### Backend Logs
-Check the **Backend API** workflow console in Replit, or read `/tmp/logs/Backend_API_*.log`.
+### Logs
 
-### Sandbox Logs
-Check the **Sandbox Services** workflow console, or read `/tmp/logs/Sandbox_Services_*.log`.
+`/home/z/my-project/.infra/logs/` — `backend.log` / `backend_err.log` (tool failures, tracebacks), `sandbox_app.log`, `chrome_err.log`.
+
+### Session forensics (MongoDB Atlas)
+
+```bash
+python /home/z/my-project/scripts/find_session_by_url.py <16-char-chat-id>
+python /home/z/my-project/scripts/dump_tool_calls.py <mongo-object-id>
+python /home/z/my-project/scripts/event_timeline.py <session-id-or-title-fragment>
+```
 
 ### Resetting State
 
@@ -178,3 +198,4 @@ Check the **Sandbox Services** workflow console, or read `/tmp/logs/Sandbox_Serv
 | Skill File | When to Use |
 |---|---|
 | `.cursor/skills/starter.md` | Setting up, running, or testing any part of the codebase. Contains detailed API reference, env var tables, and testing workflows. |
+| `SKILL.md` | Before changing prompts, tool docstrings, planner, or agent loop — the development contract. |

@@ -1111,18 +1111,14 @@ class BrowserUseBrowser:
         import os
         import json as _json
         try:
-            if not os.path.isfile(file_path):
-                # NOTE: '~' is expanded by the SANDBOX's own shell, so the hint
-                # stays correct for every provider (E2B /home/user vs shared
-                # Replit /home/runner/...) — never hard-code a host path here.
-                return ToolResult(
-                    success=False,
-                    message=(
-                        f"File not found: {file_path}. List your home directory "
-                        "with shell_exec('ls ~') to find the correct absolute "
-                        "path, then retry."
-                    ),
-                )
+            # NOTE (provider consistency): the path must exist on the
+            # filesystem of the machine running CHROME, not the backend host.
+            # On the shared Replit sandbox both are the same container; on an
+            # E2B microVM the file lives INSIDE the VM where Chrome also runs
+            # — a backend-side os.path.isfile() gate would wrongly reject
+            # every E2B upload. So we attempt the CDP upload and let Chrome
+            # (which shares the sandbox filesystem on every provider) be the
+            # source of truth, then VERIFY the file actually attached.
             session = await self._ensure_session()
             node = await session.get_dom_element_by_index(index)
             if node is None:
@@ -1152,17 +1148,65 @@ class BrowserUseBrowser:
             # cdp_use version, unlike element.set_input_files which raised
             # "'Element' object has no attribute 'set_input_files'").
             cdp_sess = await self._get_cdp_session()
-            await cdp_sess.cdp_client.send.DOM.setFileInputFiles(
-                params={"files": [file_path], "backendNodeId": node.backend_node_id},
-                session_id=str(cdp_sess.session_id),
-            )
+            try:
+                await cdp_sess.cdp_client.send.DOM.setFileInputFiles(
+                    params={"files": [file_path], "backendNodeId": node.backend_node_id},
+                    session_id=str(cdp_sess.session_id),
+                )
+            except Exception as set_exc:
+                return ToolResult(
+                    success=False,
+                    message=(
+                        f"File not found or unreadable by the browser: {file_path} "
+                        f"({set_exc}). List your home directory with "
+                        "shell_exec('ls ~') to find the correct absolute path, "
+                        "then retry."
+                    ),
+                )
             await self._wait_for_dom_settle()
             file_name = os.path.basename(file_path)
-            return ToolResult(
-                success=True,
-                message=f"File '{file_name}' uploaded to element {index}.",
-                data={"file_path": file_path, "file_name": file_name},
-            )
+            # Post-verify: the input must actually hold the file. Chrome
+            # SILENTLY accepts a dangling path (files.length becomes 1 with a
+            # 0-byte entry) on both providers, so length alone proves nothing
+            # — require a non-zero size as well. (An intentionally-empty
+            # upload file is not a real use case; treat it as missing.)
+            try:
+                attached = await element.evaluate(
+                    "() => JSON.stringify({n: this.files.length, "
+                    "name: this.files.length ? this.files[0].name : null, "
+                    "size: this.files.length ? this.files[0].size : 0})"
+                )
+                att = _json.loads(attached) if isinstance(attached, str) else (attached or {})
+                if not att.get("n") or not att.get("size"):
+                    return ToolResult(
+                        success=False,
+                        message=(
+                            f"Browser did not attach {file_path} to element {index} "
+                            "(no file content was attached — the path is likely "
+                            "missing or the file is empty). Check the path exists "
+                            "and is non-empty in your sandbox home "
+                            "(shell_exec('ls -la ~')) and retry."
+                        ),
+                    )
+                return ToolResult(
+                    success=True,
+                    message=(
+                        f"File '{att.get('name') or file_name}' uploaded to element "
+                        f"{index} ({att.get('size', 0)} bytes attached)."
+                    ),
+                    data={
+                        "file_path": file_path,
+                        "file_name": att.get("name") or file_name,
+                        "size": att.get("size", 0),
+                    },
+                )
+            except Exception:
+                # Verification probe failed — the CDP call itself succeeded.
+                return ToolResult(
+                    success=True,
+                    message=f"File '{file_name}' uploaded to element {index}.",
+                    data={"file_path": file_path, "file_name": file_name},
+                )
         except Exception as exc:
             return ToolResult(success=False, message=f"upload_file failed: {exc}")
 
@@ -1815,7 +1859,15 @@ class BrowserUseBrowser:
                     return ToolResult(success=True, data=observed)
                 except Exception as obs_exc:
                     logger.debug("post-input observe failed: %s", obs_exc)
-            return ToolResult(success=True)
+            # Non-enter path: still report WHAT was typed and WHERE so the
+            # result is never a bare success (the LLM — and the tool panel
+            # when the screenshot circuit breaker is open — both need it).
+            shown = text if len(text) <= 60 else text[:57] + "..."
+            return ToolResult(
+                success=True,
+                message=f"Text entered into element {index if index is not None else 'coordinates'}: {shown!r}",
+                data={"index": index, "value": text, "press_enter": press_enter},
+            )
         except Exception as exc:
             logger.warning("INPUT[%s] ✗ %s", index, exc)
             return ToolResult(success=False, message=f"Failed to input text: {exc}")
@@ -1828,7 +1880,14 @@ class BrowserUseBrowser:
         """Move the mouse cursor to the given coordinates."""
         try:
             await self._dispatch_mouse_event("mouseMoved", coordinate_x, coordinate_y)
-            return ToolResult(success=True)
+            return ToolResult(
+                success=True,
+                message=(
+                    f"Mouse moved to ({coordinate_x}, {coordinate_y}). "
+                    "Use browser_view to see what is under the cursor."
+                ),
+                data={"x": coordinate_x, "y": coordinate_y},
+            )
         except Exception as exc:
             return ToolResult(success=False, message=f"Failed to move mouse: {exc}")
 
@@ -1953,8 +2012,38 @@ class BrowserUseBrowser:
 
             # Default: dispatch to page
             page = await self._get_current_page()
+            pre_url = ""
+            try:
+                pre_url = await page.get_url()
+            except Exception:
+                pass
             await page.press(key)
-            return ToolResult(success=True)
+            await self._wait_for_dom_settle()
+            # Report what happened — a bare success leaves both the LLM and
+            # the tool panel (when the screenshot breaker is open) blind.
+            try:
+                now_url = await page.get_url()
+            except Exception:
+                now_url = pre_url
+            navigated = bool(pre_url) and bool(now_url) and now_url != pre_url
+            data = {"key": key, "url": now_url, "page_changed": navigated}
+            if navigated:
+                try:
+                    session2 = await self._ensure_session()
+                    observed = await self._observe_page_state(session2, include_content=True)
+                    observed.update(data)
+                    return ToolResult(
+                        success=True,
+                        message=f"Key '{key}' pressed — page navigated to {now_url}.",
+                        data=observed,
+                    )
+                except Exception:
+                    pass
+            return ToolResult(
+                success=True,
+                message=f"Key '{key}' pressed.",
+                data=data,
+            )
         except Exception as exc:
             return ToolResult(success=False, message=f"Failed to press key: {exc}")
 
@@ -2080,7 +2169,7 @@ class BrowserUseBrowser:
                 await page.evaluate("() => window.scrollTo(0, 0)")
             else:
                 await page.evaluate("() => window.scrollBy(0, -window.innerHeight)")
-            return ToolResult(success=True)
+            return await self._scroll_report("up" if not to_top else "top")
         except Exception as exc:
             return ToolResult(success=False, message=f"Failed to scroll up: {exc}")
 
@@ -2092,9 +2181,61 @@ class BrowserUseBrowser:
                 await page.evaluate("() => window.scrollTo(0, document.body.scrollHeight)")
             else:
                 await page.evaluate("() => window.scrollBy(0, window.innerHeight)")
-            return ToolResult(success=True)
+            return await self._scroll_report("down" if not to_bottom else "bottom")
         except Exception as exc:
             return ToolResult(success=False, message=f"Failed to scroll down: {exc}")
+
+    async def _scroll_report(self, direction: str) -> ToolResult:
+        """Report the post-scroll position so the agent knows where it is and
+        whether more content remains below/above (avoids blind rescrolls and
+        gives the tool panel real content when no screenshot is available)."""
+        data = {"direction": direction}
+        try:
+            page = await self._get_current_page()
+            raw = await page.evaluate(
+                """() => {
+                    const doc = document.scrollingElement || document.documentElement;
+                    const max = Math.max(0, doc.scrollHeight - window.innerHeight);
+                    return JSON.stringify({
+                        scroll_y: Math.round(window.scrollY),
+                        page_height: doc.scrollHeight,
+                        viewport: window.innerHeight,
+                        max_scroll: Math.round(max),
+                    });
+                }"""
+            )
+            import json as _json
+            info = _json.loads(raw) if isinstance(raw, str) else (raw or {})
+            data.update(info)
+            y = info.get("scroll_y", 0)
+            mx = info.get("max_scroll", 0)
+            if mx <= 0:
+                pos = "whole page fits in the viewport"
+            else:
+                pct = round(100 * y / mx)
+                pos = f"{pct}% down the page"
+                if y <= 0:
+                    pos = "at the very top"
+                elif y >= mx:
+                    pos = "at the very bottom"
+            more_below = "more content below" if mx > y else "no more content below"
+            more_above = "more content above" if y > 0 else "already at top"
+            return ToolResult(
+                success=True,
+                message=(
+                    f"Scrolled {direction}: now at y={y} ({pos}; "
+                    f"page height {info.get('page_height', '?')}px, "
+                    f"viewport {info.get('viewport', '?')}px — {more_below}, {more_above})."
+                ),
+                data=data,
+            )
+        except Exception as exc:
+            # Position probe failed — the scroll itself succeeded.
+            return ToolResult(
+                success=True,
+                message=f"Scrolled {direction}.",
+                data=data,
+            )
 
     async def screenshot(self, full_page: Optional[bool] = False) -> bytes:
         """Return a PNG screenshot of the current page."""

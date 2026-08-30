@@ -53,7 +53,7 @@ curl -s http://localhost:3000/health    # → 200 when healthy
 | `AGENT_FLOW_ENGINE` | *(default `langgraph`)* | `custom` = instant rollback to hand-rolled engine |
 | `AGENT_CONTEXT_SOFT_LIMIT_CHARS` | *(default 280000)* | proactive compaction threshold (0 = off) |
 | `AGENT_TOOL_RESULT_MAX_CHARS` | *(default 48000)* | per-tool-result LLM context cap (0 = off) |
-| `SANDBOX_PROVIDER` | `replit` | in-process supervisord sandbox (E2B removed) |
+| `SANDBOX_PROVIDER` | `replit` | hybrid: `replit` (current) / `e2b` / `auto` — E2B microVMs verified consistent 2026-08-30 |
 | `AUTH_PROVIDER` | `password` | `none` skips login |
 | `LOG_LEVEL` | `INFO` | `DEBUG` for verbose agent traces |
 
@@ -105,7 +105,7 @@ uvicorn main:app --host 0.0.0.0 --port 8090
 
 ```bash
 cd backend
-python -m pytest tests/ -q               # 265 passed expected
+python -m pytest tests/ -q               # 280 passed expected
 python -m pytest tests/test_context_overflow.py -q   # single file
 ```
 
@@ -116,6 +116,7 @@ Key test files (agent behavior):
 - `tests/test_context_overflow.py` – error-1261 defense (caps, compaction, recovery)
 - `tests/test_conversation_context.py` – planner conversation digest
 - `tests/test_tool_error_visibility.py` – tool failure UX (no "(No Content)")
+- `tests/test_tool_result_richness.py` – every tool result rich+visible (scroll/press/move/input state, upload guard, shell/search display)
 - `tests/test_artifact_sync_nonblocking.py` – real-time plan progress
 - `tests/test_ghost_success.py`, `test_loop_awareness.py` – execution guards
 
@@ -125,6 +126,8 @@ Key test files (agent behavior):
 python /home/z/my-project/scripts/langgraph_e2e_smoke.py          # create+read file task → SMOKE PASSED
 python /home/z/my-project/scripts/langgraph_e2e_smoke.py "custom task text"
 python /home/z/my-project/scripts/context_e2e_smoke.py            # 2-turn conversation memory
+python /home/z/my-project/scripts/verify_all_tools.py --provider both   # EVERY tool, Replit + E2B (57 checks each)
+python /home/z/my-project/scripts/verify_tool_events_e2e.py       # real tasks → ToolEvent function_result/tool_content audit
 ```
 
 Session forensics helpers (MongoDB Atlas):
@@ -149,6 +152,8 @@ No automated runner. `pnpm type-check` + `pnpm build` catch template + TS errors
 | **Conversation memory** | `flows/plan_act.py` `_build_conversation_digest` | 0-step follow-ups answered from session transcript (anti-amnesia) |
 | **Real-time plan** | `agent_task_runner.py` | step artifact sync is a background chained task; junk dirs (node_modules…) never sync |
 | **Tool error UX** | `tools/base.py` + `agent_task_runner.py` | arg mismatches → actionable failed ToolResult (lists provided vs accepted args); UI shows real errors, never "(No Content)" |
+| **Rich tool results** | `browser_use_browser.py` | input/press_key/move_mouse/scroll return observed state (position %, typed text, navigation); upload_file validates the path via Chrome (provider-agnostic) + rejects 0-byte dangling entries |
+| **Hybrid sandbox** | `sandbox_factory.py`, `e2b_sandbox.py` | `SANDBOX_PROVIDER` = replit (current) / e2b / auto; E2B per-user microVM + automatic fallback; tool behavior verified IDENTICAL on both providers |
 
 ---
 
@@ -213,5 +218,6 @@ When you discover a new operational fact, workaround, or runbook step:
 3. **Date the change**: `<!-- Updated YYYY-MM-DD: reason -->`.
 4. Keep `.agents/memory/MEMORY.md` index in sync — deep-dive notes live there.
 
+<!-- Updated 2026-08-30 (Task 27): full tool verification on BOTH providers (57/57 Replit + 57/57 E2B) via scripts/verify_all_tools.py; browser action tools return rich state; upload_file provider-agnostic with 0-byte guard; shell/search display guards; test suite 280 passed; E2B is an optional hybrid provider (not removed) -->
 <!-- Updated 2026-08-30: full rewrite for z-container runtime — master supervisord (backend :3000 serving Vue dist, sandbox :8080), NVIDIA NIM provider (nemotron-3-super-120b), LangGraph default engine, 4-layer context-overflow defense, tool error visibility fix, current test suite state (265 passed), session forensics scripts -->
 <!-- Updated 2026-06-13: browser_smart_select + browser_verify_value; Manus.im-style adaptive dropdown handling -->
