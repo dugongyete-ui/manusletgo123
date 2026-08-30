@@ -4,6 +4,8 @@ from app.domain.services.tools.base import BaseToolkit
 from langchain.tools import tool
 from app.domain.models.tool_result import ToolResult
 
+import uuid
+
 class ShellToolkit(BaseToolkit):
     """Shell tool class, providing Shell interaction related functions"""
 
@@ -21,18 +23,19 @@ class ShellToolkit(BaseToolkit):
     @tool(parse_docstring=True)
     async def shell_exec(
         self,
-        id: str,
-        exec_dir: str,
-        command: str
+        command: str,
+        id: Optional[str] = None,
+        exec_dir: Optional[str] = None
     ) -> ToolResult:
         """Execute commands in a specified shell session. Use for running code, installing packages, or managing files.
         
         Args:
-            id: Unique identifier of the target shell session
-            exec_dir: Working directory for command execution (must use absolute path)
             command: Shell command to execute
+            id: Unique identifier of the target shell session. Optional: omit or pass null to let the system create a fresh session automatically (recommended when you don't need to reuse a specific session).
+            exec_dir: Working directory for command execution (must use absolute path). Optional: omit or pass null to run in the user's home directory.
         """
-        return await self.sandbox.exec_command(id, exec_dir, command)
+        session_id = id or str(uuid.uuid4())
+        return await self.sandbox.exec_command(session_id, exec_dir, command)
     
     @tool(parse_docstring=True)
     async def shell_view(self, id: str) -> ToolResult:
