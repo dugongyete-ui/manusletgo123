@@ -1,62 +1,37 @@
 ---
-name: Runtime environment (z-container)
-description: How the platform actually runs NOW — ports, services, supervisord, provider, persistence. Supersedes the old Replit setup (2026-06).
+name: Runtime environment (Replit hybrid)
+description: Current workflow topology, active sandbox provider, and verification caveats for this Replit workspace.
 ---
 
-## Runtime topology (as of 2026-08-30)
+## Runtime topology (verified 2026-08-30)
 
-The project no longer runs on Replit. It runs in the `z` user container (`/home/z/my-project/`), all services managed by ONE master supervisord:
+The active workspace is `/home/runner/workspace` and services are managed by Replit workflows:
 
-| Service | Port | Command / Notes |
-|---|---|---|
-| **Backend** (FastAPI) | **3000** | `uvicorn app.main:app` — ALSO serves the compiled Vue frontend from `frontend/dist` (production mode). The public preview URL (`preview-*.space-z.ai`) proxies here. |
-| **Sandbox API** (FastAPI) | **8080** | File/shell/browser API. User-scoped: each user gets `/home/z/sandbox/users/<user_id>/` — cross-user access is BLOCKED by UserScopedSandbox. |
-| Chrome CDP | 8222 | Headless Chrome via `--remote-debugging-port=8222` |
-| websockify (VNC WS) | 5901 | → x11vnc :5900 → Xvfb :1 (1280x1029x24) |
+| Service | Port | Notes |
+|---|---:|---|
+| Frontend (Vite) | 5000 | Preview/webview target |
+| Backend (FastAPI) | 8000 | API and health endpoint |
+| Sandbox API | 8080 | Local file/shell/browser API |
+| Chrome CDP | 8222 | Headless Chrome used by `browser_use` |
+| VNC websocket | 5901 | websockify → x11vnc → Xvfb |
 
-**Master supervisord config:** `/home/z/my-project/.infra/master_supervisord.conf`
+The active workflow configuration is `.replit`; there is no active z-container master supervisor in this workspace. MongoDB Atlas and Redis Cloud are the persistence services.
 
-```bash
-# Status / restart (NOT Replit workflows — those are gone)
-/home/z/.venv/bin/supervisorctl -c /home/z/my-project/.infra/master_supervisord.conf status
-/home/z/.venv/bin/supervisorctl -c /home/z/my-project/.infra/master_supervisord.conf restart services:backend
-curl -s http://localhost:3000/health   # → 200
-```
+## Sandbox provider status
 
-**Logs:** `/home/z/my-project/.infra/logs/` — `backend.log` / `backend_err.log` (grep tool failures here), `sandbox_app.log`, `chrome_err.log`.
+The configured value is `SANDBOX_PROVIDER=auto`, which asks `HybridSandboxFactory` to try E2B and then fall back to the local Replit sandbox. The current runtime has E2B configuration present, but the `e2b` Python package is not installed. A live factory smoke therefore selected `ReplitSandbox` (`replit-local`) after `ModuleNotFoundError`.
 
-## LLM provider
+The E2B implementation remains in the codebase, but the historical both-provider verification belongs to another environment and must not be treated as current proof until the dependency is installed and the live E2B smoke is rerun.
 
-- **API_BASE:** `https://integrate.api.nvidia.com/v1` (NVIDIA NIM)
-- **MODEL_NAME:** `nvidia/nemotron-3-super-120b-a12b`
-- **VISION_MODEL_NAME:** `meta/llama-3.2-11b-vision-instruct` (provider `openai`)
-- **SSL_VERIFY=false** is REQUIRED (gateway cert fails Python CA verification — the hook lives in `agents/base.py`)
-- NVIDIA's overflow error is `400 {'error': {'code': '1261', 'message': 'Prompt exceeds max length'}}` → see [context-management.md](context-management.md)
+## LLM and safety caveats
 
-## Persistence
+- NVIDIA NIM is the configured primary LLM gateway; `SSL_VERIFY=false` is currently required by that gateway.
+- Local sandbox source protection defaults to `/home/runner/workspace`; tests that create relative files below the repository can be rejected by design.
+- The local VNC service currently runs without a password and Chrome uses relaxed flags intended for the isolated sandbox; do not expose these ports publicly without an access boundary.
 
-- **MongoDB Atlas** (db `manus`) — sessions, events, GridFS artifacts (fs.files/fs.chunks). Junk uploads (node_modules etc.) are filtered before sync; quota 512MB.
-- **Redis Cloud** — queue/cache.
+## Verification state (2026-08-30)
 
-## No Docker; E2B optional (hybrid provider)
-
-`SANDBOX_PROVIDER=replit` is the CURRENT setting (in-process supervisord sandbox, user-scoped). E2B is NOT removed — `HybridSandboxFactory` supports `auto`/`e2b`/`replit` with per-user microVMs and automatic fallback; the E2B key is configured and quota verified 2026-08-30 (57/57 tool checks pass identically on both providers — see [tool-verification.md](tool-verification.md)). Never suggest `docker ...`. Agent files are written under the user's sandbox home, not `/tmp`.
-
-## Key agent env knobs (backend/.env — defaults shown)
-
-| Variable | Default | Purpose |
-|---|---|---|
-| `AGENT_FLOW_ENGINE` | `langgraph` | `langgraph` (PlanActGraphFlow) or `custom` (PlanActFlow) — instant rollback switch |
-| `AGENT_CONTEXT_SOFT_LIMIT_CHARS` | `280000` | proactive compaction threshold (0 = off) |
-| `AGENT_TOOL_RESULT_MAX_CHARS` | `48000` | per-tool-result entry cap into LLM context (0 = off) |
-| `SEARCH_PROVIDER` | `tavily` | baidu / baidu_web / google / bing / bing_web / tavily |
-| `BROWSER_ENGINE` | `browser_use` | browser_use (CDP + selector map) or playwright |
-| `LOG_LEVEL` | `INFO` | DEBUG for verbose agent traces |
-
-## Test suite state (2026-08-30, after Task 27)
-
-`cd backend && python -m pytest tests/ -q` → **280 passed**; the 14 failed + 19 errors are ALL pre-existing in `test_api_file.py` / `test_auth_routes.py` (they need the live auth service + seeded DB — unrelated to agent code; verified identical via `git stash` on a clean tree).
-
-E2E smoke (real LLM + sandbox): `python /home/z/my-project/scripts/langgraph_e2e_smoke.py` — expects `SMOKE PASSED`, checks full plan lifecycle → done event.
-
-Full tool verification (every tool × both providers): `python /home/z/my-project/scripts/verify_all_tools.py --provider both` — 57 checks per provider incl. UI-visible assertions; and `python /home/z/my-project/scripts/verify_tool_events_e2e.py` — real agent tasks, verifies every persisted ToolEvent has non-null function_result + visible tool_content.
+- Backend suite: **313 passed** after the backend service was already ready. The initial parallel Project workflow run failed only because its API test connected before port 8000 was ready.
+- Backend imports/syntax: passed.
+- Frontend type-check and production build: passed, with a CSS nesting warning and a large main chunk warning.
+- Sandbox suite: **9 passed, 1 failed** because `test_upload_file_success` writes below the protected repository path and then attempts to read it; this is a test-harness/configuration mismatch, not proof that the sandbox API is unavailable.
