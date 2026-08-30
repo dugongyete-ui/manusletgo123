@@ -6,6 +6,8 @@ from abc import ABC
 from typing import List, Dict, Any, Optional, AsyncGenerator, Union
 from app.domain.models.message import Message
 from app.domain.services.tools.base import BaseToolkit
+from app.domain.services.tools.base import Tool, cap_tool_content
+from app.domain.models.memory import compact_messages, drop_older_rounds
 from app.domain.models.event import (
     BaseEvent,
     ToolEvent,
@@ -517,11 +519,177 @@ class BaseAgent(ABC):
                     logger.exception(f"Tool execution failed, {tool_call['name']}, {tool_call['args']}")
                     break
 
-        return ToolMessage(tool_call_id=tool_call["id"], name=tool.name, content=last_error)
+        # Error bodies (HTTP pages, tracebacks) can be huge too — cap them
+        # so one failure can't poison the context for every later round.
+        try:
+            _limit = int(getattr(get_settings(), "tool_result_max_chars", 48_000) or 0)
+        except Exception:
+            _limit = 48_000
+        return ToolMessage(
+            tool_call_id=tool_call["id"], name=tool.name,
+            content=cap_tool_content(last_error, _limit),
+        )
     
     # Compact browser tool results in memory every this many tool-call rounds
     # within a single step to prevent "Payload Too Large" on complex pages.
     _COMPACT_EVERY_N_ITERATIONS = 10
+
+    # ── Context-overflow defense (provider error 1261) ───────────────────
+    # Provider prompt-limit errors observed in the wild:
+    #   HTTP 400 {'error': {'code': '1261', 'message': 'Prompt exceeds max length'}}
+    #   "This model's maximum context length is X tokens..."
+    #   "prompt is too long", "input is too long", "too many input tokens"
+    # Retrying unchanged is pointless — the conversation itself must
+    # shrink first. Two mechanisms cooperate:
+    #   1. PROACTIVE: before every LLM call, estimate the serialized
+    #      conversation size; above context_soft_limit_chars compact
+    #      progressively (browser-use-style prevention).
+    #   2. REACTIVE: when the provider STILL rejects the prompt, run the
+    #      emergency ladder (aggressive compact → drop old rounds),
+    #      re-snapshot the context and retry — instead of killing the
+    #      task after all the work is done (the final summary used to
+    #      die exactly this way on image-heavy tasks).
+    _MAX_CONTEXT_OVERFLOW_RECOVERIES = 2
+
+    _CONTEXT_OVERFLOW_MARKERS = (
+        "exceeds max length",
+        "prompt is too long",
+        "prompt too long",
+        "prompt exceeds",
+        "context length",
+        "context window",
+        "maximum context",
+        "max tokens exceeded",
+        "too many tokens",
+        "too many input tokens",
+        "input is too long",
+        "input too long",
+        "reduce the length",
+        "reduce your prompt",
+        "request is too large",
+    )
+
+    @staticmethod
+    def _is_context_overflow_error(exc: Exception) -> bool:
+        """Whether a provider error means the PROMPT is too large for the
+        model's context window (as opposed to key/quota limits — see
+        ``_is_limit_error``). Used to trigger emergency compaction."""
+        text = str(exc).lower()
+        if any(marker in text for marker in BaseAgent._CONTEXT_OVERFLOW_MARKERS):
+            return True
+        # NVIDIA's integrate API uses a numeric code: '1261'.
+        if "1261" in text and isinstance(exc, (openai.APIStatusError, ValueError)):
+            return True
+        status = getattr(exc, "status_code", None)
+        if status == 400 and any(
+            word in text for word in ("length", "token", "prompt", "input")
+        ):
+            return True
+        return False
+
+    @staticmethod
+    def _estimate_context_chars(messages) -> int:
+        """Cheap character-count estimate of the serialized conversation.
+
+        Counts message contents (text + multimodal parts — a base64
+        image_url part is a huge string, so it is included) plus the
+        serialized tool_call arguments. ~4 chars/token for English;
+        deliberately conservative (over-estimates) so compaction fires
+        early rather than late.
+        """
+        total = 0
+        for message in messages:
+            content = getattr(message, "content", None)
+            if isinstance(content, str):
+                total += len(content)
+            elif isinstance(content, list):
+                for part in content:
+                    if isinstance(part, dict):
+                        text = part.get("text")
+                        if isinstance(text, str):
+                            total += len(text)
+                        else:
+                            total += len(str(part))
+                    else:
+                        total += len(str(part))
+            elif content is not None:
+                total += len(str(content))
+            for tool_call in (getattr(message, "tool_calls", None) or []):
+                try:
+                    total += len(_json.dumps(tool_call.get("args", {}), default=str))
+                except Exception:
+                    total += len(str(tool_call))
+        return total
+
+    def _context_soft_limit(self) -> int:
+        try:
+            return int(
+                getattr(get_settings(), "context_soft_limit_chars", 280_000) or 0
+            )
+        except Exception:
+            return 280_000
+
+    async def _enforce_context_budget(self) -> None:
+        """Proactive gate: shrink memory BEFORE the prompt can blow the
+        provider's limit (browser-use's ``maybe_compact_messages`` idea,
+        but deterministic — no summarisation LLM call on the hot path).
+
+        Ladder: estimate → normal compact → aggressive compact → drop
+        old rounds. Every rung is in-place and persisted; the agent can
+        always re-read files / re-run commands if it truly needs dropped
+        detail back.
+        """
+        limit = self._context_soft_limit()
+        if limit <= 0:
+            return
+        await self._ensure_memory()
+        if self._estimate_context_chars(self.memory.get_messages()) <= limit:
+            return
+
+        before_msgs = len(self.memory.messages)
+        before_chars = self._estimate_context_chars(self.memory.get_messages())
+        self.memory.compact()
+        if self._estimate_context_chars(self.memory.get_messages()) > limit:
+            self.memory.compact(aggressive=True)
+        if self._estimate_context_chars(self.memory.get_messages()) > limit:
+            self.memory.drop_older_rounds()
+        after_chars = self._estimate_context_chars(self.memory.get_messages())
+        logger.info(
+            "Proactive context compaction for agent '%s': %d → %d chars, "
+            "%d → %d messages (soft limit %d)",
+            self.name, before_chars, after_chars, before_msgs,
+            len(self.memory.messages), limit,
+        )
+        try:
+            await self._repository.save_memory(self._agent_id, self.name, self.memory)
+        except Exception:
+            logger.debug("save after proactive compaction failed", exc_info=True)
+
+    async def _emergency_context_reduction(self, escalate: bool) -> None:
+        """In-flight recovery after the provider rejected an oversized
+        prompt (error 1261 family). Decisive by design — the request has
+        already failed once, so always aggressive-compact, and on the
+        second failure also drop whole old rounds (and harder)."""
+        await self._ensure_memory()
+        before_chars = self._estimate_context_chars(self.memory.get_messages())
+        self.memory.compact(aggressive=True)
+        if escalate:
+            self.memory.drop_older_rounds()
+            limit = self._context_soft_limit()
+            if limit > 0 and self._estimate_context_chars(
+                self.memory.get_messages()
+            ) > limit:
+                self.memory.drop_older_rounds(keep_last_messages=4)
+        after_chars = self._estimate_context_chars(self.memory.get_messages())
+        logger.warning(
+            "EMERGENCY context compaction for agent '%s' (escalate=%s): "
+            "%d → %d chars",
+            self.name, escalate, before_chars, after_chars,
+        )
+        try:
+            await self._repository.save_memory(self._agent_id, self.name, self.memory)
+        except Exception:
+            logger.debug("save after emergency compaction failed", exc_info=True)
 
     @staticmethod
     def _transient_provider_error(exc: Exception) -> bool:
@@ -854,6 +1022,11 @@ class BaseAgent(ABC):
     async def ask_with_messages(self, messages: List[Dict[str, Any]], format: Optional[str] = None) -> AIMessage:
         await self._add_to_memory(messages)
 
+        # Proactive context gate: if the accumulated memory has grown past
+        # the soft budget, compact BEFORE sending anything — cheaper than
+        # burning a round-trip on a guaranteed 400.
+        await self._enforce_context_budget()
+
         response_format = None
         if format:
             response_format = {"type": format}
@@ -880,6 +1053,7 @@ class BaseAgent(ABC):
 
         context = list(self.memory.get_messages())
         attempt = 0
+        _overflow_recoveries = 0
         while True:
             try:
                 message: AIMessage = await chain.ainvoke(context)
@@ -942,6 +1116,23 @@ class BaseAgent(ABC):
                 # style payloads ("Insufficient balance", quota, credit) get the
                 # provider-rotation treatment so the task survives key
                 # exhaustion instead of dying mid-run.
+                if self._is_context_overflow_error(e):
+                    # Prompt-limit failures (1261 family) — shrink the
+                    # conversation, re-snapshot and retry (see the
+                    # APIStatusError branch for the full ladder).
+                    if _overflow_recoveries >= self._MAX_CONTEXT_OVERFLOW_RECOVERIES:
+                        logger.error(
+                            "Prompt still exceeds the model context limit "
+                            "after %d emergency compactions, giving up",
+                            _overflow_recoveries,
+                        )
+                        raise
+                    _overflow_recoveries += 1
+                    await self._emergency_context_reduction(
+                        escalate=_overflow_recoveries > 1
+                    )
+                    context = list(self.memory.get_messages())
+                    continue
                 _is_limit = self._is_limit_error(e)
                 if not (_is_limit or self._transient_provider_error(e)):
                     raise
@@ -989,6 +1180,37 @@ class BaseAgent(ABC):
                 attempt += 1
                 await asyncio.sleep(wait)
             except openai.APIStatusError as e:
+                # Prompt-limit errors (NVIDIA 400/1261 "Prompt exceeds max
+                # length", OpenAI "maximum context length", Anthropic
+                # "prompt is too long") used to fall through every clause
+                # and kill the whole task mid-run — after all the work was
+                # already done. Emergency ladder instead:
+                #   recovery 1 — aggressive compaction, retry
+                #   recovery 2 — + drop oldest rounds (protocol-safe), retry
+                #   then give up with the original error.
+                if self._is_context_overflow_error(e):
+                    if _overflow_recoveries >= self._MAX_CONTEXT_OVERFLOW_RECOVERIES:
+                        logger.error(
+                            "Prompt still exceeds the model context limit "
+                            "after %d emergency compactions, giving up: %s",
+                            _overflow_recoveries, e,
+                        )
+                        raise
+                    _overflow_recoveries += 1
+                    await self._emergency_context_reduction(
+                        escalate=_overflow_recoveries > 1
+                    )
+                    # Re-snapshot: compaction mutates/removes messages in
+                    # memory; the local `context` list must reflect that.
+                    context = list(self.memory.get_messages())
+                    logger.warning(
+                        "Context overflow (attempt %d/%d) — compacted, "
+                        "retrying with %d messages",
+                        _overflow_recoveries,
+                        self._MAX_CONTEXT_OVERFLOW_RECOVERIES,
+                        len(context),
+                    )
+                    continue
                 # HTTP 402 "Insufficient balance" (OpenRouter free-tier
                 # exhaustion) is NOT mapped to a specific SDK exception, so
                 # it used to fall through every clause above and kill the
@@ -1031,8 +1253,17 @@ class BaseAgent(ABC):
         rejects a request before sending its first chunk, so retries are safe
         while ``emitted`` is false.  Once a provider has sent content, retrying
         would duplicate text in the UI; surface that error instead.
+
+        Context overflow (error 1261 family): the FINAL SUMMARY streams the
+        agent's ENTIRE accumulated memory — on long research/build tasks this
+        is exactly where the prompt finally exceeded the provider limit and
+        killed the task after all the work was done.  On such a rejection we
+        shrink the message list in place (aggressive compaction + dropping
+        the oldest rounds) and retry — the summary only needs the recent
+        rounds plus the original task stub to do its job.
         """
         attempt = 0
+        _overflow_recoveries = 0
         while True:
             emitted = False
             try:
@@ -1045,6 +1276,23 @@ class BaseAgent(ABC):
             except Exception as e:
                 if emitted:
                     raise
+                if self._is_context_overflow_error(e):
+                    if _overflow_recoveries >= self._MAX_CONTEXT_OVERFLOW_RECOVERIES:
+                        raise
+                    _overflow_recoveries += 1
+                    # Mutates the message objects (shared with memory when
+                    # the list was built from it) and drops old rounds from
+                    # the local list — protocol-safe cut at Human boundaries.
+                    compact_messages(messages, aggressive=True)
+                    drop_older_rounds(messages)
+                    logger.warning(
+                        "Context overflow while streaming (recovery %d/%d) — "
+                        "compacted to %d messages, retrying",
+                        _overflow_recoveries,
+                        self._MAX_CONTEXT_OVERFLOW_RECOVERIES,
+                        len(messages),
+                    )
+                    continue
                 _is_limit = self._is_limit_error(e)
                 _budget = (
                     self._rate_limit_budget() if _is_limit else self.max_retries
@@ -1113,7 +1361,7 @@ class BaseAgent(ABC):
             self.memory.roll_back()
         await self._repository.save_memory(self._agent_id, self.name, self.memory)
     
-    async def compact_memory(self) -> None:
+    async def compact_memory(self, aggressive: bool = False) -> None:
         await self._ensure_memory()
-        self.memory.compact()
+        self.memory.compact(aggressive=aggressive)
         await self._repository.save_memory(self._agent_id, self.name, self.memory)

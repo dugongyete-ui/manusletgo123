@@ -160,6 +160,24 @@ class Settings(BaseSettings):
     # only selects the loop driver. env var: AGENT_FLOW_ENGINE
     agent_flow_engine: str = "langgraph"
 
+    # ── Context-overflow defense (provider error 1261) ──────────────────
+    # Soft budget on the estimated serialized conversation size. Before
+    # EVERY LLM call the agent estimates its memory size in characters;
+    # above this limit it compacts progressively (stub old tool results →
+    # aggressive stub → drop old rounds) so the prompt never reaches the
+    # provider's hard limit. ~280K chars ≈ 70-90K tokens — comfortably
+    # below common 128K-token windows. 0 disables the proactive gate
+    # (the in-flight 1261 emergency recovery still applies).
+    # env var: AGENT_CONTEXT_SOFT_LIMIT_CHARS
+    context_soft_limit_chars: int = 280_000
+
+    # Hard cap on a single serialized tool result as it enters the LLM
+    # context (ToolMessage.content). One giant browser_view / file_read /
+    # search payload can otherwise dominate every later request. The raw
+    # result stays intact on the ToolMessage artifact for the UI.
+    # 0 disables the cap. env var: AGENT_TOOL_RESULT_MAX_CHARS
+    tool_result_max_chars: int = 48_000
+
     # Extra instructions appended to all agent system prompts at runtime.
     # Useful for per-deployment persona customisation without editing code.
     # env var: EXTEND_SYSTEM_MESSAGE

@@ -88,6 +88,25 @@ def _friendly_task_error(exc: Exception) -> str:
             "di provider — ganti ke model yang aktif. / Model not found — update "
             "MODEL_NAME to an available model and restart."
         )
+    # Context-overflow (NVIDIA 400/1261 "Prompt exceeds max length") that
+    # survived even the agent's emergency compaction ladder — e.g. a single
+    # tool result larger than the whole context window.
+    _text = str(exc).lower()
+    if (
+        "1261" in _text
+        or "exceeds max length" in _text
+        or "prompt is too long" in _text
+        or "context length" in _text
+        or "too many input tokens" in _text
+    ):
+        return (
+            "Konteks percakapan agent melebihi batas panjang prompt model "
+            "(error 1261) dan tidak cukup ter-padatkan otomatis. Coba jalankan "
+            "ulang task ini di sesi baru, atau pecah menjadi beberapa task "
+            "yang lebih kecil. / The agent conversation exceeded the model's "
+            "prompt-length limit even after emergency compaction — retry in a "
+            "new session or split the task into smaller steps."
+        )
     return f"Task error: {exc}"
 
 class AgentTaskRunner(TaskRunner):

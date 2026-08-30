@@ -1117,6 +1117,12 @@ class ExecutionAgent(BaseAgent):
             self._deferred_attachments
         )
         await self._ensure_memory()
+        # Proactive context gate before streaming the summary: the final
+        # summary sends the agent's ENTIRE accumulated memory — on long
+        # research/build tasks this is exactly where the prompt exceeded
+        # the provider limit (error 1261 "Prompt exceeds max length") and
+        # killed the task after all the work was done. Shrink first.
+        await self._enforce_context_budget()
         context = list(self.memory.get_messages())
 
         # Scope the summary to the CURRENT request: execution memory keeps

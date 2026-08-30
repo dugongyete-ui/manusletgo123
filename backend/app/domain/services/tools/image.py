@@ -292,31 +292,23 @@ class ImageToolkit(BaseToolkit):
 
             result = await self.sandbox.file_upload(image_data, file_path)
             if result and result.success:
-                import mimetypes
-                ext = file_path.rsplit(".", 1)[-1].lower() if "." in file_path else ""
-                mime = mimetypes.types_map.get(f".{ext}", "image/jpeg")
-
-                # NEVER return the full image as a base64 data_url in the tool
-                # result: the result is stored in the agent's MongoDB memory
-                # document (16MB BSON cap) and in the LLM context. A multi-MB
-                # image here previously crashed the whole task with
-                # pymongo DocumentTooLarge ('update' command document too large).
-                # A small inline preview is kept only for tiny images.
+                # NEVER return the image itself (base64 or otherwise) in
+                # the tool result: the serialized result goes into the
+                # agent's MongoDB memory document AND is re-sent to the
+                # LLM on every subsequent round. Even a "small" 100KB
+                # inline preview becomes ~130K base64 characters ≈ 30-50K
+                # tokens PER IMAGE — on image-heavy tasks (search →
+                # download → search → download …) a handful of these blew
+                # the provider's prompt limit (error 1261 "Prompt exceeds
+                # max length") and crashed the whole task at the final
+                # summary. The UI renders attachments from the synced
+                # session files, never from this field — so return
+                # metadata only (path, size, source URL).
                 data: dict = {
                     "file_path": file_path,
                     "size": len(image_data),
                     "source_url": url,
                 }
-                if len(image_data) <= 100 * 1024:  # ≤100 KB → inline preview is safe
-                    import base64
-                    data["data_url"] = (
-                        f"data:{mime};base64,{base64.b64encode(image_data).decode()}"
-                    )
-                else:
-                    data["data_url_preview_skipped"] = (
-                        f"image too large for inline preview ({len(image_data)} bytes); "
-                        f"file saved at {file_path}"
-                    )
                 return ToolResult(
                     success=True,
                     message=f"Image saved to {file_path} ({len(image_data)} bytes)",
