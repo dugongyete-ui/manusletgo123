@@ -52,7 +52,7 @@ import { getFileDownloadUrl } from '../api/file'
 import { getFileType } from '../utils/fileType'
 import { useResizeObserver } from '../composables/useResizeObserver'
 import { eventBus } from '../utils/eventBus'
-import { EVENT_SHOW_TOOL_PANEL } from '../constants/event'
+import { EVENT_SHOW_TOOL_PANEL, EVENT_TAKEOVER_START } from '../constants/event'
 
 
 const {
@@ -80,14 +80,23 @@ const download = async () => {
   window.open(url, '_blank')
 }
 
+const onHideFromToolPanel = () => {
+  visible.value = false
+}
+
+// VNC takeover covers the whole screen → hide the file panel too.
+const onHideFromTakeover = () => {
+  visible.value = false
+}
+
 onMounted(() => {
-  eventBus.on(EVENT_SHOW_TOOL_PANEL, () => {
-    visible.value = false
-  })
+  eventBus.on(EVENT_SHOW_TOOL_PANEL, onHideFromToolPanel)
+  eventBus.on(EVENT_TAKEOVER_START, onHideFromTakeover)
 })
 
 onUnmounted(() => {
-  eventBus.off(EVENT_SHOW_TOOL_PANEL)
+  eventBus.off(EVENT_SHOW_TOOL_PANEL, onHideFromToolPanel)
+  eventBus.off(EVENT_TAKEOVER_START, onHideFromTakeover)
 })
 
 defineExpose({

@@ -5,7 +5,7 @@
       <div
         v-if="isShow"
         class="fixed inset-0 bg-black/50 z-[49] sm:hidden"
-        @click="hideToolPanel"
+        @click="hideToolPanel()"
       />
     </Transition>
 
@@ -26,7 +26,7 @@
           :totalTools="visibleTools.length"
           :hasPrev="currentIndex > 0"
           :hasNext="currentIndex < visibleTools.length - 1"
-          @hide="hideToolPanel"
+          @hide="hideToolPanel()"
           @jumpToRealTime="onJumpToRealTime"
           @prevTool="navigatePrev"
           @nextTool="navigateNext"
@@ -41,7 +41,8 @@ import { ref, computed, onMounted, onUnmounted } from 'vue'
 import type { ToolContent } from '../types/message'
 import ToolPanelContent from './ToolPanelContent.vue'
 import { eventBus } from '../utils/eventBus'
-import { EVENT_SHOW_FILE_PANEL, EVENT_SHOW_TOOL_PANEL } from '../constants/event'
+import { EVENT_SHOW_FILE_PANEL, EVENT_SHOW_TOOL_PANEL, EVENT_TAKEOVER_START } from '../constants/event'
+import { pushOverlayEntry, releaseOverlayEntry } from '../utils/overlayHistory'
 
 const props = defineProps<{
   sessionId?: string
@@ -68,10 +69,33 @@ const showToolPanel = (content: ToolContent, isLive: boolean = false) => {
   live.value = isLive
   const idx = visibleTools.value.findIndex(t => t.tool_call_id === content.tool_call_id)
   currentIndex.value = idx >= 0 ? idx : visibleTools.value.length - 1
+  // Push a history entry so the phone BACK button closes this panel
+  // instead of leaving the chat page.
+  pushOverlayEntry()
 }
 
-const hideToolPanel = () => {
+const hideToolPanel = (options?: { keepHistory?: boolean }) => {
+  if (!isShow.value) return
   isShow.value = false
+  // `keepHistory` — another overlay (VNC takeover) is taking over the
+  // screen and inherits the history entry we pushed.
+  if (!options?.keepHistory) releaseOverlayEntry()
+}
+
+// BACK button while the panel is open → close the panel (the browser has
+// already popped our entry; never touch history here).
+const onPopState = () => {
+  hideToolPanel({ keepHistory: true })
+}
+
+// File panel opening → close this panel (consume our history entry).
+const onHideFromFilePanel = () => hideToolPanel()
+
+// VNC takeover starting → hide immediately so the live VNC is visible at
+// once (it would otherwise open behind this full-screen panel). The
+// takeover inherits our history entry, so BACK still returns safely.
+const onTakeoverStart = () => {
+  hideToolPanel({ keepHistory: true })
 }
 
 const onJumpToRealTime = () => {
@@ -101,11 +125,15 @@ const navigateNext = () => {
 }
 
 onMounted(() => {
-  eventBus.on(EVENT_SHOW_FILE_PANEL, hideToolPanel)
+  eventBus.on(EVENT_SHOW_FILE_PANEL, onHideFromFilePanel)
+  eventBus.on(EVENT_TAKEOVER_START, onTakeoverStart)
+  window.addEventListener('popstate', onPopState)
 })
 
 onUnmounted(() => {
-  eventBus.off(EVENT_SHOW_FILE_PANEL, hideToolPanel)
+  eventBus.off(EVENT_SHOW_FILE_PANEL, onHideFromFilePanel)
+  eventBus.off(EVENT_TAKEOVER_START, onTakeoverStart)
+  window.removeEventListener('popstate', onPopState)
 })
 
 defineExpose({

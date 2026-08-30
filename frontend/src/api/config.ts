@@ -4,6 +4,7 @@ export interface ClientConfigResponse {
   auth_provider: string
   show_github_button: boolean
   github_repository_url: string
+  claw_enabled: boolean
   google_analytics_id: string | null
 }
 

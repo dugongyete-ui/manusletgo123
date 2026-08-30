@@ -45,6 +45,8 @@ import { useI18n } from 'vue-i18n';
 import { getFileDownloadUrl } from '@/api/file';
 import { API_CONFIG } from '@/api/client';
 import TakeOverIcon from '@/components/icons/TakeOverIcon.vue';
+import { eventBus } from '@/utils/eventBus';
+import { EVENT_TAKEOVER_START } from '@/constants/event';
 
 const props = defineProps<{
   sessionId: string;
@@ -79,6 +81,10 @@ watch(
 );
 
 const takeOver = () => {
+  // Tell every full-screen overlay (tool/file panel) to hide itself so the
+  // live VNC is visible IMMEDIATELY — without this the takeover opens
+  // BEHIND this panel on phones and the user must dismiss the panel first.
+  eventBus.emit(EVENT_TAKEOVER_START);
   window.dispatchEvent(new CustomEvent('takeover', {
     detail: {
       sessionId: props.sessionId,

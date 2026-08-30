@@ -120,6 +120,13 @@ class Settings(BaseSettings):
     # Google Analytics configuration
     google_analytics_id: str | None = None
 
+    # GitHub button on the login/landing page (client runtime config).
+    # show_github_button: bool; github_repository_url: link the button opens.
+    show_github_button: bool = False
+    github_repository_url: str | None = None
+    # Claw branding toggle (client runtime config)
+    claw_enabled: bool = False
+
     # Auth configuration
     auth_provider: str = "password"  # "password", "none", "local"
     password_salt: str | None = None

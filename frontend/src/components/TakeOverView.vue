@@ -1,5 +1,5 @@
 <template>
-    <div v-if="shouldShow" class="fixed bg-[var(--background-gray-main)] z-50 transition-all w-full h-full inset-0">
+    <div v-if="shouldShow" class="fixed bg-[var(--background-gray-main)] z-[60] transition-all w-full h-full inset-0">
         <div class="w-full h-full relative flex" :class="mobileMode ? 'items-center justify-center' : ''">
             <!-- Phone frame wrapper (mobile view mode) -->
             <div class="w-full h-full vnc-frame" :class="{ 'phone-frame': mobileMode }">
@@ -69,6 +69,7 @@ import { MonitorX } from 'lucide-vue-next';
 import VNCViewer from './VNCViewer.vue';
 import VNCToolbar from './VNCToolbar.vue';
 import VirtualKeyboard from './VirtualKeyboard.vue';
+import { pushOverlayEntry, releaseOverlayEntry } from '../utils/overlayHistory';
 
 type VNCViewMode = 'fit' | 'pan' | 'mobile';
 
@@ -136,7 +137,37 @@ const handleTakeOverEvent = (event: Event) => {
     if (customEvent.detail.active) {
         connectionState.value = 'connecting';
         failReason.value = '';
+        // Phone BACK button exits the takeover instead of leaving the chat.
+        // If the tool panel is open underneath, its own history entry is
+        // inherited (single BACK = back to the chat).
+        pushOverlayEntry();
     }
+};
+
+// Direct URL access (/chat/:id?vnc=1 — "open in new window"). Convert the
+// query-param view into the event-driven state: this makes "Exit Takeover"
+// actually work (the old code kept vnc=1 in the URL, so shouldShow stayed
+// true forever) and gives the BACK button an entry to pop.
+watch(
+    () => route.query.vnc,
+    (v) => {
+        if (v === '1' && route.params.sessionId && !takeOverActive.value) {
+            takeOverActive.value = true;
+            currentSessionId.value = route.params.sessionId as string;
+            connectionState.value = 'connecting';
+            failReason.value = '';
+            const done = () => pushOverlayEntry();
+            router.replace({ query: { ...route.query, vnc: undefined } }).then(done, done);
+        }
+    },
+    { immediate: true },
+);
+
+// BACK button while the takeover is open → exit the takeover and stay on
+// the chat page (the browser already popped our entry — do not touch
+// history here).
+const onPopState = () => {
+    if (takeOverActive.value) exitTakeOver();
 };
 
 // VNC event handlers
@@ -191,12 +222,14 @@ watch(shouldShow, (shown) => {
 // Add event listener when component is mounted
 onMounted(() => {
     window.addEventListener('takeover', handleTakeOverEvent as EventListener);
+    window.addEventListener('popstate', onPopState);
 });
 
 
 // Remove event listener when component is unmounted
 onBeforeUnmount(() => {
     window.removeEventListener('takeover', handleTakeOverEvent as EventListener);
+    window.removeEventListener('popstate', onPopState);
 });
 
 // Get session ID
@@ -214,6 +247,9 @@ const exitTakeOver = () => {
     // Update local state
     takeOverActive.value = false;
     currentSessionId.value = '';
+    // Consume the history entry pushed on open (no-op when the exit was
+    // triggered by the BACK button — the browser already popped it).
+    releaseOverlayEntry();
 };
 
 // Expose sessionId for parent component to use
