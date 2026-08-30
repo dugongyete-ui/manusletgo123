@@ -5,6 +5,7 @@ from markdownify import markdownify
 from langchain_core.messages import HumanMessage, SystemMessage
 from app.core.config import get_settings
 from app.domain.models.tool_result import ToolResult
+from app.infrastructure.external.browser.window_fit import fit_window_to_display
 import logging
 
 # Set up logger for this module
@@ -69,6 +70,10 @@ class PlaywrightBrowser:
                     # Create a new page in other cases
                     context = contexts[0] if contexts else await self.browser.new_context()
                     self.page = await context.new_page()
+                # No window manager in the sandbox: force the window to cover
+                # the whole Xvfb display so the live VNC view matches the
+                # screenshots (--start-maximized is ignored without a WM).
+                await fit_window_to_display(self.page, "playwright")
                 return True
             except Exception as e:
                 # Clean up failed resources

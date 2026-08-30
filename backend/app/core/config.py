@@ -63,6 +63,12 @@ class Settings(BaseSettings):
     sandbox_base_url: str = "http://localhost:8080"
     sandbox_vnc_url: str = "ws://localhost:5901"
     sandbox_cdp_url: str = "http://localhost:8222"
+    # Virtual display size (Xvfb -screen 0). The browser window is force-fit
+    # to exactly this size via CDP on every browser init — there is no window
+    # manager in the sandbox, so --start-maximized is silently ignored and the
+    # window would otherwise float in the middle of the desktop (making the
+    # live VNC view look off-centre vs. the tool screenshots).
+    sandbox_display_size: str = "1280x1029"
     # Root directory for per-user sandbox homes. On Replit the runner user owns
     # /home/runner, so the default matches production. Other deployments (where
     # /home/runner cannot be created) can override it via USER_HOME_ROOT.

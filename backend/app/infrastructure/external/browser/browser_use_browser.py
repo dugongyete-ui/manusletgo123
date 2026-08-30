@@ -6,6 +6,10 @@ from browser_use.browser.session import BrowserSession, CDPSession
 from browser_use.dom.views import EnhancedDOMTreeNode
 
 from app.domain.models.tool_result import ToolResult
+from app.infrastructure.external.browser.window_fit import (
+    clear_viewport_overrides_browser_use,
+    fit_window_browser_use,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -345,10 +349,26 @@ class BrowserUseBrowser:
                     minimum_wait_page_load_time=0.5,
                     wait_for_network_idle_page_load_time=2.0,
                     highlight_elements=False,
+                    # Headful no-viewport mode: page content adapts to the REAL
+                    # window size (fitted to the Xvfb display), so the live VNC
+                    # view is pixel-identical to the agent's screenshots.
+                    # browser_use's default applies a virtual 1920x1080 viewport
+                    # via Emulation.setDeviceMetricsOverride — pages then render
+                    # at a resolution that doesn't match the visible window.
+                    headless=False,
+                    no_viewport=True,
                 )
                 await session.start()
                 self._session = session
                 logger.info("BrowserSession connected to CDP: %s", self.cdp_url)
+                # No window manager in the sandbox: force the window to cover
+                # the whole Xvfb display so the live VNC view matches the
+                # screenshots (--start-maximized is ignored without a WM).
+                await fit_window_browser_use(session, "browser_use")
+                # Tabs touched by earlier (viewport-mode) sessions still carry
+                # a stale 1920x1080 device-metrics override — clear it so every
+                # open page renders at the real window size.
+                await clear_viewport_overrides_browser_use(session, "browser_use")
                 return session
             except Exception as exc:
                 last_error = exc

@@ -12,6 +12,7 @@ sleep 2
 chromium \
     --display=:1 \
     --window-size=1280,1029 \
+    --window-position=0,0 \
     --start-maximized \
     --no-sandbox \
     --disable-dev-shm-usage \
