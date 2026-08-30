@@ -2,7 +2,7 @@ from typing import AsyncGenerator, Optional, List
 from app.domain.models.plan import Plan, Step, ExecutionStatus
 from app.domain.models.file import FileInfo
 from app.domain.models.message import Message, VisionImage
-from app.domain.services.agents.base import BaseAgent
+from app.domain.services.agents.base import BaseAgent, _strip_function_syntax
 from app.domain.repositories.agent_repository import AgentRepository
 from app.domain.services.prompts.system import SYSTEM_PROMPT
 from app.domain.services.prompts.execution import (
@@ -278,7 +278,11 @@ class ExecutionAgent(BaseAgent):
             return ""
         line = " ".join(str(text).strip().split())
         line = line.strip("\"'`“”‘’ ")
-        if line.startswith("{"):
+        # Wire-format residue guard (same legacy blocks the execution loop
+        # salvages): a progress line that is only a raw tool-call skeleton
+        # is not a progress line at all.
+        line = _strip_function_syntax(line).strip()
+        if not line or line.startswith("{"):
             return ""
         # Refuse lines that violate the spirit (counting actions).
         import re as _re
@@ -965,8 +969,29 @@ class ExecutionAgent(BaseAgent):
             # key is exhausted (auth/limit errors fail before any chunk).
             full_text = await self.astream_text_with_fallback(stream_context)
 
-            if full_text:
-                clean_text = self._extract_text_from_json(full_text)
+            # ── Delivery-quality gate (format-level, not task-level) ──────
+            # Two failure modes must NOT reach the chat as the final message:
+            #   1. Wire-format leak: the model, coming out of a tool-heavy
+            #      context, streams its next tool call as raw text (e.g.
+            #      "<function=file_read>...</function>") instead of a summary
+            #      — observed live in session 8a54aca5: the final message was
+            #      a raw file_read call and the user got NO summary at all.
+            #   2. Empty delivery: the stream returned nothing (returns before
+            #      any tool_loop fallback, leaving the task without a final
+            #      message).
+            # Both are detected by FORMAT only: strip the known legacy
+            # wire-format blocks (same contract the execution loop salvages,
+            # see base._salvage_function_calls) and check whether any
+            # user-facing prose survives. Prose + residue -> deliver the
+            # prose. No prose -> fall through to the JSON tool-loop fallback,
+            # which re-asks the model WITH tools bound: the intended action
+            # (e.g. reading the deliverable file) executes properly and the
+            # real final answer is produced afterwards.
+            clean_text = self._extract_text_from_json(full_text or "")
+            user_text = _strip_function_syntax(clean_text).strip()
+
+            if user_text:
+                clean_text = user_text
                 # NOTE: the summary is delivered as ONE atomic MessageEvent —
                 # no MessageChunkEvent "fake typing" replay.  Chunk events are
                 # transient (never persisted to session history), so a client
@@ -1000,7 +1025,23 @@ class ExecutionAgent(BaseAgent):
                     attachments=attachments if attachments else None,
                     is_final=True,
                 )
-            return
+                return
+
+            # Wire-format-only or empty stream: do NOT yield garbage and do
+            # NOT return silently — drop into the JSON tool-loop fallback
+            # below so the model can still deliver a real summary.
+            if (full_text or "").strip():
+                logger.warning(
+                    "Summarize stream leaked raw tool-call wire format "
+                    "(%d chars, no user-facing prose) — recovering via "
+                    "JSON tool-loop fallback",
+                    len(full_text),
+                )
+            else:
+                logger.warning(
+                    "Summarize stream delivered no content — recovering "
+                    "via JSON tool-loop fallback"
+                )
 
         except Exception as e:
             logger.warning(
@@ -1015,15 +1056,29 @@ class ExecutionAgent(BaseAgent):
             SUMMARIZE_PROMPT.format(user_home=self._resolve_user_home())
         ):
             if isinstance(event, MessageEvent):
+                # Progress narration emitted by the tool loop is NOT a final
+                # answer — pass it through as progress only, otherwise a
+                # mid-loop line like "reading the deliverable…" would be
+                # re-delivered as is_final and the real summary that follows
+                # would become a duplicate final bubble.
+                if event.is_progress:
+                    yield event
+                    continue
                 logger.debug(f"Execution agent summary: {event.message}")
                 parsed_response = await self._parse_json(event.message)
                 if parsed_response is None:
                     logger.warning(
                         "Summarize fallback returned non-JSON, using raw message"
                     )
-                    yield MessageEvent(message=event.message, is_final=True)
+                    raw_msg = _strip_function_syntax(event.message or "").strip()
+                    if raw_msg:
+                        yield MessageEvent(message=raw_msg, is_final=True)
                     continue
                 msg_obj = Message.model_validate(parsed_response)
+                # Same wire-format residue guard on the parsed message body.
+                msg_obj.message = _strip_function_syntax(
+                    msg_obj.message or ""
+                ).strip() or msg_obj.message
                 # Collect every deliverable exactly once, deduplicated:
                 # the model's own attachments + step deliverables + files
                 # deferred from mid-task notifications.

@@ -114,6 +114,14 @@ class PlannerAgent(BaseAgent):
         when asked for a short acknowledgement, so never pass a JSON-shaped response
         through to the chat renderer.
         """
+        # Wire-format residue guard first: the same legacy <function=NAME>...
+        # blocks the execution loop salvages (base._salvage_function_calls)
+        # can leak into ANY unbound plain-text stream. Acknowledgement prose
+        # never legitimately contains them, so strip before any other check.
+        from app.domain.services.agents.base import _strip_function_syntax
+
+        text = _strip_function_syntax(text or "")
+
         cleaned = text.strip()
         if not cleaned:
             return ""
