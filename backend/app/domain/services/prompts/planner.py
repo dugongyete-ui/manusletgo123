@@ -14,6 +14,14 @@ MANDATORY RULE — File Attachments:
 - Image files are embedded as vision content — no extraction step needed for extraction, but if analysis is requested create a step for it.
 - Never tell the user you see two separate files just because a sandbox path exists alongside a <file> tag — they are the same file.
 
+GRANULARITY — PLAN IN PHASES, NOT MICRO-ACTIONS:
+Each step is a PHASE of work with a complete, verifiable outcome — never a single action.
+- A phase may require many tool calls; the executor works inside it until the outcome is real.
+- A step description states the OUTCOME (what must be true when the step ends), not the mechanics.
+- Ask yourself: "would a human write this as ONE checkbox on a checklist?" If your step reads like a single click, one field, or one command — it is too small; merge it into its surrounding phase.
+- Simple tasks (answerable in 1-3 tool calls) → a single step. Never inflate them.
+- Complex tasks → typically 3-6 phases. Hard ceiling: 8 steps. If you need more, your phases are too fine-grained.
+
 Workflow:
 1. Analyze the user's message and decide: does completing this require tools?
 2. If the message contains <file name="..."> tags:
@@ -22,7 +30,7 @@ Workflow:
    - Only use 0 steps (direct answer) for purely conversational questions unrelated to deep file processing.
 3. If the "Attachments" list has sandbox paths WITHOUT a matching <file> tag → tools ARE required, create an extraction + processing step.
 4. Determine the working language based on the user's message.
-5. If tools are needed: generate a clear goal and break it into atomic steps.
+5. If tools are needed: generate a clear goal and break it into PHASE-level steps (see granularity rules above).
 6. If no tools are needed: return empty steps and answer the user in the message field.
 """
 
@@ -33,8 +41,14 @@ You are now creating a plan based on the user's message:
 Note:
 - **You must use the language provided by user's message to execute the task**
 - Your plan must be simple and concise, don't add any unnecessary details.
-- Your steps must be atomic and independent, and the next executor can execute them one by one use the tools.
-- You need to determine whether a task can be broken down into multiple steps. If it can, return multiple steps; otherwise, return a single step.
+- Each step is a PHASE of work with a verifiable outcome — the executor may run MANY tool calls inside one step. Steps describe outcomes, not individual actions.
+- Calibrate the number of steps to the task's real complexity:
+  * A task doable in 1-3 tool calls → ONE step only.
+  * A normal multi-step task → 3-6 phases. NEVER exceed 8 steps.
+  * An unclear or unfamiliar objective → keep the early steps exploratory (observe, locate, understand); later steps will be shaped by what execution actually finds — the plan is updated between steps for exactly that.
+- Do NOT split a coherent activity into per-action steps. A coherent activity that produces ONE outcome is ONE step — however many clicks, fields, or commands it takes. Steps are only separate when they produce genuinely different outcomes.
+- Steps must be ordered and each one must be independently executable by the executor using the tools, with the result of the previous step available as context.
+- Self-test before returning the plan: if any step names exactly one click, one field, one command, or one navigation, it is too small — merge it into the phase it serves. If the plan merely restates the user's instructions one action at a time, you have transcribed, not planned.
 
 Return format requirements:
 - Must return JSON format that complies with the following TypeScript interface
@@ -105,12 +119,14 @@ You are updating the plan, you need to update the plan based on the step executi
 
 Note:
 - You can delete, add or modify the plan steps, but don't change the plan goal
+- Keep steps at PHASE granularity — never split an upcoming step into per-action micro-steps (the executor handles many tool calls inside one step by itself)
 - Don't change the description if the change is small
 - Only re-plan the following uncompleted steps, don't change the completed steps
 - Output the step id start with the id of first uncompleted step, re-plan the following steps
 - Delete the step if it is completed or not necessary
 - Carefully read the step result to determine if it is successful, if not, change the following steps
 - According to the step result, you need to update the plan steps accordingly
+- Keep the total number of steps within the original scale (3-6 for normal tasks, 8 max) — updates replace or adjust phases, they do not multiply them
 
 Return format requirements:
 - Must return JSON format that complies with the following TypeScript interface

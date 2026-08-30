@@ -315,6 +315,10 @@ class BrowserUseBrowser:
         # not just whether the URL changed. browser-use exposes the same
         # signal implicitly via its DOM snapshot diffing.
         self._last_elements_signature: Optional[tuple] = None
+        # New-element awareness (browser-use port): node identities seen in the
+        # last agent-visible observation. Elements absent from this set get a
+        # '*' prefix in the next observation's element list.
+        self._previous_node_keys: Optional[frozenset] = None
 
     # ------------------------------------------------------------------
     # Session lifecycle
@@ -569,30 +573,64 @@ class BrowserUseBrowser:
         return ""
 
     @staticmethod
+    def _format_node(idx: int, node) -> str:
+        """Format a single selector-map node as 'idx:<tag>text</tag>'."""
+        tag = node.tag_name or "element"
+        text = node.get_meaningful_text_for_llm() if hasattr(node, "get_meaningful_text_for_llm") else ""
+
+        # Fallback: explicit HTML attributes (placeholder / aria-label / title)
+        if not text and node.attributes:
+            text = (
+                node.attributes.get("placeholder", "")
+                or node.attributes.get("aria-label", "")
+                or node.attributes.get("title", "")
+                or ""
+            )
+
+        # Fallback: data-key / AX name / icon-font class
+        if not text:
+            text = BrowserUseBrowser._get_node_hint(node)
+
+        if len(text) > 100:
+            text = text[:97] + "..."
+        return f"{idx}:<{tag}>{text}</{tag}>"
+
+    @staticmethod
     def _format_selector_map(selector_map: dict) -> List[str]:
         """Format a selector map dict into the standard index:<tag>text</tag> list."""
-        formatted: List[str] = []
+        return [
+            BrowserUseBrowser._format_node(idx, node)
+            for idx, node in sorted(selector_map.items())
+        ]
+
+    def _mark_new_elements(self, selector_map: dict) -> tuple:
+        """Format the selector map, flagging elements NOT present in the previous
+        agent-visible observation with a leading '*' (browser-use port).
+
+        Identity is (session_id, backend_node_id) — stable across re-serialisations
+        even when index numbers shift. Returns (marked, unmarked, node_keys):
+        - marked:   element list with '*idx:...' lines for new elements
+        - unmarked: the plain list (what element-diff signatures must compare,
+                    otherwise marker decay would look like page changes)
+        - node_keys: identities of ALL nodes in this snapshot (full map, not
+                    truncated) — becomes the next observation's baseline
+        """
+        marked: List[str] = []
+        unmarked: List[str] = []
+        keys: set = set()
         for idx, node in sorted(selector_map.items()):
-            tag = node.tag_name or "element"
-            text = node.get_meaningful_text_for_llm() if hasattr(node, "get_meaningful_text_for_llm") else ""
-
-            # Fallback: explicit HTML attributes (placeholder / aria-label / title)
-            if not text and node.attributes:
-                text = (
-                    node.attributes.get("placeholder", "")
-                    or node.attributes.get("aria-label", "")
-                    or node.attributes.get("title", "")
-                    or ""
-                )
-
-            # Fallback: data-key / AX name / icon-font class
-            if not text:
-                text = BrowserUseBrowser._get_node_hint(node)
-
-            if len(text) > 100:
-                text = text[:97] + "..."
-            formatted.append(f"{idx}:<{tag}>{text}</{tag}>")
-        return formatted
+            line = BrowserUseBrowser._format_node(idx, node)
+            unmarked.append(line)
+            key = (
+                str(getattr(node, "session_id", "") or ""),
+                getattr(node, "backend_node_id", None) or id(node),
+            )
+            keys.add(key)
+            if self._previous_node_keys is not None and key not in self._previous_node_keys:
+                marked.append("*" + line)
+            else:
+                marked.append(line)
+        return marked, unmarked, frozenset(keys)
 
     async def _get_interactive_elements(self) -> List[str]:
         """Return a formatted list of interactive elements from the DOM selector map.
@@ -642,16 +680,33 @@ class BrowserUseBrowser:
         )
 
     async def _get_element_center(self, element) -> Optional[tuple]:
-        """Get the center (x, y) of an element via JS getBoundingClientRect.
+        """Get the click point of an element, choosing the LARGEST VISIBLE client
+        rect (browser-use port — their DOM.getContentQuads logic).
 
-        Returns (cx, cy) or None if the element is not in the viewport.
+        Wrapped inline elements (a link spanning two lines) have a bounding box
+        whose centre can land in empty space between the lines — a coordinate
+        click there hits nothing. getClientRects() returns each rendered
+        fragment; picking the largest viewport-visible fragment puts the click
+        on real pixels.
+
+        Returns (cx, cy) or None if the element has no rendered box.
         Used as a fallback for CDP-direct click when Playwright click fails.
         """
         try:
             raw = await element.evaluate("""() => {
+                const rects = [...this.getClientRects()].filter(r => r.width > 0 && r.height > 0);
+                if (!rects.length) return null;
+                const vw = window.innerWidth, vh = window.innerHeight;
+                let best = null, bestArea = -1;
+                for (const r of rects) {
+                    const x0 = Math.max(r.left, 0), y0 = Math.max(r.top, 0);
+                    const x1 = Math.min(r.right, vw), y1 = Math.min(r.bottom, vh);
+                    const area = Math.max(0, x1 - x0) * Math.max(0, y1 - y0);
+                    if (area > bestArea) { bestArea = area; best = {x: (x0 + x1) / 2, y: (y0 + y1) / 2}; }
+                }
+                if (best) return JSON.stringify(best);
                 const r = this.getBoundingClientRect();
-                if (r.width === 0 || r.height === 0) return null;
-                return JSON.stringify({x: r.left + r.width/2, y: r.top + r.height/2});
+                return JSON.stringify({x: r.left + r.width / 2, y: r.top + r.height / 2});
             }""")
             if raw is None:
                 return None
@@ -1137,12 +1192,20 @@ class BrowserUseBrowser:
                 await self._wait_for_dom_settle(timeout=1.0)
                 state = await session.get_browser_state_summary(include_screenshot=False)
         selector_map = (state.dom_state.selector_map if state.dom_state is not None else None) or {}
-        elements = self._format_selector_map(selector_map)
+        # New-element awareness: mark elements not seen in the previous
+        # agent-visible observation with '*'. Both baselines (element
+        # signature for page_changed detection, node keys for new-marking)
+        # update HERE so every consumer of this payload stays consistent.
+        marked, unmarked, node_keys = self._mark_new_elements(selector_map)
+        elements = marked
         if len(elements) > self._MAX_INTERACTIVE_ELEMENTS:
             elements = elements[: self._MAX_INTERACTIVE_ELEMENTS]
             elements.append(
                 f"... (truncated, showing first {self._MAX_INTERACTIVE_ELEMENTS} of {len(selector_map)} elements)"
             )
+        unmarked_sig = unmarked[: self._MAX_INTERACTIVE_ELEMENTS]
+        self._last_elements_signature = tuple(unmarked_sig)
+        self._previous_node_keys = node_keys
         content = ""
         if include_content and state.dom_state is not None:
             content = state.dom_state.llm_representation() or ""
@@ -1170,10 +1233,13 @@ class BrowserUseBrowser:
 
             content = ""
             interactive_elements: List[str] = []
+            unmarked: List[str] = []
+            node_keys: frozenset = frozenset()
+            selector_map: dict = {}
             if state.dom_state is not None:
                 content = state.dom_state.llm_representation()
                 selector_map = state.dom_state.selector_map or {}
-                interactive_elements = self._format_selector_map(selector_map)
+                interactive_elements, unmarked, node_keys = self._mark_new_elements(selector_map)
 
             # Retry once when the DOM serialisation came back empty — this
             # happens when the snapshot races an in-flight navigation (e.g.
@@ -1187,7 +1253,7 @@ class BrowserUseBrowser:
                 if state.dom_state is not None:
                     content = state.dom_state.llm_representation()
                     selector_map = state.dom_state.selector_map or {}
-                    interactive_elements = self._format_selector_map(selector_map)
+                    interactive_elements, unmarked, node_keys = self._mark_new_elements(selector_map)
 
             if len(interactive_elements) > self._MAX_INTERACTIVE_ELEMENTS:
                 interactive_elements = interactive_elements[:self._MAX_INTERACTIVE_ELEMENTS]
@@ -1195,10 +1261,15 @@ class BrowserUseBrowser:
                     f"... (truncated, showing first {self._MAX_INTERACTIVE_ELEMENTS} of {len(selector_map)} elements — use coordinates or scroll to reach others)"
                 )
 
-            # Element-diff baseline: browser_view is the agent's canonical
-            # observation, so the next click compares against THIS state
+            # Element-diff baselines: browser_view is the agent's canonical
+            # observation, so the next action compares against THIS state
             # (set AFTER the empty-snapshot retry so the baseline is final).
-            self._last_elements_signature = tuple(interactive_elements)
+            # Signature uses the UNMARKED list — '*' markers decay between
+            # observations and must never look like page changes.
+            self._last_elements_signature = tuple(
+                unmarked[: self._MAX_INTERACTIVE_ELEMENTS]
+            )
+            self._previous_node_keys = node_keys
 
             # Build tab summary so the agent always knows which tabs are open
             # and can use browser_switch_tab instead of browser_navigate
@@ -1245,12 +1316,10 @@ class BrowserUseBrowser:
             # Return the full observed state (url/title/elements/content) so the
             # agent immediately reads the page it landed on — no extra
             # browser_view round-trip, no acting blind on an unfamiliar site.
+            # _observe_page_state also resets both diff baselines to THIS page
+            # (element signature + seen-node keys), so the next action's
+            # change detection compares against the right baseline.
             observed = await self._observe_page_state(session, include_content=True)
-            # New page → reset the element-diff baseline to THIS state so the
-            # next click's change-detection compares against the right page.
-            self._last_elements_signature = tuple(
-                observed.get("interactive_elements") or []
-            )
             return ToolResult(success=True, data=observed)
         except Exception as exc:
             return ToolResult(success=False, message=f"Failed to navigate to {url}: {exc}")
@@ -1346,6 +1415,7 @@ class BrowserUseBrowser:
                         except Exception:
                             pass
                         navigated = bool(now_url) and now_url != pre_url
+                        prev_sig = self._last_elements_signature
                         observed = await self._observe_page_state(
                             session2, include_content=navigated
                         )
@@ -1354,13 +1424,14 @@ class BrowserUseBrowser:
                         # model "no visible change" stops blind re-clicks on
                         # toggle widgets (observed live: 10 identical clicks
                         # on a dropdown trigger that toggled itself shut).
-                        els = observed.get("interactive_elements") or []
-                        els_sig = tuple(els)
+                        # NOTE: _observe_page_state already refreshed the
+                        # signature baseline — compare against the snapshot
+                        # taken BEFORE the action.
                         elements_changed = (
-                            self._last_elements_signature is not None
-                            and els_sig != self._last_elements_signature
+                            prev_sig is not None
+                            and self._last_elements_signature is not None
+                            and self._last_elements_signature != prev_sig
                         )
-                        self._last_elements_signature = els_sig
                         observed["page_changed"] = navigated or elements_changed
                         if not navigated and not elements_changed:
                             observed["note"] = (
@@ -1437,16 +1508,15 @@ class BrowserUseBrowser:
                 except Exception:
                     pass
                 navigated = bool(now_url) and now_url != pre_url
+                prev_sig = self._last_elements_signature
                 observed = await self._observe_page_state(
                     session, include_content=navigated
                 )
-                els = observed.get("interactive_elements") or []
-                els_sig = tuple(els)
                 elements_changed = (
-                    self._last_elements_signature is not None
-                    and els_sig != self._last_elements_signature
+                    prev_sig is not None
+                    and self._last_elements_signature is not None
+                    and self._last_elements_signature != prev_sig
                 )
-                self._last_elements_signature = els_sig
                 observed["page_changed"] = navigated or elements_changed
                 observed["clicked"] = {
                     "matched_by": res.get("matched_by"),
@@ -1729,10 +1799,19 @@ class BrowserUseBrowser:
                     except Exception:
                         pass
                     navigated = bool(now_url) and now_url != pre_url
+                    prev_sig = self._last_elements_signature
                     observed = await self._observe_page_state(
                         session2, include_content=navigated
                     )
-                    observed["page_changed"] = navigated
+                    # Element-diff (autocomplete suggestions appearing under
+                    # the field, validation messages, opened panels) counts as
+                    # a real page change too — same rule as clicks.
+                    elements_changed = (
+                        prev_sig is not None
+                        and self._last_elements_signature is not None
+                        and self._last_elements_signature != prev_sig
+                    )
+                    observed["page_changed"] = navigated or elements_changed
                     return ToolResult(success=True, data=observed)
                 except Exception as obs_exc:
                     logger.debug("post-input observe failed: %s", obs_exc)
@@ -1810,6 +1889,10 @@ class BrowserUseBrowser:
             # fresh (no false "no visible change" notes across tabs).
             self._cached_page = None  # force re-resolve against the new focus
             self._last_elements_signature = None
+            # No prior observation of THIS tab in this flow — clear the
+            # new-element baseline too, so the first observation of the tab
+            # does not star everything (markers start from the SECOND look).
+            self._previous_node_keys = None
             try:
                 url = await target.get_url()
             except Exception:
@@ -2749,9 +2832,29 @@ class BrowserUseBrowser:
             data = {"result": result}
             if new_logs:
                 data["console_logs"] = new_logs
+            # Empty-result hint: distinguish "ran but produced nothing" from a
+            # real (empty-string) value, and teach the agent the console
+            # completion-value pattern in place (observed live: probes written
+            # as `forEach(...)` loops returned "" and looked broken).
+            if (result is None or result == "") and not new_logs:
+                data["result"] = None
+                data["note"] = (
+                    "Code produced no return value and no console.log output. "
+                    "End your code with the value you want — e.g. a final "
+                    "expression like JSON.stringify({...}) — or use "
+                    "console.log(...) for diagnostics; both come back to you."
+                )
             return ToolResult(success=True, data=data)
         except Exception as exc:
-            return ToolResult(success=False, message=f"Failed to execute JavaScript: {exc}")
+            # Compact error: CDP stack traces carry full callFrames that bloat
+            # the LLM context for zero diagnostic value. Keep the first line
+            # (exception type + message) plus a short location hint.
+            msg = str(exc)
+            if len(msg) > 300:
+                import re as _re
+                first_line = _re.split(r"\n|\\n", msg)[0][:250]
+                msg = f"{first_line}… (stack trace truncated)"
+            return ToolResult(success=False, message=f"Failed to execute JavaScript: {msg}")
 
     async def console_view(self, max_lines: Optional[int] = None) -> ToolResult:
         """Return captured console log lines from the current page.

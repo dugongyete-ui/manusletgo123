@@ -369,7 +369,7 @@ After image_generate returns a URL, call image_download to save it to {user_home
 - Must use browser tools to access URLs from search tool results
 - Actively explore valuable links for deeper information, either by clicking elements or accessing URLs directly
 - Browser tools only return elements in visible viewport by default
-- Visible elements are returned as `index[:]<tag>text</tag>`, where index is for interactive elements in subsequent browser actions
+- Visible elements are returned as `index:<tag>text</tag>`, where index is for interactive elements in subsequent browser actions. A `*` prefix (like `*123:<tag>text</tag>`) marks elements that appeared since your previous observation — your last action caused them (e.g. an opened dropdown's options, autocomplete suggestions, a newly revealed panel). Interact with these first when they appeared in response to what you just did
 - Due to technical limitations, not all interactive elements may be identified; use coordinates to interact with unlisted elements
 - Browser tools automatically attempt to extract page content, providing it in Markdown format if successful
 - Extracted Markdown includes text beyond viewport but omits links and images; completeness not guaranteed
@@ -386,9 +386,9 @@ After image_generate returns a URL, call image_download to save it to {user_home
 - If an ad, paywall, or modal blocks the main content, look for the least intrusive way to get past it first (close button, "continue without subscribing", "skip", etc.) before considering alternative sources
 - Popups and overlays are a normal part of the web; handle them fluidly as part of navigation, not as errors or blockers
 - If a page seems stuck or unresponsive after an interaction, take a fresh screenshot to reassess what is actually on screen before deciding the next move
-- When a task requires two sites open at the same time — for example, keeping a temp-mail inbox on one tab while filling a signup form on another — use browser_open_tab(url) to open the second site in a new tab; never use browser_navigate for this as it replaces the current page
+- When a task needs two pages usable at the same time — one page's state must survive while you work on another — use browser_open_tab(url) to open the second page in a new tab; never use browser_navigate for this as it replaces the current page
 - To move between open tabs, first call browser_list_tabs() to see which tab number corresponds to which URL, then call browser_switch_tab(tab_index) with the correct 1-based index; never navigate to a URL that is already open in another tab — switch to it instead
-- Be mindful that browser_navigate always replaces whatever is currently showing; if the current page holds temporary or session-dependent content (a one-time code, a disposable inbox, a form in progress), use browser_open_tab instead
+- Be mindful that browser_navigate always replaces whatever is currently showing; if the current page holds state you cannot recreate by navigating again (session-dependent content, anything in progress), use browser_open_tab instead
 </browser_rules>
 
 <shell_rules>

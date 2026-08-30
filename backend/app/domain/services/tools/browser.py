@@ -192,10 +192,21 @@ class BrowserToolkit(BaseToolkit):
         self,
         javascript: str
     ) -> ToolResult:
-        """Execute JavaScript code in browser console. Use when custom scripts need to be executed.
-        
+        """Execute JavaScript code in the current page and get its value back.
+
+        Write code like you would in a browser console: multiple statements are allowed
+        and the value of the LAST expression is returned in "result". console.log(...)
+        lines inside your code are captured and returned in "console_logs".
+
+        ALWAYS end your code with the value you want (an expression or JSON.stringify(...))
+        — code whose last statement only assigns or loops returns no value.
+
+        Use for: probing page state (listing inputs/selects), extracting data the element
+        list cannot show, or last-resort interactions on stuck widgets.
+
         Args:
-            javascript: JavaScript code to execute. Note that the runtime environment is browser console.
+            javascript: JavaScript code. The completion value of the last expression
+                and any console.log output are returned.
         """
         return await self.browser.console_exec(javascript)
     
@@ -207,7 +218,7 @@ class BrowserToolkit(BaseToolkit):
 
     @tool(parse_docstring=True)
     async def browser_open_tab(self, url: str) -> ToolResult:
-        """Open a URL in a new browser tab without replacing the current page. Use this whenever a task requires two sites open simultaneously — for example, opening a sign-up form while keeping a temp-mail inbox visible in tab 1.
+        """Open a URL in a new browser tab without replacing the current page. Use this whenever two pages must stay usable at the same time — the current tab keeps its full state (entered content, scroll position, session-dependent views) while the new page loads in its own tab.
 
         Args:
             url: Complete URL to open in the new tab. Must include protocol prefix (e.g. https://).
@@ -216,7 +227,7 @@ class BrowserToolkit(BaseToolkit):
 
     @tool(parse_docstring=True)
     async def browser_switch_tab(self, tab_index: int) -> ToolResult:
-        """Switch to a specific browser tab by its 1-based position. Use this whenever you need to move between open tabs — for example, switching back to a temp-mail tab after submitting a form in another tab.
+        """Switch to a specific browser tab by its 1-based position. Use this to move between open tabs instead of re-navigating — every tab keeps its own state while you work in another.
 
         Args:
             tab_index: The 1-based index of the tab to switch to (1 = first/leftmost tab, 2 = second tab, etc.).
@@ -265,10 +276,11 @@ class BrowserToolkit(BaseToolkit):
         """Select a dropdown option — the PRIMARY tool for ALL dropdowns and comboboxes.
 
         Three locator styles, use whichever fits:
-        1. dropdown="Select day", option="15"  — BY NAME (recommended for custom React comboboxes:
-           Facebook/Instagram-style DOB & gender pickers, Material-UI/Ant selects). The dropdown
-           locator is the trigger's aria-label or visible text; works even when the trigger is NOT
-           in the interactive_elements list.
+        1. dropdown="Select day", option="15"  — BY NAME (recommended for custom React
+        comboboxes: role=combobox triggers and component-library selects — Material-UI,
+        Ant Design, Chakra and similar). The dropdown locator is the trigger's
+        aria-label or visible text; works even when the trigger is NOT in the
+        interactive_elements list.
         2. index=123, option="June"             — by element index from browser_view.
         3. For native <select> you may also use browser_select_by_text(index, text).
 
