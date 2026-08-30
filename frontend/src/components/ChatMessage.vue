@@ -7,15 +7,32 @@
         </div>
       </div>
     </div>
-    <div class="flex max-w-[90%] relative flex-col gap-2 items-end">
+    <div class="flex max-w-[90%] relative flex-col gap-1 items-end">
       <!-- Markdown container MUST be a block element: the previous
            `flex items-center` laid every rendered block (paragraphs, lists,
            blockquotes, hrs…) side-by-side in a horizontal row — a long
            structured prompt then exploded into a 30,000px-wide bubble with
            clipped text columns on phones. -->
-      <div
-        class="md-prose relative block rounded-[12px] overflow-hidden bg-[var(--fill-white)] dark:bg-[var(--fill-tsp-white-main)] p-3 ltr:rounded-br-none rtl:rounded-bl-none border border-[var(--border-main)] dark:border-0"
-        v-html="renderMarkdown(messageContent.content)">
+      <div class="w-full relative">
+        <div
+          class="md-prose relative block rounded-[12px] overflow-hidden bg-[var(--fill-white)] dark:bg-[var(--fill-tsp-white-main)] p-3 ltr:rounded-br-none rtl:rounded-bl-none border border-[var(--border-main)] dark:border-0"
+          :class="{ 'msg-clamp': isLongUserMsg && !userMsgExpanded }"
+          v-html="renderMarkdown(messageContent.content)">
+        </div>
+      </div>
+      <!-- Long prompt: collapse to a fixed height with a soft fade, keep the
+           full text one tap away. Short messages render exactly as before. -->
+      <button v-if="isLongUserMsg" type="button"
+        class="self-start text-[13px] font-medium text-[var(--text-brand)] hover:underline clickable bg-transparent border-0 p-0"
+        @click="userMsgExpanded = !userMsgExpanded">
+        {{ userMsgExpanded ? t('Show less') : t('Show more') }}
+      </button>
+      <div class="flex items-center gap-1">
+        <button type="button" class="msg-action-btn" :title="copied ? t('Copied') : t('Copy')"
+          :aria-label="t('Copy')" @click="copyMessageText">
+          <CheckIcon v-if="copied" :size="14" />
+          <CopyIcon v-else :size="14" />
+        </button>
       </div>
     </div>
   </div>
@@ -48,6 +65,15 @@
       class="md-prose max-w-none p-0 m-0 prose dark:prose-invert text-[var(--text-primary)]"
       v-html="renderMarkdown(messageContent.content)"
       @click="handleMarkdownClick"></div>
+    <!-- Copy action for the assistant reply (raw text incl. markdown source).
+         Hidden while streaming so nobody copies a half-finished answer. -->
+    <div v-if="!messageContent.isStreaming && (messageContent.content || '').trim()" class="flex items-center gap-1">
+      <button type="button" class="msg-action-btn" :title="copied ? t('Copied') : t('Copy')"
+        :aria-label="t('Copy')" @click="copyMessageText">
+        <CheckIcon v-if="copied" :size="14" />
+        <CopyIcon v-else :size="14" />
+      </button>
+    </div>
   </div>
   <ToolUse v-else-if="message.type === 'tool'" :tool="toolContent" @click="handleToolClick(toolContent)" />
   <div v-else-if="message.type === 'step'" class="flex flex-col">
@@ -117,7 +143,7 @@ import { marked } from 'marked';
 import { markedHighlight } from 'marked-highlight';
 import hljs from 'highlight.js';
 import DOMPurify from 'dompurify';
-import { CheckIcon } from 'lucide-vue-next';
+import { CheckIcon, CopyIcon } from 'lucide-vue-next';
 import { computed, ref, type Component } from 'vue';
 import { useI18n } from 'vue-i18n';
 import { ToolContent, StepContent } from '../types/message';
@@ -153,6 +179,49 @@ const { t } = useI18n();
 // chat flow stays clear without losing the full content.
 const NARRATION_CLAMP = 300;
 const narrationExpanded = ref(false);
+
+// ── Long user prompt: visual clamp (max-height + fade) with Show more ──────
+// Char threshold decides IF the toggle exists; the clamp itself is pure CSS
+// (max-height + mask fade) so markdown never renders broken mid-block the
+// way a raw-text slice would (a 20k-char structured prompt cut mid-table).
+const USER_MSG_CLAMP_THRESHOLD = 600;
+const userMsgExpanded = ref(false);
+const isLongUserMsg = computed(
+  () => (messageContent.value.content || '').length > USER_MSG_CLAMP_THRESHOLD,
+);
+
+// ── Copy message text (user bubble + assistant reply) ─────────────────────
+// Copies the RAW text (markdown source for assistant replies) — same
+// behaviour as ChatGPT. Clipboard API first, textarea fallback for
+// non-secure contexts; a 2s check-icon confirms the copy visually.
+const copied = ref(false);
+let copyResetTimer: ReturnType<typeof setTimeout> | null = null;
+const copyMessageText = async () => {
+  const text = messageContent.value.content || '';
+  if (!text.trim()) return;
+  let ok = false;
+  try {
+    await navigator.clipboard.writeText(text);
+    ok = true;
+  } catch { /* clipboard API unavailable (http / older webview) */ }
+  if (!ok) {
+    try {
+      const ta = document.createElement('textarea');
+      ta.value = text;
+      ta.style.position = 'fixed';
+      ta.style.opacity = '0';
+      document.body.appendChild(ta);
+      ta.select();
+      ok = document.execCommand('copy');
+      document.body.removeChild(ta);
+    } catch { /* give up silently */ }
+  }
+  if (ok) {
+    copied.value = true;
+    if (copyResetTimer) clearTimeout(copyResetTimer);
+    copyResetTimer = setTimeout(() => { copied.value = false; }, 2000);
+  }
+};
 const isProgressNarration = computed(
   () => messageContent.value.is_progress === true && !messageContent.value.isStreaming,
 );
@@ -290,5 +359,54 @@ const handleMarkdownClick = async (event: MouseEvent) => {
   content: "⬇";
   font-size: 0.75em;
   opacity: 0.7;
+}
+
+/* ── Long user prompt: visual clamp with soft bottom fade ───────────────────
+   max-height + mask-image fade the CONTENT itself, so no background color
+   matching is needed between light/dark themes. Mask stays enabled in the
+   expanded state too (harmless) but max-height is lifted. */
+.msg-clamp {
+  max-height: 300px;
+  overflow: hidden;
+  -webkit-mask-image: linear-gradient(to bottom, black 62%, transparent 100%);
+  mask-image: linear-gradient(to bottom, black 62%, transparent 100%);
+}
+
+/* ── Message action button (copy) ───────────────────────────────────────────
+   Desktop (hover available): hidden until the message group is hovered.
+   Touch devices (hover: none): always visible at reduced opacity — there is
+   no hover to reveal it, and tap targets must not be invisible. */
+.msg-action-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  border-radius: 6px;
+  border: 0;
+  background: transparent;
+  color: var(--text-tertiary);
+  cursor: pointer;
+  transition: opacity .15s ease, color .15s ease, background-color .15s ease;
+}
+
+.msg-action-btn:hover {
+  color: var(--text-primary);
+  background: var(--fill-tsp-gray-main);
+}
+
+@media (hover: hover) {
+  .msg-action-btn {
+    opacity: 0;
+  }
+  .group:hover .msg-action-btn {
+    opacity: 1;
+  }
+}
+
+@media (hover: none) {
+  .msg-action-btn {
+    opacity: 0.55;
+  }
 }
 </style>

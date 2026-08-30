@@ -7,6 +7,8 @@ export default {
   'Thinking': 'Thinking',
   'Show more': 'Show more',
   'Show less': 'Show less',
+  'Copy': 'Copy',
+  'Copied': 'Copied',
   'Task Progress': 'Task Progress',
   'Task Completed': 'Task Completed',
   'Create a task to get started': 'Create a task to get started',

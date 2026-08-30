@@ -7,6 +7,8 @@ export default {
   'Thinking': 'Berpikir',
   'Show more': 'Tampilkan selengkapnya',
   'Show less': 'Tampilkan lebih sedikit',
+  'Copy': 'Salin',
+  'Copied': 'Tersalin',
   'Task Progress': 'Progres Tugas',
   'Task Completed': 'Tugas Selesai',
   'Create a task to get started': 'Buat tugas untuk memulai',
