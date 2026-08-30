@@ -40,20 +40,49 @@ defineExpose({
 const shell = ref('');
 const refreshTimer = ref<ReturnType<typeof setInterval> | null>(null);
 
+/** Escape untrusted shell output before it lands in v-html (XSS hardening). */
+const escapeHtml = (s: unknown): string =>
+  String(s ?? '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;');
+
 // Get shellSessionId from toolContent
 const shellSessionId = computed(() => {
-  if (props.toolContent && props.toolContent.args.id) {
+  // Explicit `id` argument wins (agent reused an existing session).
+  if (props.toolContent?.args?.id) {
     return props.toolContent.args.id;
+  }
+  // The agent may omit `id` (auto-created session) — the backend echoes the
+  // resolved session id inside the tool content so live polling still works.
+  if (props.toolContent?.content?.session_id) {
+    return props.toolContent.content.session_id;
   }
   return '';
 });
 
 const updateShellContent = (console: any) => {
-  if (!console) return;
+  if (console == null) return;
   let newShell = '';
-  for (const e of console) {
-    newShell += `<span style="color: var(--function-success);">${e.ps1}</span><span style="color: var(--text-primary);"> ${e.command}</span>\n`;
-    newShell += `<span>${e.output}</span>\n`;
+  if (Array.isArray(console)) {
+    // Normal shape: list of {ps1, command, output} records. Guard every
+    // field — a malformed record must render as text, never as "undefined".
+    for (const e of console) {
+      if (e && typeof e === 'object') {
+        newShell += `<span style="color: var(--function-success);">${escapeHtml(e.ps1)}</span><span style="color: var(--text-primary);"> ${escapeHtml(e.command)}</span>\n`;
+        newShell += `<span>${escapeHtml(e.output)}</span>\n`;
+      } else if (e != null) {
+        newShell += `${escapeHtml(e)}\n`;
+      }
+    }
+  } else if (typeof console === 'string') {
+    // Plain-text payload (e.g. an error message or "(No Console)") — render
+    // it as-is. Iterating a string per-character is what produced the
+    // "undefined undefined" garbage in the first place.
+    newShell = escapeHtml(console);
+  } else if (typeof console === 'object') {
+    newShell = escapeHtml(JSON.stringify(console));
   }
   if (newShell !== shell.value) {
     shell.value = newShell;
@@ -100,6 +129,16 @@ const stopAutoRefresh = () => {
 
 watch(() => props.toolContent, () => {
   loadShellContent();
+});
+
+// The session id can arrive AFTER mount (tool event transitions from
+// "calling" to "called" and the backend echoes the resolved id) — start
+// polling as soon as it shows up, not only on mount.
+watch(shellSessionId, (newId) => {
+  if (newId) {
+    loadShellContent();
+    startAutoRefresh();
+  }
 });
 
 watch(() => props.toolContent.timestamp, () => {

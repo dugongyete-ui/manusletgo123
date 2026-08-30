@@ -542,15 +542,39 @@ class AgentTaskRunner(TaskRunner):
                         search_items = search_results.data.results or []
                     event.tool_content = SearchToolContent(results=search_items)
                 elif event.tool_name == "shell":
-                    if "id" in event.function_args:
-                        shell_result = await self._sandbox.view_shell(event.function_args["id"], console=True)
-                        console_data = (shell_result.data or {}).get("console", []) if (shell_result and shell_result.success) else []
-                        event.tool_content = ShellToolContent(console=console_data)
+                    # Resolve the actual shell session id. Prefer the explicit
+                    # `id` argument; when the agent omitted it (recommended for
+                    # shell_exec — the toolkit auto-creates a fresh session),
+                    # recover the id from the tool result data. Without this
+                    # fallback every id-less shell_exec landed in the else
+                    # branch and stored the literal string "(No Console)",
+                    # which the frontend then rendered as "undefined undefined"
+                    # garbage (it iterates console entries as records).
+                    shell_session_id = event.function_args.get("id")
+                    if not shell_session_id:
+                        fr_data = getattr(event.function_result, "data", None)
+                        if isinstance(fr_data, dict):
+                            shell_session_id = fr_data.get("session_id")
+                    if shell_session_id:
+                        try:
+                            shell_result = await self._sandbox.view_shell(shell_session_id, console=True)
+                        except Exception as exc:
+                            logger.debug(
+                                f"Agent {self._agent_id} view_shell({shell_session_id}) failed: {exc}"
+                            )
+                            shell_result = None
+                        console_data = (
+                            (shell_result.data or {}).get("console", [])
+                            if (shell_result and shell_result.success)
+                            else []
+                        )
+                        event.tool_content = ShellToolContent(
+                            console=console_data, session_id=shell_session_id
+                        )
                     else:
-                        # No shell `id` in the call — usually a FAILED
-                        # invocation (e.g. shell_exec missing the required id
-                        # arg). Surface the actual error message instead of
-                        # the misleading "(No Console)".
+                        # No shell id anywhere — usually a FAILED invocation
+                        # (e.g. invalid args). Surface the actual error message
+                        # instead of the misleading "(No Console)".
                         fr = event.function_result
                         err_msg = ""
                         if fr is not None and getattr(fr, "success", True) is False and getattr(fr, "message", None):

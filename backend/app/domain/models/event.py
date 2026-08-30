@@ -62,6 +62,11 @@ class SearchToolContent(BaseModel):
 class ShellToolContent(BaseModel):
     """Shell tool content"""
     console: Any
+    # Resolved shell session id. The agent may omit the `id` argument on
+    # shell_exec (recommended: the toolkit auto-creates a fresh session), so
+    # the frontend needs the ACTUAL id — echoed here from the tool result —
+    # to poll live console output via /sessions/{id}/shell.
+    session_id: Optional[str] = None
 
 class FileToolContent(BaseModel):
     """File tool content"""
