@@ -213,7 +213,16 @@ class PlannerAgent(BaseAgent):
         return names
 
     async def _acknowledgement_chunks(self, message: Message) -> AsyncGenerator[str, None]:
-        """Yield raw acknowledgement text from an isolated plain-text prompt."""
+        """Yield the assistant's first reply to the user, token by token.
+
+        The reply model judges the message itself — there is deliberately no
+        keyword/verb gate anywhere in the pipeline deciding "task vs chat":
+        - a request that needs work → one short natural acknowledgement line;
+        - a purely conversational message (greeting, thanks, small talk, a
+          question answerable without tools) → a direct, complete answer.
+          On the zero-step path the flow suppresses the planner's redundant
+          plan.message, so this reply IS the user-visible answer.
+        """
         import re
 
         # Collect context clues (files, images) so the AI is aware of what's present.
@@ -238,11 +247,17 @@ class PlannerAgent(BaseAgent):
 
         prompt = (
             f"{message.message}{context_note}\n\n"
-            "Give a short, natural opening reply in the same language as the user. "
-            "ONE sentence only — acknowledge the goal in your own words and say "
-            "you're getting started. NEVER repeat the user's request back verbatim "
-            "or near-verbatim (no re-listing of file names, actions, or the full "
-            "request). No rigid format, no lists, no bullet points. "
+            "Write the assistant's first reply in the same language as the user.\n"
+            "- If the message asks for work (research, browsing, files, code, "
+            "data, anything needing tools): ONE short sentence in your own words "
+            "— acknowledge the goal and say you're getting started. NEVER repeat "
+            "the request back verbatim or near-verbatim (no re-listing of file "
+            "names, actions, or the full request).\n"
+            "- If the message is purely conversational (greeting, thanks, small "
+            "talk, a question answerable without any tools): reply to it directly, "
+            "warmly, and as completely as the question requires — your reply will "
+            "be shown to the user as the assistant's actual answer.\n"
+            "No rigid format, no lists, no bullet points. "
             "Return plain text only. Do not return JSON, markdown code fences, or a plan."
         )
         # Do not use self.memory here.  The planner's memory includes
@@ -250,16 +265,18 @@ class PlannerAgent(BaseAgent):
         context = [
             LCSystemMessage(
                 content=(
-                    "You are writing a brief acknowledgement on behalf of an AI "
-                    "assistant agent. The agent HAS working tools (browser, shell, "
-                    "file operations, web search, image tools, messaging) and will "
-                    "use them right after this acknowledgement — the full task is "
-                    "already being handled. Never speculate about tools being "
+                    "You write the first reply of an AI assistant agent, on its "
+                    "behalf. Judge the user's message yourself. If it clearly "
+                    "asks for work, the agent HAS working tools (browser, shell, "
+                    "file operations, web search, image tools, messaging) and "
+                    "will start using them right after your one-line "
+                    "acknowledgement — never speculate about tools being "
                     "missing, unavailable, or not connected, and never describe "
-                    "limitations of the environment. Keep it to ONE short "
-                    "sentence that acknowledges the goal without echoing the "
-                    "request. Reply in plain natural language only. Never output "
-                    "JSON, code fences, a schema, or a step list."
+                    "limitations of the environment. If the message is purely "
+                    "conversational, your reply IS the assistant's answer, so "
+                    "answer it directly and completely in the user's language. "
+                    "Reply in plain natural language only. Never output JSON, "
+                    "code fences, a schema, or a step list."
                 )
             ),
             LCHumanMessage(content=prompt),

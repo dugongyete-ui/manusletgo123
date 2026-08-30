@@ -1,23 +1,28 @@
-"""Regression tests for the MANDATORY first response (planner acknowledgement).
+"""Regression tests for the MANDATORY first response (streamed first reply).
 
 Bug report (screenshot, session "Coba js console Website Replit"): the first
 assistant reply before the plan appears is intermittent — sometimes present,
 sometimes the chat goes straight to the step list.
 
-Root cause had two layers:
-1. ``_should_stream_acknowledgement`` verb-gate missed common Indonesian
-   phrasings ("coba", "cek", "bantu", "test", "lihat", URLs) so the streamed
-   acknowledgement never even started.
-2. No safety net: when the gate missed (or the ack LLM call failed / its text
-   was suppressed as malformed JSON), the planner's ``plan.message`` — which
-   the planner ALWAYS generates — was silently discarded on the steps>0 path,
-   leaving the user with NO first response at all.
+The original fix broadened a hardcoded verb list ("coba", "cek", "bantu",
+"test", "lihat", ...) that gated the streamed acknowledgement. That list was
+itself a template heuristic: it could never cover every phrasing in every
+language, so the reply kept disappearing for uncovered messages.
 
-The fix guarantees a first response in every path:
-- gate broadened (verbs + URL detection),
-- ``ack_message_delivered`` tracking in the concurrent plan/ack loop,
-- steps>0 and no delivered ack → plan.message becomes the first response,
-- plan.message empty too → deterministic language-aware fallback line.
+The architecture is now GATE-FREE:
+- The streamed first reply starts for EVERY message, concurrently with
+  planning — no keyword/verb list decides anything (SKILL.md: awareness over
+  instruction; the model judges the message, not a word list).
+- The reply model itself distinguishes message kinds: tasks get a one-line
+  acknowledgement, purely conversational messages get a direct answer (see
+  PlannerAgent._acknowledgement_chunks).
+- ``ack_message_delivered`` tracking in the concurrent plan/reply loop:
+  steps>0 and no delivered reply → the planner's ``plan.message`` becomes
+  the first response; plan.message empty too → deterministic fallback line.
+- 0-step conversational plans: when the streamed reply already answered, it
+  IS the single response — plan.message is suppressed so no duplicate bubble
+  appears; when the reply failed, plan.message (or the fallback) is the
+  final answer.
 """
 
 import pytest
@@ -36,55 +41,15 @@ from app.domain.services.flows.plan_act import AgentStatus, PlanActFlow
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Unit: the verb gate
-# ─────────────────────────────────────────────────────────────────────────────
-
-@pytest.mark.parametrize(
-    "text",
-    [
-        "Coba js console Website Replit",   # the exact message from the bug report
-        "Coba buat akun facebook",
-        "Cek harga bitcoin hari ini",
-        "bantu fix bug ini",
-        "test website nya",
-        "lihat halaman itu",
-        "Tolong uji dulu sistemnya",
-        "kunjungi https://example.com dan ambil screenshot",
-        "visit www.replit.com",
-        "Buatkan laporan penjualan",
-        "analyze this dataset",
-    ],
-)
-def test_acknowledgement_gate_covers_task_like_messages(text):
-    """Task-like phrasings must start the streamed acknowledgement."""
-    assert PlanActFlow._should_stream_acknowledgement(Message(message=text)) is True
-
-
-@pytest.mark.parametrize(
-    "text",
-    [
-        "Hai",
-        "halo, apa kabar?",
-        "terima kasih banyak",
-        "ok",
-        "siapa presiden indonesia sekarang?",
-    ],
-)
-def test_acknowledgement_gate_skips_conversational_messages(text):
-    """Pure conversation must NOT pre-ack (plan.message is the single answer)."""
-    assert PlanActFlow._should_stream_acknowledgement(Message(message=text)) is False
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# Flow-level: the mandatory first response
+# Flow-level: the first reply always streams — no gate, any phrasing
 # ─────────────────────────────────────────────────────────────────────────────
 
 def _make_flow(plan: Plan, ack_llm_delivers: bool = True):
     """Build a PlanActFlow skeleton with mocked agents/repositories.
 
     planner.create_plan always returns ``plan``; acknowledge_stream optionally
-    delivers an ack MessageEvent (set False to simulate the LLM ack failing or
-    being suppressed as malformed JSON).
+    delivers a first-reply MessageEvent (set False to simulate the reply LLM
+    failing or being suppressed as malformed JSON).
     """
     flow = PlanActFlow.__new__(PlanActFlow)
     flow._agent_id = "test-agent"
@@ -192,37 +157,52 @@ def _one_step_plan(message=None, language="id"):
     )
 
 
+@pytest.mark.parametrize(
+    "text",
+    [
+        "Coba js console Website Replit",   # the exact message from the bug report
+        "Coba buat akun facebook",
+        "Cek harga bitcoin hari ini",
+        "bantu fix bug ini",
+        "test website nya",
+        "lihat halaman itu",
+        "js console website replit",        # no recognizable verb at all
+        "Hai",                              # conversational — also gets the reply
+        "terima kasih banyak",
+        "analyze this dataset",
+    ],
+)
 @pytest.mark.asyncio
-async def test_gate_miss_still_emits_first_response_from_plan_message():
-    """steps>0 + gate miss (no streamed ack) → plan.message MUST be emitted as
-    the first response before the plan events.  This is the exact scenario of
-    the bug report."""
-    plan = _one_step_plan(message="Baik, saya akan membuka website Replit dan menguji console JS-nya.")
-    flow = _make_flow(plan, ack_llm_delivers=True)  # gate False → never started
-    events = await _collect(flow, "js console website replit")  # no verb → gate miss
+async def test_first_reply_streams_for_every_message(text):
+    """GATE-FREE: every message — task-like OR conversational, with or without
+    any recognizable verb — starts the streamed first reply, which appears
+    before the plan. The old hardcoded verb list could never guarantee this."""
+    plan = _one_step_plan(message="Pesan planner cadangan.")
+    flow = _make_flow(plan, ack_llm_delivers=True)
+    events = await _collect(flow, text)
 
     first = _first_response_before_plan(events)
-    assert first is not None, "No first response before the plan — regression of the reported bug"
-    assert first.message == plan.message
+    assert first is not None, f"No streamed first response for: {text!r}"
+    assert first.message == "Baik, saya mulai kerjakan."
 
 
 @pytest.mark.asyncio
-async def test_ack_llm_failure_still_emits_first_response():
-    """Gate OK (ack started) but the ack LLM delivers nothing (failure /
-    suppressed JSON) → plan.message MUST still become the first response."""
+async def test_first_reply_llm_failure_still_emits_first_response():
+    """Reply LLM delivers nothing (failure / suppressed JSON) → plan.message
+    MUST still become the first response."""
     plan = _one_step_plan(message="Siap, saya cek console-nya sekarang.")
     flow = _make_flow(plan, ack_llm_delivers=False)
-    events = await _collect(flow, "Buat website company profile")  # gate True
+    events = await _collect(flow, "Buat website company profile")
 
     first = _first_response_before_plan(events)
-    assert first is not None, "Ack LLM failure left the user without any first response"
+    assert first is not None, "Reply LLM failure left the user without any first response"
     assert first.message == plan.message
 
 
 @pytest.mark.asyncio
 async def test_deterministic_fallback_when_plan_message_also_empty():
-    """steps>0 + gate miss + plan.message empty → deterministic fallback line
-    (language-aware) instead of silence."""
+    """steps>0 + no delivered reply + plan.message empty → deterministic
+    fallback line (language-aware) instead of silence."""
     plan = _one_step_plan(message=None, language="id")
     flow = _make_flow(plan, ack_llm_delivers=False)
     events = await _collect(flow, "js console website replit")
@@ -244,12 +224,12 @@ async def test_deterministic_fallback_english():
 
 
 @pytest.mark.asyncio
-async def test_no_double_response_when_ack_delivered():
-    """When the streamed ack DID deliver text, the fallback must NOT fire —
+async def test_no_double_response_when_reply_delivered():
+    """When the streamed reply DID deliver text, the fallback must NOT fire —
     exactly one first response, no duplicate bubbles."""
     plan = _one_step_plan(message="Pesan planner yang tidak boleh dobel.")
     flow = _make_flow(plan, ack_llm_delivers=True)
-    events = await _collect(flow, "Buat website company profile")  # gate True
+    events = await _collect(flow, "Buat website company profile")
 
     firsts = []
     for e in events:
@@ -262,15 +242,65 @@ async def test_no_double_response_when_ack_delivered():
             and (e.message or "").strip()
         ):
             firsts.append(e.message)
-    assert firsts == ["Baik, saya mulai kerjakan."], f"Expected single ack, got: {firsts}"
+    assert firsts == ["Baik, saya mulai kerjakan."], f"Expected single reply, got: {firsts}"
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Conversational (0-step) plans: single answer, no duplicate bubble
+# ─────────────────────────────────────────────────────────────────────────────
+
+@pytest.mark.asyncio
+async def test_conversational_reply_is_the_single_answer():
+    """0-step conversational plan + delivered streamed reply → the reply IS
+    the one and only assistant message; plan.message must NOT create a second
+    bubble."""
+    plan = Plan(
+        title="Sapaan",
+        goal="",
+        language="id",
+        message="Hai juga! Ada yang bisa saya bantu?",
+        steps=[],
+    )
+    flow = _make_flow(plan, ack_llm_delivers=True)
+    events = await _collect(flow, "Hai")
+
+    assistant_msgs = [
+        e for e in events
+        if isinstance(e, MessageEvent) and (e.message or "").strip()
+    ]
+    assert len(assistant_msgs) == 1, (
+        f"Expected exactly one assistant message (the streamed reply), "
+        f"got: {[m.message for m in assistant_msgs]}"
+    )
+    assert assistant_msgs[0].message == "Baik, saya mulai kerjakan."
+    assert not assistant_msgs[0].is_final
 
 
 @pytest.mark.asyncio
-async def test_conversational_zero_step_plan_answered_directly():
-    """0-step conversational plan → plan.message is the final answer; the
-    deterministic fallback covers the empty-message edge case."""
+async def test_conversational_reply_failure_answers_via_plan_message():
+    """0-step conversational plan + reply LLM failure → plan.message is the
+    final answer (safety net intact)."""
+    plan = Plan(
+        title="Sapaan",
+        goal="",
+        language="id",
+        message="Hai juga! Ada yang bisa saya bantu?",
+        steps=[],
+    )
+    flow = _make_flow(plan, ack_llm_delivers=False)
+    events = await _collect(flow, "Hai")
+
+    finals = [e for e in events if isinstance(e, MessageEvent) and e.is_final]
+    assert len(finals) == 1
+    assert finals[0].message == "Hai juga! Ada yang bisa saya bantu?"
+
+
+@pytest.mark.asyncio
+async def test_conversational_empty_message_and_reply_failure_hits_fallback():
+    """0-step + empty plan.message + reply failure → deterministic fallback
+    line instead of silence."""
     plan = Plan(title="Sapaan", goal="", language="id", message=None, steps=[])
-    flow = _make_flow(plan, ack_llm_delivers=True)
+    flow = _make_flow(plan, ack_llm_delivers=False)
     events = await _collect(flow, "Hai")
 
     finals = [e for e in events if isinstance(e, MessageEvent) and e.is_final]
