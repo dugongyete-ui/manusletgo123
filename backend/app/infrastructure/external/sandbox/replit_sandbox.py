@@ -50,10 +50,43 @@ class ReplitSandbox(Sandbox):
         self.base_url = getattr(settings, "sandbox_base_url", None) or "http://localhost:8080"
         self._vnc_url = getattr(settings, "sandbox_vnc_url", None) or "ws://localhost:5901"
         self._cdp_url = getattr(settings, "sandbox_cdp_url", None) or "http://localhost:8222"
+        # Display fit task handle — one fit at a time (see _schedule_window_fit)
+        self._fit_task: Optional[asyncio.Task] = None
         logger.info(
             "ReplitSandbox initialised: base_url=%s vnc=%s cdp=%s",
             self.base_url, self._vnc_url, self._cdp_url,
         )
+
+    def vnc_viewer_connected(self) -> None:
+        """Live-view hook: make sure the browser window covers the display.
+
+        Chrome windows float at (10,10) with a ~1px-shy size on the bare
+        Xvfb screen (no window manager honours maximize), so a user opening
+        the live view / takeover BEFORE any browser tool ran would see a
+        small off-centre browser on an empty desktop. Fire-and-forget fit.
+        """
+        if self._fit_task and not self._fit_task.done():
+            return
+
+        async def _fit() -> None:
+            try:
+                from app.infrastructure.external.browser.window_fit import (
+                    fit_window_raw_ws,
+                    get_display_size,
+                )
+
+                await fit_window_raw_ws(
+                    self._cdp_url,
+                    display_size=get_display_size(),
+                    context_name="replit-vnc",
+                )
+            except Exception as exc:
+                logger.debug("Replit window fit on VNC connect failed: %s", exc)
+
+        try:
+            self._fit_task = asyncio.create_task(_fit())
+        except RuntimeError:
+            pass  # no running loop (tests) — nothing to do
 
     # ------------------------------------------------------------------
     # Internal helpers
@@ -265,9 +298,13 @@ class ReplitSandbox(Sandbox):
         engine = (settings.browser_engine or "browser_use").lower().strip()
         if engine == "browser_use":
             logger.info("Using BrowserUseBrowser (CDP: %s)", self.cdp_url)
-            return BrowserUseBrowser(self.cdp_url)
+            from app.infrastructure.external.browser.window_fit import get_display_size
+
+            return BrowserUseBrowser(self.cdp_url, display_size=get_display_size())
         logger.info("Using PlaywrightBrowser (CDP: %s)", self.cdp_url)
-        return PlaywrightBrowser(self.cdp_url)
+        from app.infrastructure.external.browser.window_fit import get_display_size
+
+        return PlaywrightBrowser(self.cdp_url, display_size=get_display_size())
 
     # ------------------------------------------------------------------
     # Shell operations

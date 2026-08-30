@@ -14,9 +14,13 @@ logger = logging.getLogger(__name__)
 class PlaywrightBrowser:
     """Playwright client that provides specific implementation of browser operations"""
     
-    def __init__(self, cdp_url: str):
+    def __init__(self, cdp_url: str, display_size=None):
         self.browser: Optional[Browser] = None
         self.page: Optional[Page] = None
+        # Optional (width, height) of the display THIS browser renders onto
+        # (E2B: 1024x768; replit/local: SANDBOX_DISPLAY_SIZE). When None the
+        # global setting is used as fallback.
+        self._display_size = display_size
         self.playwright = None
         self.settings = get_settings()
         # Shared model builder (keeps the primary/fallback provider logic in
@@ -73,7 +77,11 @@ class PlaywrightBrowser:
                 # No window manager in the sandbox: force the window to cover
                 # the whole Xvfb display so the live VNC view matches the
                 # screenshots (--start-maximized is ignored without a WM).
-                await fit_window_to_display(self.page, "playwright")
+                # The display size comes from the sandbox (E2B is 1024x768,
+                # not the global 1280x1029!).
+                await fit_window_to_display(
+                    self.page, "playwright", display_size=self._display_size
+                )
                 return True
             except Exception as e:
                 # Clean up failed resources

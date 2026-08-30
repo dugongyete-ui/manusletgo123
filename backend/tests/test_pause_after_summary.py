@@ -238,8 +238,13 @@ def test_bootstrap_launches_xvfb_at_depth_24():
     from app.infrastructure.external.sandbox import e2b_sandbox
 
     src = inspect.getsource(e2b_sandbox.E2BSandbox._bootstrap)
-    assert "1024x768x24" in src, "Xvfb must be launched at depth 24"
-    assert "1024x768x16" not in src, "depth 16 caused the black VNC screen"
+    assert (
+        "screen 0 {_DISPLAY_W}x{_DISPLAY_H}x24" in src
+    ), "Xvfb must be launched at depth 24 via the display-size constants"
+    assert (
+        f"_DISPLAY_W = {e2b_sandbox._DISPLAY_W}" in inspect.getsource(e2b_sandbox)
+    ), "display-size constants must stay defined (Xvfb, --window-size, window fit all use them)"
+    assert "x16" not in src.replace("0x16", ""), "depth 16 caused the black VNC screen"
     # chromium relaunch (with --restore-last-session) lives in its own helper
     # since the browser-heal refactor — the bootstrap must call it, and the
     # helper itself must carry the restore flag.

@@ -294,8 +294,13 @@ class BrowserUseBrowser:
     interface as PlaywrightBrowser so it can be used as a drop-in replacement.
     """
 
-    def __init__(self, cdp_url: str, heal_hook=None):
+    def __init__(self, cdp_url: str, heal_hook=None, display_size=None):
         self.cdp_url = cdp_url
+        # Optional (width, height) of the display THIS browser renders onto.
+        # The sandbox layer knows its own Xvfb screen size (E2B: 1024x768,
+        # replit/local: SANDBOX_DISPLAY_SIZE) — forcing the wrong global size
+        # overflows the smaller display and skews the live VNC view.
+        self._display_size = display_size
         # Optional async callable invoked when the CDP endpoint refuses
         # connections (e.g. HTTP 502 from the in-VM proxy) — the signature of a
         # DEAD browser process. The hook (provided by the sandbox layer) relaunches
@@ -364,7 +369,11 @@ class BrowserUseBrowser:
                 # No window manager in the sandbox: force the window to cover
                 # the whole Xvfb display so the live VNC view matches the
                 # screenshots (--start-maximized is ignored without a WM).
-                await fit_window_browser_use(session, "browser_use")
+                # The display size comes from the sandbox (E2B is 1024x768,
+                # not the global 1280x1029!).
+                await fit_window_browser_use(
+                    session, "browser_use", display_size=self._display_size
+                )
                 # Tabs touched by earlier (viewport-mode) sessions still carry
                 # a stale 1920x1080 device-metrics override — clear it so every
                 # open page renders at the real window size.

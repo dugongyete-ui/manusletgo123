@@ -77,6 +77,16 @@ _VNC_RFB_PORT = 5900   # x11vnc RFB port (local only)
 _VNC_WS_PORT = 6080    # websockify — VNC over WebSocket, exposed via E2B proxy
 _X_DISPLAY = ":99"     # Xvfb virtual display for GUI Chromium + VNC
 
+# Virtual display size INSIDE the E2B microVM (Xvfb -screen 0). Keep the
+# three uses below in sync: the Xvfb screen, Chrome's --window-size and the
+# CDP window fit (window_fit.py). 1024x768 is deliberate — the ~0.5 GB
+# microVM cannot afford the 1280x1029 framebuffer the replit sandbox uses,
+# so the browser window is fitted to THIS size, never to the global
+# SANDBOX_DISPLAY_SIZE (which is replit-only and would overflow this screen
+# — the live VNC takeover then looked shifted/cropped).
+_DISPLAY_W = 1024
+_DISPLAY_H = 768
+
 _SETUP_FLAG = "/home/user/.dzeck_env_ready"
 
 _ANSI_RE = re.compile(r"\x1b\[[0-9;?]*[a-zA-Z]|\x1b\][^\x07]*\x07|\x1b\[()][0-9;]*")
@@ -179,6 +189,38 @@ class E2BSandbox:
             self.id,
             E2BSandbox._vnc_viewers[self._raw_id],
         )
+        # The takeover view must show a browser window that covers the
+        # display IMMEDIATELY — even when no browser tool has run yet in
+        # this sandbox (Chrome then still floats wherever it landed, at
+        # (10,10) with a ~1px-shy size, on an otherwise empty desktop).
+        # Fire-and-forget: the websocket handshake must not wait for it.
+        self._schedule_window_fit()
+
+    def _schedule_window_fit(self) -> None:
+        """Best-effort CDP window fit in the background (never raises).
+
+        Guarded so overlapping viewer connects trigger ONE fit at a time.
+        """
+        if getattr(self, "_fit_task", None) and not self._fit_task.done():
+            return
+
+        async def _fit() -> None:
+            try:
+                from app.infrastructure.external.browser.window_fit import fit_window_raw_ws
+
+                ws_url = await self._cdp_ws_url()
+                await fit_window_raw_ws(
+                    ws_url,
+                    display_size=(_DISPLAY_W, _DISPLAY_H),
+                    context_name=f"e2b-vnc:{self.id}",
+                )
+            except Exception as exc:
+                logger.debug("E2B window fit on VNC connect failed: %s", exc)
+
+        try:
+            self._fit_task = asyncio.create_task(_fit())
+        except RuntimeError:
+            pass  # no running loop (tests) — nothing to do
 
     async def vnc_viewer_disconnected(self) -> None:
         remaining = E2BSandbox._vnc_viewers.get(self._raw_id, 0) - 1
@@ -419,7 +461,7 @@ class E2BSandbox:
             )
             await asyncio.sleep(1)
             await self._cmd(
-                f"nohup Xvfb {_X_DISPLAY} -screen 0 1024x768x24 -nolisten tcp "
+                f"nohup Xvfb {_X_DISPLAY} -screen 0 {_DISPLAY_W}x{_DISPLAY_H}x24 -nolisten tcp "
                 ">/tmp/xvfb.log 2>&1 & echo LAUNCHED"
             )
             await asyncio.sleep(1)
@@ -497,7 +539,7 @@ class E2BSandbox:
             # CDP call. Disabling it trades a little back/forward speed for
             # stable latency.
             "--disable-features=BackForwardCache "
-            "--window-size=1024,768 --restore-last-session "
+            f"--window-size={_DISPLAY_W},{_DISPLAY_H} --restore-last-session "
             f"--remote-debugging-port={_CHROME_DEBUG_PORT} "
             "--remote-debugging-address=127.0.0.1 --remote-allow-origins=* "
             "--user-data-dir=/home/user/chrome-profile "
@@ -549,9 +591,13 @@ class E2BSandbox:
         url = await self._cdp_ws_url()
         if engine == "browser_use":
             logger.info("E2B: BrowserUseBrowser via CDP proxy (%s)", self.id)
-            return BrowserUseBrowser(url, heal_hook=self._heal_chrome)
+            return BrowserUseBrowser(
+                url,
+                heal_hook=self._heal_chrome,
+                display_size=(_DISPLAY_W, _DISPLAY_H),
+            )
         logger.info("E2B: PlaywrightBrowser via CDP proxy (%s)", self.id)
-        return PlaywrightBrowser(url)
+        return PlaywrightBrowser(url, display_size=(_DISPLAY_W, _DISPLAY_H))
 
     # ------------------------------------------------------------------
     # Shell sessions (mirror the Replit sandbox HTTP API semantics)
