@@ -2,6 +2,7 @@
   <div
     ref="vncContainer"
     class="vnc-container"
+    :class="{ 'vnc-mobile': viewMode === 'mobile' }"
     style="display: flex; width: 100%; height: 100%; overflow: auto; background: rgb(40, 40, 40);">
   </div>
 </template>
@@ -12,11 +13,17 @@ import { getVNCUrl } from '@/api/agent';
 // @ts-ignore
 import RFB from '@novnc/novnc';
 
+type VNCViewMode = 'fit' | 'pan' | 'mobile';
+
 const props = defineProps<{
   sessionId: string;
   enabled?: boolean;
   viewOnly?: boolean;
   retryToken?: number;
+  /** 'fit' — scale remote screen to container (default);
+   *  'pan'  — native resolution, scrollbars + drag to pan;
+   *  'mobile' — constrained by parent into a phone frame, scaled to fit. */
+  viewMode?: VNCViewMode;
 }>();
 
 const emit = defineEmits<{
@@ -63,15 +70,11 @@ const initVNCConnection = async () => {
       shared: true,
       repeaterID: '',
       wsProtocols: ['binary'],
-      // Scaling options
-      scaleViewport: true,  // Automatically scale to fit container
-      //resizeSession: true   // Request server to adjust resolution
     });
 
     // Set viewOnly based on props, default to false (interactive)
     rfb.viewOnly = props.viewOnly ?? false;
-    rfb.scaleViewport = true;
-    //rfb.resizeSession = true;
+    applyViewMode(props.viewMode ?? 'fit');
 
     rfb.addEventListener('connect', () => {
       console.log('VNC connection successful');
@@ -93,11 +96,56 @@ const initVNCConnection = async () => {
   }
 };
 
+/** Apply the display/interaction mode to the live RFB connection. */
+const applyViewMode = (mode: VNCViewMode) => {
+  if (!rfb) return;
+  switch (mode) {
+    case 'pan':
+      // Native resolution with scrollbars; drag with mouse/touch to pan
+      rfb.scaleViewport = false;
+      rfb.clipViewport = true;
+      rfb.dragViewport = true;
+      break;
+    case 'mobile':
+      // Parent constrains the container to a phone frame; scale inside it
+      rfb.clipViewport = false;
+      rfb.scaleViewport = true;
+      rfb.dragViewport = false;
+      break;
+    case 'fit':
+    default:
+      // Whole remote screen scaled to fit the container
+      rfb.clipViewport = false;
+      rfb.scaleViewport = true;
+      rfb.dragViewport = false;
+      break;
+  }
+};
+
 const disconnect = () => {
   if (rfb) {
     rfb.disconnect();
     rfb = null;
   }
+};
+
+/* ---------------- keyboard injection API (virtual keyboard) ---------------- */
+
+/** Send a single keysym press + release. */
+const sendKey = (keysym: number, code: string) => {
+  rfb?.sendKey(keysym, code);
+};
+
+/** Send an ordered sequence of raw key events: [keysym, code, down][]. */
+const sendSequence = (seq: Array<[number, string, boolean]>) => {
+  if (!rfb) return;
+  for (const [keysym, code, down] of seq) {
+    rfb.sendKey(keysym, code, down);
+  }
+};
+
+const sendCtrlAltDel = () => {
+  rfb?.sendCtrlAltDel();
 };
 
 // Watch for session ID or enabled state changes
@@ -123,6 +171,11 @@ watch(() => props.retryToken, () => {
   }
 });
 
+// React to view mode changes without reconnecting
+watch(() => props.viewMode, (mode) => {
+  applyViewMode(mode ?? 'fit');
+});
+
 onBeforeUnmount(() => {
   disconnect();
 });
@@ -130,9 +183,17 @@ onBeforeUnmount(() => {
 // Expose methods for parent component
 defineExpose({
   disconnect,
-  initConnection: initVNCConnection
+  initConnection: initVNCConnection,
+  sendKey,
+  sendSequence,
+  sendCtrlAltDel,
 });
 </script>
 
 <style scoped>
+/* When the parent constrains us into a phone frame, round the inner corners */
+.vnc-mobile {
+  border-radius: inherit;
+  background: #000;
+}
 </style>
