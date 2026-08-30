@@ -98,6 +98,14 @@ python3 -m pip install $PIP_FLAGS -q "patchright>=1.42.0" 2>/dev/null || true
 
 echo "      AI/LLM dependencies installed"
 
+# 3c. E2B sandbox provider
+# E2B is imported lazily by HybridSandboxFactory, so a missing package would
+# otherwise stay hidden until the first sandbox session and silently trigger
+# the local Replit fallback.
+echo "      Installing E2B sandbox dependency..."
+python3 -m pip install $PIP_FLAGS -q "e2b>=2.0.0"
+python3 -c "import e2b; print('      E2B Python package installed')"
+
 # ── 4. Utility dependencies ───────────────────────────────────────────────────
 echo ""
 echo "[4/5] Installing utility dependencies..."
