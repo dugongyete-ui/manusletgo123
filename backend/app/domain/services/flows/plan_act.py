@@ -54,19 +54,65 @@ class PlanActFlow(BaseFlow):
         Conversational questions can produce a zero-step plan whose message is
         already the complete answer.  Starting an acknowledgement for those
         requests would create a second assistant bubble when that answer arrives.
+
+        NOTE: this gate only decides whether the STREAMED (LLM-written)
+        acknowledgement starts early.  When it returns False but the plan ends
+        up with steps, ``run`` still guarantees a first response via the
+        planner's own plan.message — the acknowledgement is never the only
+        line of defence.
         """
         if message.attachments or message.vision_images:
             return True
 
+        # A URL in the message almost always means browser/shell work.
+        if re.search(r"https?://|www\.", message.message or "", re.IGNORECASE):
+            return True
+
         task_verbs = (
+            # Indonesian — creation / modification
             "buat", "buatkan", "bikin", "bangun", "tulis", "hasilkan",
-            "ubah", "edit", "hapus", "kirim", "cari", "analisis", "unduh",
-            "download", "upload", "implement", "build", "create", "write",
-            "generate", "update", "delete", "send", "search", "analyze",
-            "design", "run", "jalankan", "buka", "open",
+            "ubah", "edit", "hapus", "kirim", "tambah", "pasang",
+            # Indonesian — investigation / interaction
+            "cari", "cek", "coba", "cobain", "uji", "test", "analisis",
+            "analisa", "unduh", "lihat", "tampilkan", "buka", "jalankan",
+            "baca", "scan", "hitung", "konversi", "terjemahkan", "ringkas",
+            "ekstrak", "selesaikan", "perbaiki", "bantu", "klasifikasi",
+            "bandingkan", "unduh", "cetak", "simpan", "set", "atur",
+            # English
+            "implement", "build", "create", "write", "generate", "update",
+            "delete", "send", "search", "analyze", "analyse", "design",
+            "run", "open", "check", "try", "test", "fix", "help",
+            "find", "get", "fetch", "visit", "show", "display", "read",
+            "install", "calculate", "convert", "translate", "summarize",
+            "summarise", "extract", "solve", "compare", "classify", "save",
+            "set", "configure", "run", "login", "register", "download",
+            "upload", "scrape", "crawl", "book", "order", "buy", "post",
+            "publish", "deploy", "compile", "debug", "refactor", "review",
         )
-        words = set(re.findall(r"[a-z0-9]+", message.message.lower()))
+        words = set(re.findall(r"[a-z0-9]+", (message.message or "").lower()))
         return any(verb in words for verb in task_verbs)
+
+    @staticmethod
+    def _fallback_ack_text(language: Optional[str], message_text: str) -> str:
+        """Last-resort deterministic first response.
+
+        Used only when BOTH the streamed acknowledgement failed to deliver a
+        message AND the planner's plan.message is empty — normally the
+        planner's own message serves as the guaranteed first response, so this
+        template almost never fires.  Language follows the planner's language
+        field with a keyword fallback from the user's message.
+        """
+        lang = (language or "").lower()
+        text = (message_text or "").lower()
+        indonesian = (
+            lang.startswith("id")
+            or "indonesia" in lang
+            or "bahasa" in lang
+            or any(w in text for w in ("apa", "yang", "saya", "tolong", "bisa", "dengan", "buat"))
+        )
+        if indonesian:
+            return "Baik, saya mulai pengerjaannya."
+        return "On it — starting now."
 
     def __init__(
         self,
@@ -268,6 +314,12 @@ class PlanActFlow(BaseFlow):
                     ack_task = asyncio.create_task(_produce_acknowledgement())
                 plan_finished = False
                 acknowledgement_finished = not should_stream_ack
+                # Whether the acknowledgement actually DELIVERED a user-visible
+                # assistant message.  The ack LLM call can fail, stream nothing,
+                # or have its text suppressed as malformed JSON — in all those
+                # cases the user would otherwise see NO first response before
+                # the plan appears (reported: "kadang ada, kadang tidak").
+                ack_message_delivered = False
 
                 while not (plan_finished and acknowledgement_finished):
                     kind, event = await event_queue.get()
@@ -317,6 +369,11 @@ class PlanActFlow(BaseFlow):
                         # Message chunks go straight to the SSE stream and are
                         # intentionally not persisted by the task runner.
                         yield event
+                        if (
+                            isinstance(event, MessageEvent)
+                            and (event.message or "").strip()
+                        ):
+                            ack_message_delivered = True
                     elif kind == "plan_error":
                         if ack_task:
                             ack_task.cancel()
@@ -345,7 +402,36 @@ class PlanActFlow(BaseFlow):
                         yield MessageEvent(
                             role="assistant", message=self.plan.message, is_final=True
                         )
+                    else:
+                        # Edge: 0 steps AND empty message — still answer something.
+                        yield MessageEvent(
+                            role="assistant",
+                            message=self._fallback_ack_text(
+                                self.plan.language, message.message
+                            ),
+                            is_final=True,
+                        )
                 else:
+                    # ── MANDATORY FIRST RESPONSE ────────────────────────────
+                    # The user must ALWAYS see an assistant reply before the
+                    # plan/step list appears.  When the streamed acknowledgement
+                    # was not started (verb-gate miss, e.g. "Coba js console
+                    # Website Replit") or failed to deliver text, reuse the
+                    # planner's own plan.message — which was previously wasted
+                    # in this path — as the first response.  Only when that is
+                    # empty too, fall back to a deterministic line.
+                    if not ack_message_delivered:
+                        first_response = (self.plan.message or "").strip()
+                        if not first_response:
+                            first_response = self._fallback_ack_text(
+                                self.plan.language, message.message
+                            )
+                        yield MessageEvent(role="assistant", message=first_response)
+                        logger.info(
+                            f"Agent {self._agent_id} acknowledgement was not "
+                            f"streamed — emitted plan.message as mandatory "
+                            f"first response ({len(first_response)} chars)"
+                        )
                     yield TitleEvent(title=self.plan.title)
                     for event in plan_events_buffer:
                         if isinstance(event, PlanEvent):
