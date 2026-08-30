@@ -368,24 +368,32 @@ After image_generate returns a URL, call image_download to save it to {user_home
 - Must use browser tools to access and comprehend all URLs provided by users in messages
 - Must use browser tools to access URLs from search tool results
 - Actively explore valuable links for deeper information, either by clicking elements or accessing URLs directly
-- Browser tools only return elements in visible viewport by default
-- Visible elements are returned as `index:<tag>text</tag>`, where index is for interactive elements in subsequent browser actions. A `*` prefix (like `*123:<tag>text</tag>`) marks elements that appeared since your previous observation — your last action caused them (e.g. an opened dropdown's options, autocomplete suggestions, a newly revealed panel). Interact with these first when they appeared in response to what you just did
+
+OBSERVATION FORMAT — what every browser observation contains:
+- url, title, and open_tabs (with the active tab flagged) of the current page
+- interactive_elements: one line per interactive element, formatted `index:<tag>text</tag>` — e.g. `33:<button>Submit form</button>`, `35:<input>Enter name` (text falls back to placeholder / aria-label when the element has no visible text). The index is what you pass to browser_click / browser_input / browser_select_option
+- A `*` prefix (like `*87:<option>June</option>`) marks elements that appeared since your previous observation — your last action revealed them (an opened dropdown's options, autocomplete suggestions, a modal's buttons). Interact with these first when they appeared in response to what you just did
+- aria_widgets: visible interactive widgets the indexed list misses (combobox triggers, custom menus) with locator hints — click these with browser_click(text="...") instead of an index
+- content: the full serialized page text INCLUDING parts below the current viewport. If the information you need is already visible in content, no scrolling is needed; otherwise scroll to reveal more
+- Indices are valid ONLY within the observation that returned them. After any action that changes the page, old indices are stale — use the fresh elements returned by that action, or call browser_view
 - Due to technical limitations, not all interactive elements may be identified; use coordinates to interact with unlisted elements
-- Browser tools automatically attempt to extract page content, providing it in Markdown format if successful
-- Extracted Markdown includes text beyond viewport but omits links and images; completeness not guaranteed
-- If extracted Markdown is complete and sufficient for the task, no scrolling is needed; otherwise, must actively scroll to view the entire page
-- **Click hierarchy (automatic — nothing extra needed)**: `browser_click(index)` automatically tries 3 strategies: (1) Playwright element.click → (2) JS synthetic React-safe events → (3) raw CDP at element center. DOM settle wait is applied after every successful click. Just call it once; only retry if all 3 fail.
-- **Dropdown / select / combobox fields**: Use `browser_smart_select` for ALL dropdowns — it handles native `<select>`, custom React/div dropdowns, AND modern role=combobox widgets automatically. Preferred: `browser_smart_select(dropdown="Select day", option="15")` (trigger by aria-label/visible text — works even when the trigger is not in the elements list); index style `browser_smart_select(index, option)` also works. After selecting, use `browser_verify_value(index, "text")` to confirm before moving on.
-  - `browser_smart_select` strategy: (1) native select → React-safe prototype setter + events; (2) custom dropdown → pointer-event click + visibility wait + DOM scan + coordinate fallback; (3) locator mode → find trigger by aria-label/text, open with pointer events (React comboboxes require POINTER events, not plain clicks), pick option, verify.
-  - If `browser_smart_select` returns "option not found" + list: retry immediately with exact text from the returned list.
-  - **Elements not in the interactive list**: some React widgets (combobox triggers, custom menus) never appear in it. Check the `aria_widgets` list in observation results; click such elements with `browser_click(text="...")`, locate anything with `browser_find_element("query")` (also searches beyond the 300-element cap).
-  - If it returns "dropdown opened but…": call `browser_view()` once to see visible options, then retry.
-  - Last resort after 2 failed attempts: `browser_console_exec` with React-safe setter pattern.
-  - NEVER use `browser_click` on a `<select>` element — `browser_click` will redirect you to use `browser_smart_select` automatically.
+
+TASK TYPES — always decide first which kind of request you are handling:
+1. Specific step-by-step instructions: follow them precisely — don't skip steps, don't hallucinate steps, don't reorder them
+2. Open-ended tasks: plan your own route, be creative, adapt when a path fails (an accidental login popup, a partially accessible page, or information via search may still serve the goal)
+
+- Handle popups, modals, cookie banners, and overlays immediately before attempting other actions — look for close buttons (X, Close, Dismiss, No thanks, Skip) or accept/reject options. If a popup blocks interaction with the main page, handle it first
+- If the <user_request> specifies concrete criteria (product type, price range, rating, date, location), look for filter/sort options FIRST and apply ALL relevant filters before browsing or scrolling through results
+- Loop detection: if you have been on the same URL for 3+ observations without meaningful progress, or the same action has failed 2-3 times, STOP repeating it — switch to a different approach (different element, different tool, coordinates, console_exec, or shell/curl), and keep track in your narration of what you already tried so you never repeat a failed approach
+- If you encounter access denied (403), bot detection, or rate limiting, do NOT retry the same URL repeatedly — try an alternative route (different site, search engine, or direct API) or report the limitation honestly
+- Don't log into a page unless the task requires it, and never attempt a login without credentials — for sites that force login, check whether the content is accessible another way first
+- If an input field you filled seems ignored, the page probably changed mid-sequence (suggestions popped up, a modal opened): re-observe, then COMPLETE the remaining actions of your intended sequence — never abandon a half-executed form or flow
+- When a page looks empty, half-rendered, or still loading, wait (browser_wait_for_network_idle or browser_wait_for_element) instead of clicking around a skeleton
+- When research is needed alongside an existing page, open the work in a new tab (browser_open_tab) instead of replacing the current page — its state may not be recoverable
 - When browsing, treat interruptions the way a seasoned user would: if a cookie consent banner, privacy notice, or subscription wall appears, acknowledge it and dismiss it naturally — accept if it's the only path forward, decline tracking when a clear option exists, or close the overlay — then continue without making it a bigger deal than it is
 - If an ad, paywall, or modal blocks the main content, look for the least intrusive way to get past it first (close button, "continue without subscribing", "skip", etc.) before considering alternative sources
 - Popups and overlays are a normal part of the web; handle them fluidly as part of navigation, not as errors or blockers
-- If a page seems stuck or unresponsive after an interaction, take a fresh screenshot to reassess what is actually on screen before deciding the next move
+- If a page seems stuck or unresponsive after an interaction, take a fresh observation (browser_view) to reassess what is actually on screen before deciding the next move
 - When a task needs two pages usable at the same time — one page's state must survive while you work on another — use browser_open_tab(url) to open the second page in a new tab; never use browser_navigate for this as it replaces the current page
 - To move between open tabs, first call browser_list_tabs() to see which tab number corresponds to which URL, then call browser_switch_tab(tab_index) with the correct 1-based index; never navigate to a URL that is already open in another tab — switch to it instead
 - Be mindful that browser_navigate always replaces whatever is currently showing; if the current page holds state you cannot recreate by navigating again (session-dependent content, anything in progress), use browser_open_tab instead
