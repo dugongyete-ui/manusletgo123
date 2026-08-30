@@ -7,6 +7,7 @@ from typing import List, Dict, Any, Optional, AsyncGenerator, Union
 from app.domain.models.message import Message
 from app.domain.services.tools.base import BaseToolkit
 from app.domain.services.tools.base import Tool, cap_tool_content
+from app.domain.models.tool_result import ToolResult
 from app.domain.models.memory import compact_messages, drop_older_rounds
 from app.domain.models.event import (
     BaseEvent,
@@ -525,9 +526,15 @@ class BaseAgent(ABC):
             _limit = int(getattr(get_settings(), "tool_result_max_chars", 48_000) or 0)
         except Exception:
             _limit = 48_000
+        # Attach a failed ToolResult artifact so the ToolEvent carries the
+        # real error message — without it the event's function_result is
+        # null and the UI renders the tool as "(No Content)" instead of
+        # showing what actually went wrong.
+        error_result = ToolResult(success=False, message=last_error)
         return ToolMessage(
             tool_call_id=tool_call["id"], name=tool.name,
-            content=cap_tool_content(last_error, _limit),
+            content=cap_tool_content(error_result.model_dump_json(), _limit),
+            artifact=error_result,
         )
     
     # Compact browser tool results in memory every this many tool-call rounds

@@ -565,10 +565,23 @@ class AgentTaskRunner(TaskRunner):
                         file_read_result = await self._sandbox.file_read(file_path)
                         file_content: str = (file_read_result.data or {}).get("content", "") if (file_read_result and file_read_result.success) else ""
                         old_content = self._file_old_by_call.pop(event.tool_call_id, None)
+                        # When the operation FAILED the read-back is empty or
+                        # stale — surface the error message so the file viewer
+                        # shows what went wrong instead of a blank pane. The
+                        # error text is DISPLAY-ONLY: it must never be treated
+                        # as real file content for artifact syncing below.
+                        display_content = file_content
+                        if (
+                            not file_content
+                            and result is not None
+                            and getattr(result, "success", True) is False
+                            and getattr(result, "message", None)
+                        ):
+                            display_content = result.message
                         # Only expose old_content when there was a prior snapshot
                         # (enables the Diff / Original / Modified tabs).
                         event.tool_content = FileToolContent(
-                            content=file_content,
+                            content=display_content,
                             old_content=old_content,
                         )
                         if file_content:
@@ -577,7 +590,12 @@ class AgentTaskRunner(TaskRunner):
                             if file_info and event.function_name in self._FILE_WRITE_FUNCTIONS:
                                 synced_file = file_info
                     else:
-                        event.tool_content = FileToolContent(content="(No Content)")
+                        # No `file` argument in the call — usually a failed
+                        # invocation (e.g. file_write without the required
+                        # `file` path). Show the actual outcome/error text
+                        # instead of a misleading "(No Content)".
+                        msg = (result.message if result is not None else "") or "(No Content)"
+                        event.tool_content = FileToolContent(content=msg)
                 elif event.tool_name == "image":
                     image_result = event.function_result
                     if event.function_name == "image_search_web":

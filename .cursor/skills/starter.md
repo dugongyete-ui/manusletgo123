@@ -1,6 +1,6 @@
-# AI Dzeck – Replit Starter Skill
+# AI Dzeck – Runtime Starter Skill
 
-> Use this skill when setting up, running, or testing any part of the AI Dzeck codebase on Replit.
+> Use this skill when setting up, running, debugging, or testing any part of the AI Dzeck codebase. Updated 2026-08-30 to match the ACTUAL runtime (z-container, NOT Replit anymore).
 
 ---
 
@@ -8,49 +8,58 @@
 
 | Service | Language / Framework | Port | Entry Point |
 |---|---|---|---|
-| **Frontend** | Vue 3 + TypeScript, Vite | 5000 (dev) | `frontend/src/main.ts` |
-| **Backend** | Python 3.12, FastAPI | 8000 | `backend/app/main.py` |
-| **Sandbox** | Python 3.10, FastAPI + Supervisord | 8080 (API), 5901 (VNC WS) | `sandbox/app/main.py` |
+| **Backend + Frontend** | Python 3.12 FastAPI, serves compiled Vue dist | **3000** | `backend/app/main.py` (mounts `frontend/dist` in production) |
+| **Sandbox** | Python FastAPI | 8080 (API), 5901 (VNC WS), 8222 (Chrome CDP) | `sandbox/app/main.py` |
 | **Mockserver** | Python, FastAPI | 8090 | `mockserver/main.py` (dev only) |
 
-**Persistence:** MongoDB Atlas (cloud) + Redis Cloud — credentials already in Replit env vars.
+**Persistence:** MongoDB Atlas (db `manus`) + Redis Cloud — credentials in `backend/.env`.
+
+**Agents:** two interchangeable orchestration engines — `PlanActGraphFlow` (LangGraph, **default**) and `PlanActFlow` (custom state machine), selected by `AGENT_FLOW_ENGINE` in `agent_task_runner.py`. Parity is machine-checked by `tests/test_flow_engine_parity.py`.
 
 ---
 
-## 1 · Running on Replit
+## 1 · Running & Controlling Services
 
-All services are managed by Replit Workflows. They start automatically when the project opens.
+All services are managed by ONE master supervisord (no Docker, no Replit workflows):
 
-| Workflow | Purpose |
+```bash
+SUP=/home/z/.venv/bin/supervisorctl
+CONF=/home/z/my-project/.infra/master_supervisord.conf
+
+$SUP -c $CONF status                    # backend, chrome, sandbox-app, websockify, x11vnc, xvfb
+$SUP -c $CONF restart services:backend  # after backend code changes
+curl -s http://localhost:3000/health    # → 200 when healthy
+```
+
+**Logs** (grep here first when debugging incidents):
+
+| File | What |
 |---|---|
-| **Start application** | Vite dev server on port 5000, proxies `/api` → backend |
-| **Backend API** | FastAPI on port 8000 |
-| **Sandbox Services** | Supervisord: Xvfb + Chrome + x11vnc + websockify + sandbox API |
+| `/home/z/my-project/.infra/logs/backend.log` | API + agent lifecycle INFO |
+| `/home/z/my-project/.infra/logs/backend_err.log` | exceptions — tool failures (`Tool execution failed`), tracebacks |
+| `/home/z/my-project/.infra/logs/sandbox_app.log` | sandbox file/shell ops |
+| `/home/z/my-project/.infra/logs/chrome_err.log` | browser engine |
 
-To restart a service: use the Replit workflow panel or the agent `restart_workflow` tool.
+### Key `.env` knobs (`backend/.env` — values current)
 
-### Key `.env` knobs (already configured in Replit shared env vars)
-
-| Variable | Current Value | Purpose |
+| Variable | Value | Purpose |
 |---|---|---|
-| `AUTH_PROVIDER` | `password` | JWT-based auth; set to `none` to skip login entirely |
-| `API_BASE` | `https://chat-gateway--tmi84kzh.replit.app/v1` | LLM provider gateway |
-| `API_KEY` | set | LLM API key |
-| `MODEL_NAME` | `kimi-k2` | Main chat model |
-| `VISION_MODEL_NAME` | `kimi-k2` | Browser screenshot analysis |
-| `SEARCH_PROVIDER` | `tavily` | Web search engine |
-| `BROWSER_ENGINE` | `browser_use` | `playwright` or `browser_use` |
-| `SANDBOX_BASE_URL` | `http://localhost:8080` | Sandbox API |
-| `SANDBOX_VNC_URL` | `ws://localhost:5901` | VNC WebSocket |
-| `LOG_LEVEL` | `INFO` | Set `DEBUG` for verbose logs |
+| `API_BASE` | `https://integrate.api.nvidia.com/v1` | NVIDIA NIM gateway |
+| `MODEL_NAME` | `nvidia/nemotron-3-super-120b-a12b` | Main chat model |
+| `VISION_MODEL_NAME` | `meta/llama-3.2-11b-vision-instruct` | Screenshot analysis |
+| `SSL_VERIFY` | `false` | REQUIRED — gateway cert fails Python CA check |
+| `SEARCH_PROVIDER` | `tavily` | web search backend |
+| `BROWSER_ENGINE` | `browser_use` | `browser_use` or `playwright` |
+| `AGENT_FLOW_ENGINE` | *(default `langgraph`)* | `custom` = instant rollback to hand-rolled engine |
+| `AGENT_CONTEXT_SOFT_LIMIT_CHARS` | *(default 280000)* | proactive compaction threshold (0 = off) |
+| `AGENT_TOOL_RESULT_MAX_CHARS` | *(default 48000)* | per-tool-result LLM context cap (0 = off) |
+| `SANDBOX_PROVIDER` | `replit` | in-process supervisord sandbox (E2B removed) |
+| `AUTH_PROVIDER` | `password` | `none` skips login |
+| `LOG_LEVEL` | `INFO` | `DEBUG` for verbose agent traces |
 
-### Bypassing Auth Entirely
+### Sandbox isolation
 
-Set `AUTH_PROVIDER=none`. The frontend treats the user as anonymous, backend skips token checks.
-
-### Using Local Auth
-
-Set `AUTH_PROVIDER=local`. Login with `LOCAL_AUTH_EMAIL` / `LOCAL_AUTH_PASSWORD` (defaults: `admin@example.com` / `admin`).
+Each user gets `/home/z/sandbox/users/<user_id>/`. `UserScopedSandbox` BLOCKS cross-user paths and anything outside the workspace (e.g. `/home/runner/...` → "Access denied (write)"). When writing test tasks, expect files to land under the user sandbox home.
 
 ---
 
@@ -60,124 +69,86 @@ Set `AUTH_PROVIDER=local`. Login with `LOCAL_AUTH_EMAIL` / `LOCAL_AUTH_PASSWORD`
 
 ```bash
 cd backend
-# Install deps
-pip install uv && uv sync
-# Start server (MongoDB + Redis already available via cloud)
-python3 -m uvicorn app.main:app --host localhost --port 8000 --reload
+uv sync                                   # deps (uv, from pyproject.toml)
+python -m uvicorn app.main:app --host 0.0.0.0 --port 3000 --reload
 ```
 
-### Frontend
+### Frontend (build + served BY backend)
 
 ```bash
 cd frontend
 pnpm install
-pnpm dev   # Opens on port 5000; Vite proxies /api → localhost:8000
+pnpm type-check                           # vue-tsc
+pnpm build                                # → frontend/dist (backend serves it)
 ```
 
-### Sandbox
-
-Sandbox runs via supervisord — already managed by the **Sandbox Services** workflow. To run manually:
+### Sandbox services (already under master supervisord)
 
 ```bash
-cd sandbox
-/home/runner/workspace/.pythonlibs/bin/supervisord -n -c replit_supervisord.conf
+# manual, if ever needed:
+cd sandbox && supervisord -n -c replit_supervisord.conf
 ```
 
-### Mockserver (dev/testing without a real LLM)
+### Mockserver (testing without a real LLM)
 
 ```bash
-cd mockserver
-pip install -r requirements.txt
-uvicorn main:app --host 0.0.0.0 --port 8090 --reload
+cd mockserver && pip install -r requirements.txt
+uvicorn main:app --host 0.0.0.0 --port 8090
+# then API_BASE=http://localhost:8090/v1, API_KEY=any-string
 ```
-
-Then set `API_BASE=http://localhost:8090/v1` and `API_KEY=any-string`.
-
-Controls: `MOCK_DATA_FILE` (default: `default.yaml`), `MOCK_DELAY` (seconds, default: `1`).
-Mock data files: `mockserver/mock_datas/` — options: `default.yaml`, `shell_tools.yaml`, `file_tools.yaml`, `browser_tools.yaml`, `search_tools.yaml`, `message_tools.yaml`.
 
 ---
 
 ## 3 · Testing Workflows by Codebase Area
 
-### 3.1 Backend (pytest, against running server)
-
-Tests in `backend/tests/` hit `http://localhost:8000` via `requests`. Requires **Backend API** workflow running.
+### 3.1 Backend unit/integration (pytest — NO server needed)
 
 ```bash
 cd backend
-python3 -m pytest                            # all tests
-python3 -m pytest tests/test_auth_routes.py  # specific file
-python3 -m pytest -m file_api                # by marker
+python -m pytest tests/ -q               # 265 passed expected
+python -m pytest tests/test_context_overflow.py -q   # single file
 ```
 
-Key test files:
-- `tests/test_auth_routes.py` – registration, login, token refresh, logout
-- `tests/test_api_file.py` – file upload / download API
-- `tests/test_sandbox_file.py` – sandbox file operations
+**Known pre-existing failures (do NOT chase):** `test_api_file.py` + `test_auth_routes.py` (14 failed + 19 errors) — they require the live auth service / seeded DB and fail identically on a clean tree (verified via `git stash`).
 
-### 3.2 Sandbox (pytest)
+Key test files (agent behavior):
+- `tests/test_flow_engine_parity.py` – LangGraph vs custom engine event parity
+- `tests/test_context_overflow.py` – error-1261 defense (caps, compaction, recovery)
+- `tests/test_conversation_context.py` – planner conversation digest
+- `tests/test_tool_error_visibility.py` – tool failure UX (no "(No Content)")
+- `tests/test_artifact_sync_nonblocking.py` – real-time plan progress
+- `tests/test_ghost_success.py`, `test_loop_awareness.py` – execution guards
+
+### 3.2 E2E smoke (real LLM + real sandbox)
 
 ```bash
-# Ensure Sandbox Services workflow is running
-cd sandbox
-python3 -m pytest
+python /home/z/my-project/scripts/langgraph_e2e_smoke.py          # create+read file task → SMOKE PASSED
+python /home/z/my-project/scripts/langgraph_e2e_smoke.py "custom task text"
+python /home/z/my-project/scripts/context_e2e_smoke.py            # 2-turn conversation memory
+```
+
+Session forensics helpers (MongoDB Atlas):
+```bash
+python /home/z/my-project/scripts/find_session_by_url.py <16-char-chat-id>
+python /home/z/my-project/scripts/dump_tool_calls.py <mongo-object-id>
+python /home/z/my-project/scripts/dump_tool_event_full.py <oid> <function_name>
 ```
 
 ### 3.3 Frontend
 
-No automated test runner. Validate with:
-
-```bash
-cd frontend
-pnpm type-check    # vue-tsc type checking
-pnpm build         # production build (catches template + TS errors)
-```
-
-### 3.4 Mockserver
-
-No tests. Verify it responds:
-
-```bash
-curl -X POST http://localhost:8090/v1/chat/completions \
-  -H "Content-Type: application/json" \
-  -d '{"model":"mock","messages":[{"role":"user","content":"hi"}]}'
-```
-
-### 3.5 Integration / End-to-End
-
-1. Ensure all 3 workflows are running (Start application, Backend API, Sandbox Services)
-2. Open app preview (port 5000)
-3. Login or set `AUTH_PROVIDER=none`
-4. Create a new session, send a message
-5. Watch backend logs in Backend API workflow console
+No automated runner. `pnpm type-check` + `pnpm build` catch template + TS errors.
 
 ---
 
-## 4 · Common Environment Notes
+## 4 · Agent Architecture Notes (what recent work shipped)
 
-### Sandbox Architecture on Replit
-
-The sandbox runs **in-process** within the Replit container (no Docker). Supervisord manages:
-- `xvfb` — virtual display
-- `chrome` — headless Chrome via CDP
-- `x11vnc` — VNC server on the virtual display
-- `websockify` — WebSocket bridge for noVNC (port 5901)
-- `app` — FastAPI sandbox API (port 8080)
-
-The backend connects to sandbox via `SANDBOX_BASE_URL=http://localhost:8080`. VNC is proxied through the backend WebSocket endpoint `/api/v1/sessions/{id}/vnc`.
-
-### Debugging Backend Logs
-
-Check the **Backend API** workflow console in Replit, or:
-```bash
-cat /tmp/logs/Backend_API_*.log
-```
-
-### Resetting MongoDB / Redis State
-
-- **MongoDB**: Data is in Atlas cloud. Wipe via Atlas console or run a delete script.
-- **Redis**: Data is in Redis Cloud. Flush via Redis Cloud console.
+| Area | Where | Notes |
+|---|---|---|
+| **LangGraph engine** | `flows/plan_act_graph.py` | default; `recursion_limit = max_steps*2+20`; thread_id = session_id (checkpointer-ready) |
+| **Context defense** | `agents/base.py`, `memory.py`, `tools/base.py` | 4 layers vs error 1261: entry cap 48K → compaction → budget gate 280K → in-flight emergency retry (max 2). image_download returns NO base64. |
+| **Conversation memory** | `flows/plan_act.py` `_build_conversation_digest` | 0-step follow-ups answered from session transcript (anti-amnesia) |
+| **Real-time plan** | `agent_task_runner.py` | step artifact sync is a background chained task; junk dirs (node_modules…) never sync |
+| **Tool error UX** | `tools/base.py` + `agent_task_runner.py` | arg mismatches → actionable failed ToolResult (lists provided vs accepted args); UI shows real errors, never "(No Content)" |
 
 ---
 
@@ -191,21 +162,18 @@ cat /tmp/logs/Backend_API_*.log
 | POST | `/auth/login` | No | `{email, password}` → tokens |
 | POST | `/auth/refresh` | No | `{refresh_token}` → new access token |
 | POST | `/auth/logout` | Bearer | Invalidates session |
-| GET | `/auth/status` | No | Returns `{authenticated, auth_provider}` |
-| GET | `/auth/me` | Bearer | Current user info |
-| POST | `/auth/change-password` | Bearer | `{old_password, new_password}` |
+| GET | `/auth/status` | No | `{authenticated, auth_provider}` |
 
 ### Session endpoints (`/api/v1/sessions/`)
 
 | Method | Path | Notes |
 |---|---|---|
 | PUT | `/sessions` | Create new session |
-| GET | `/sessions` | List all sessions |
-| GET | `/sessions/{id}` | Get session + history |
+| GET | `/sessions` | List sessions |
+| GET | `/sessions/{id}` | Get session + event history |
 | DELETE | `/sessions/{id}` | Delete session |
 | POST | `/sessions/{id}/stop` | Stop running session |
-| POST | `/sessions/{id}/chat` | Send message (SSE stream response) |
-| POST | `/sessions/{id}/shell` | View sandbox shell output |
+| POST | `/sessions/{id}/chat` | Send message (SSE stream) |
 | POST | `/sessions/{id}/file` | Read sandbox file |
 | WS | `/sessions/{id}/vnc` | VNC WebSocket proxy |
 
@@ -217,57 +185,33 @@ cat /tmp/logs/Backend_API_*.log
 
 ---
 
-## 6 · Updating This Skill
-
-When you discover a new testing trick, environment workaround, or operational runbook step:
-
-1. **Open** `.cursor/skills/starter.md`.
-2. **Add** the new knowledge to the appropriate section.
-3. **Keep it concrete** — exact commands, env var values, and file paths.
-4. **Date your addition**: `<!-- Added YYYY-MM-DD: brief reason -->`.
-
----
-
-## 7 · Dropdown / Form Interaction Reference
+## 6 · Dropdown / Form Interaction Reference
 
 ### Primary tool: `browser_smart_select(index, text)`
 
-Use this for **every** dropdown field. One call handles both native `<select>` and custom React/div dropdowns automatically.
+Use for **every** dropdown field — handles native `<select>` AND custom React/div dropdowns in one call.
 
 ```
-# Birthday form (native <select>):
-browser_smart_select(5, "15")      # Day
-browser_smart_select(6, "June")    # Month
-browser_smart_select(7, "1992")    # Year
-
-# Custom React dropdown (e.g. Gender):
-browser_smart_select(8, "Male")    # clicks trigger → scans options → clicks match
+browser_smart_select(5, "15")     # Day (native select)
+browser_smart_select(8, "Male")   # Custom React dropdown
 ```
 
-**Decision tree on failure:**
-| Result | Action |
-|---|---|
-| ✅ success | Move to next field |
-| ❌ "option not found" + options listed | Retry with exact text from list |
-| ❌ "dropdown opened but not found" | `browser_view()` once, retry with visible text |
-| ❌ 2nd failure | `browser_console_exec` with React-safe setter (see prompt) |
+Failure ladder: retry with exact option text → `browser_view()` once → `browser_console_exec` React-safe setter. Then verify with `browser_verify_value(8, "Male")` before submit.
 
-### Verification: `browser_verify_value(index, expected_text)`
+**Never** click a `<select>` repeatedly — the loop detector flags it and `max_consecutive_failures=3` force-summarizes the step.
 
-After filling critical fields, verify before submit:
-```
-browser_verify_value(5, "15")     # ✅ Verified '15' matches '15'
-browser_verify_value(8, "Male")   # ❌ Mismatch: expected='Male', actual=''
-```
+`browser_extract_text` was REMOVED — use `browser_navigate` + `browser_view` or search tools.
 
-### NEVER do this (causes 20+ step loops):
-```
-# BAD — do not do this:
-browser_click(index=5)         # clicking a <select>
-browser_view()                 # just to check
-browser_click(index=5)         # same click again
-... (repeats 15 more times)
-```
+---
 
-<!-- Updated 2026-06-10: migrated from Docker Compose to Replit; updated ports (5173→5000), removed docker-compose references, updated MongoDB/Redis to cloud-hosted, updated sandbox to supervisord-based Replit workflow -->
-<!-- Updated 2026-06-13: added browser_smart_select + browser_verify_value tools; Manus.im-style adaptive dropdown handling; strengthened execution prompt with hard limits -->
+## 7 · Updating This Skill
+
+When you discover a new operational fact, workaround, or runbook step:
+
+1. **Open** `.cursor/skills/starter.md`.
+2. **Add** the knowledge to the appropriate section — keep it concrete (exact commands, env values, paths).
+3. **Date the change**: `<!-- Updated YYYY-MM-DD: reason -->`.
+4. Keep `.agents/memory/MEMORY.md` index in sync — deep-dive notes live there.
+
+<!-- Updated 2026-08-30: full rewrite for z-container runtime — master supervisord (backend :3000 serving Vue dist, sandbox :8080), NVIDIA NIM provider (nemotron-3-super-120b), LangGraph default engine, 4-layer context-overflow defense, tool error visibility fix, current test suite state (265 passed), session forensics scripts -->
+<!-- Updated 2026-06-13: browser_smart_select + browser_verify_value; Manus.im-style adaptive dropdown handling -->

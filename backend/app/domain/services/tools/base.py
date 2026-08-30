@@ -8,7 +8,9 @@ from langchain.messages import ToolMessage
 from langchain.messages import ToolCall
 from langchain_core.tools.base import BaseToolkit as LangchainBaseToolkit, ArgsSchema
 from typing import Any, Optional
-from pydantic import BaseModel, create_model, ConfigDict
+from pydantic import BaseModel, create_model, ConfigDict, ValidationError
+
+from app.domain.models.tool_result import ToolResult
 
 
 def cap_tool_content(content: Any, limit: int) -> Any:
@@ -61,11 +63,61 @@ class Tool(BaseTool):
     async def _arun(self, **kwargs: Any) -> Any:
         return await self._tool.coroutine(self.toolkit, **kwargs)
 
+    def _signature_hint(self) -> str:
+        """Human/LLM-readable list of accepted arguments with required flags.
+
+        Derived from the tool's pydantic args_schema so the model can repair
+        its next call without guessing (e.g. after omitting a required arg).
+        """
+        try:
+            fields = self.args_schema.model_fields if self.args_schema else {}
+            parts = []
+            for name, field_info in fields.items():
+                try:
+                    required = bool(field_info.is_required())
+                except Exception:
+                    required = True
+                parts.append(f"{name} ({'required' if required else 'optional'})")
+            return ", ".join(parts)
+        except Exception:
+            return ""
+
+    def _invalid_args_result(self, exc: Exception, args: dict) -> ToolResult:
+        """Build an actionable failure for argument-mismatch errors.
+
+        A raw ``TypeError: missing 1 required positional argument: 'file'``
+        is a Python-internal message; the model retries the SAME broken call
+        when that is all it sees (observed 4 identical failed file_write
+        rounds in a live session). Listing what was sent vs. what the tool
+        accepts lets the model repair the call in ONE round.
+        """
+        provided = ", ".join(sorted(args.keys())) if args else "(none)"
+        hint = self._signature_hint()
+        message = (
+            f"Invalid arguments for {self.name}: {exc}. "
+            f"Arguments you provided: [{provided}]."
+        )
+        if hint:
+            message += f" Arguments accepted by {self.name}: {hint}."
+        message += (
+            " This call was NOT executed. Fix the arguments and call this"
+            " tool again."
+        )
+        return ToolResult(success=False, message=message)
+
     async def ainvoke(self, input: Any, config: Any = None, **kwargs: Any) -> ToolMessage:
         """Invoke tool and return a ToolMessage with the raw result stored in artifact."""
         args = input.get("args", {}) if isinstance(input, dict) else {}
         tool_call_id = input.get("id", "") if isinstance(input, dict) else ""
-        raw_result = await self._arun(**args)
+        try:
+            raw_result = await self._arun(**args)
+        except (TypeError, ValidationError) as e:
+            # Argument mismatch / schema validation failure — deterministic,
+            # so retrying is pointless. Convert to a proper failed ToolResult
+            # so BOTH the LLM (ToolMessage.content JSON) and the UI
+            # (ToolEvent.function_result artifact) see the real error
+            # instead of a null result rendered as "(No Content)".
+            raw_result = self._invalid_args_result(e, args)
         content = raw_result.model_dump_json() if hasattr(raw_result, "model_dump_json") else str(raw_result)
         # Entry cap: keep one huge tool result from poisoning every later
         # LLM request (see cap_tool_content). The artifact stays complete.

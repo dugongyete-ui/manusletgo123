@@ -1,44 +1,50 @@
 ---
-name: Manus.im full parity — browser interaction protocol
-description: All Manus.im browser capabilities implemented in BrowserUseBrowser + PlaywrightBrowser as of 2026-06-13
+name: Adaptive dropdown & browser interaction protocol
+description: browser_smart_select + browser_verify_value for every form field; browser_use engine via CDP. Updated 2026-08-30 (browser_extract_text removed from codebase).
 ---
 
-## Implemented: Manus.im Full Protocol
+## Primary tools (still active in tools/browser.py)
 
-### 1. 3-Strategy Click Fallback Chain (`_click_with_fallback`)
-S1: Playwright `element.click()` → S2: JS synthetic React-safe events → S3: Raw CDP at element center.
-`click()` auto-uses this. Coordinate-based click uses CDP directly.
+### `browser_smart_select(index, text)` — every dropdown field
+One call handles both native `<select>` and custom React/div dropdowns automatically.
 
-### 2. DOM Settle Wait (`_wait_for_dom_settle`)
-MutationObserver race: 150ms idle or 600ms max. Applied after every click/input/select.
+```
+# Birthday form (native <select>):
+browser_smart_select(5, "15")      # Day
+browser_smart_select(6, "June")    # Month
+browser_smart_select(7, "1992")    # Year
 
-### 3. Network Idle Detection (`_wait_for_network_idle` + `browser_wait_for_network_idle` tool)
-Resource Timing API polls: waits until `performance.getEntriesByType('resource').length` stops growing for 300ms. Public tool exposed to agent. Use AFTER login/submit/search buttons.
+# Custom React dropdown (e.g. Gender):
+browser_smart_select(8, "Male")    # clicks trigger → scans options → clicks match
+```
 
-### 4. Element-Based Waiting (`wait_for_element` + `browser_wait_for_element` tool)
-Polls DOM every 200ms until CSS selector match OR visible text found. Both BrowserUseBrowser and PlaywrightBrowser. Use AFTER modal triggers, form submissions, navigations.
+**Decision tree on failure:**
+| Result | Action |
+|---|---|
+| ✅ success | Move to next field |
+| ❌ "option not found" + options listed | Retry with exact text from list |
+| ❌ "dropdown opened but not found" | `browser_view()` once, retry with visible text |
+| ❌ 2nd failure | `browser_console_exec` with React-safe setter |
 
-### 5. File Upload (`upload_file` + `browser_upload_file` tool)
-Uses `element.set_input_files(file_path)` (Playwright) or CDP for `<input type="file">`. Validates file exists and element is correct type.
+### `browser_verify_value(index, expected_text)` — verify before submit
+```
+browser_verify_value(5, "15")     # ✅ Verified '15' matches '15'
+browser_verify_value(8, "Male")   # ❌ Mismatch: expected='Male', actual=''
+```
 
-### 6. Fast Text Extraction (`browser_extract_text` tool — standalone)
-httpx async GET + HTMLParser (skips script/style/head). Returns ≤8000 chars. Does NOT use browser engine. For articles, docs, static pages. Falls back to `browser_navigate` for JS-heavy/login pages.
+### NEVER do this (causes 20+ step loops):
+```
+# BAD — clicking a <select> repeatedly:
+browser_click(index=5) → browser_view() → browser_click(index=5) → …
+```
+The loop-awareness layer (`loop_detector`) also appends nudges after repeated identical actions, and the failure budget (`max_consecutive_failures=3`) force-summarizes instead of looping forever.
 
-### 7. Input React-safe events
-After `element.fill(text)`: fires `new Event('input', {bubbles:true})` + `new Event('change', {bubbles:true})`.
+## Current browser toolset (2026-08-30)
 
-### 8. Dropdown 3-strategy chain (`smart_select`)
-S1: native `<select>` React-safe setter + synthetic events → S2: custom div/ul dropdown (click trigger + DOM scan + coordinate backup click) → S3: partial text match. Includes 800ms visibility polling.
+view · navigate · restart · click · find_element · input · move_mouse · press_key · select_option · back · forward · scroll_up/down · console_exec · console_view · list_tabs · open_tab · switch_tab · select_by_text · get_select_options · **smart_select** · **verify_value** · wait_for_network_idle · wait_for_element · upload_file
 
-### Prompts updated
-- `execution.py`: CLICK HIERARCHY + DROPDOWN RULES + SMART WAITING section + FILE UPLOAD / FAST EXTRACTION section
-- `system.py`: browser_rules reflect full chain
+**REMOVED:** `browser_extract_text` (standalone httpx text extractor) no longer exists — do not reference it in prompts or docs; use `browser_navigate` + `browser_view` or search tools instead.
 
-**Why:** Matches Manus.im full protocol verbatim — 3-strategy click, network idle, element wait, file upload, fast extract.
+## Engine notes
 
-**How to apply:**
-- `click()` → fully automatic 3-strategy
-- After login/submit: add `browser_wait_for_network_idle()`
-- After modal/dialog triggers: add `browser_wait_for_element(selector='.modal')`
-- File upload forms: `browser_upload_file(index, '/home/runner/file.jpg')`
-- Read-only page content: `browser_extract_text(url)` (faster than navigate)
+`BROWSER_ENGINE=browser_use` (default): browser_use library `BrowserSession` via CDP (port 8222) with AI-friendly selector map; `playwright` engine also maintained. Click fallback chain and React-safe synthetic events live in `app/infrastructure/external/browser/*.py`. DOM settle wait + network idle detection apply after every interaction.
