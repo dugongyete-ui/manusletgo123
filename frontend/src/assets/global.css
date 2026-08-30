@@ -184,6 +184,9 @@ body,html {
 .md-prose em, .prose em { font-style: italic; }
 
 /* ── Inline code — subtle badge ── */
+/* max-width + overflow-x keep a long inline code (URL, path, command) from
+   pushing the whole message bubble wider than the viewport; short codes are
+   visually unchanged. */
 .md-prose code:not(.hljs),
 .prose code:not(.hljs) {
   font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
@@ -195,7 +198,14 @@ body,html {
   border: 1px solid rgba(0,0,0,.08);
   font-weight: 500;
   white-space: nowrap;
+  max-width: 100%;
+  display: inline-block;
+  overflow-x: auto;
+  vertical-align: bottom;
+  scrollbar-width: none;
 }
+.md-prose code:not(.hljs)::-webkit-scrollbar,
+.prose code:not(.hljs)::-webkit-scrollbar { display: none; }
 .dark .md-prose code:not(.hljs),
 .dark .prose code:not(.hljs) {
   background: rgba(255,255,255,.08) !important;

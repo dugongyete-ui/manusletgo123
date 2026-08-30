@@ -1,7 +1,7 @@
 <template>
     <div class="pb-3 relative bg-[var(--background-gray-main)]">
         <div
-            class="flex flex-col gap-3 rounded-[22px] transition-all relative bg-[var(--fill-input-chat)] py-3 max-h-[300px] shadow-[0px_12px_32px_0px_rgba(0,0,0,0.08)] border border-black/8 dark:border-[var(--border-dark)]">
+            class="flex flex-col gap-3 rounded-[22px] transition-all relative bg-[var(--fill-input-chat)] py-3 max-h-[480px] shadow-[0px_12px_32px_0px_rgba(0,0,0,0.08)] border border-black/8 dark:border-[var(--border-dark)]">
             <ChatBoxFiles ref="chatBoxFileListRef" :attachments="attachments" />
             <div class="overflow-y-auto pl-4 pr-2">
                 <textarea
@@ -54,12 +54,25 @@ const isComposing = ref(false);
 const chatBoxFileListRef = ref();
 const textareaRef = ref<HTMLTextAreaElement>();
 const textareaHeight = ref('46px');
+// ~17 lines at 22.5px line-height — comfortably shows 9+ paragraphs with
+// blank lines between them while typing (user requirement: minimum 9 visible).
+const TEXTAREA_MAX_HEIGHT = 400;
 
 const autoResize = () => {
     const el = textareaRef.value;
     if (!el) return;
-    el.style.height = '46px';
-    textareaHeight.value = Math.min(el.scrollHeight, 240) + 'px';
+    // Reset to 'auto' so scrollHeight always measures the FULL content height
+    // (never clamped by the previous explicit height).
+    el.style.height = 'auto';
+    const height = Math.min(el.scrollHeight, TEXTAREA_MAX_HEIGHT);
+    // Keep BOTH the reactive style binding and the DOM in sync. Writing the
+    // DOM directly matters when the computed height is UNCHANGED: the old code
+    // collapsed the box with a direct `height = '46px'` write and relied on the
+    // ref changing to re-apply it — but when scrollHeight stayed the same the
+    // ref never changed, no re-render happened, and the box stayed collapsed
+    // at 2 rows forever while the user kept typing.
+    textareaHeight.value = height + 'px';
+    el.style.height = height + 'px';
 };
 
 const props = defineProps<{
@@ -138,6 +151,7 @@ watch(() => props.modelValue, (value) => {
     hasTextInput.value = value.trim() !== '';
     if (value === '') {
         textareaHeight.value = '46px';
+        if (textareaRef.value) textareaRef.value.style.height = '46px';
     }
 });
 </script>

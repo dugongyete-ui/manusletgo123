@@ -8,8 +8,13 @@
       </div>
     </div>
     <div class="flex max-w-[90%] relative flex-col gap-2 items-end">
+      <!-- Markdown container MUST be a block element: the previous
+           `flex items-center` laid every rendered block (paragraphs, lists,
+           blockquotes, hrs…) side-by-side in a horizontal row — a long
+           structured prompt then exploded into a 30,000px-wide bubble with
+           clipped text columns on phones. -->
       <div
-        class="relative flex items-center rounded-[12px] overflow-hidden bg-[var(--fill-white)] dark:bg-[var(--fill-tsp-white-main)] p-3 ltr:rounded-br-none rtl:rounded-bl-none border border-[var(--border-main)] dark:border-0"
+        class="md-prose relative block rounded-[12px] overflow-hidden bg-[var(--fill-white)] dark:bg-[var(--fill-tsp-white-main)] p-3 ltr:rounded-br-none rtl:rounded-bl-none border border-[var(--border-main)] dark:border-0"
         v-html="renderMarkdown(messageContent.content)">
       </div>
     </div>
