@@ -121,6 +121,11 @@ async def stream_sessions(
     agent_service: AgentService = Depends(get_agent_service)
 ) -> EventSourceResponse:
     async def event_generator() -> AsyncGenerator[ServerSentEvent, None]:
+        # Push ONLY when the serialized list actually changed. Previously this
+        # pushed the FULL session list every 5s forever — every client, every
+        # 5 seconds — forcing the frontend session sidebar to re-render its
+        # whole list nonstop (constant background CPU on the chat page).
+        last_payload: Optional[str] = None
         while True:
             summaries = await agent_service.get_all_sessions(current_user.id)
             session_items = [
@@ -135,10 +140,13 @@ async def stream_sessions(
                     project_id=s.project_id
                 ) for s in summaries
             ]
-            yield ServerSentEvent(
-                event="sessions",
-                data=ListSessionResponse(sessions=session_items).model_dump_json()
-            )
+            payload = ListSessionResponse(sessions=session_items).model_dump_json()
+            if payload != last_payload:
+                last_payload = payload
+                yield ServerSentEvent(
+                    event="sessions",
+                    data=payload
+                )
             await asyncio.sleep(SESSION_POLL_INTERVAL)
     return EventSourceResponse(event_generator())
 

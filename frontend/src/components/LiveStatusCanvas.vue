@@ -48,8 +48,23 @@ const mount = () => {
   anim.setSpeed(2)
 }
 
-onMounted(mount)
-onUnmounted(destroy)
+onMounted(() => {
+  mount()
+  // Battery/CPU: the loading animation used to keep redrawing its canvas via
+  // rAF the whole time the tab was HIDDEN (a 20-40min agent run = 20-40min of
+  // invisible canvas work heating the phone). Pause on hide, resume on show.
+  document.addEventListener('visibilitychange', onVisibility)
+})
+
+const onVisibility = () => {
+  if (document.hidden) destroy()
+  else mount()
+}
+
+onUnmounted(() => {
+  document.removeEventListener('visibilitychange', onVisibility)
+  destroy()
+})
 watch(() => props.active, (active) => {
   if (active) mount()
   else destroy()

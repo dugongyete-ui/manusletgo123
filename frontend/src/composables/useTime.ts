@@ -1,32 +1,47 @@
-import { ref, computed, onMounted, onUnmounted } from 'vue';
+import { ref, onMounted, onUnmounted } from 'vue';
 import { formatRelativeTime, formatCustomTime } from '../utils/time';
 import { useI18n } from 'vue-i18n';
 
+// ── ONE shared app clock ──────────────────────────────────────────────────────
+// Previously EVERY component instance calling useRelativeTime()/useCustomTime()
+// spun up its OWN 60s setInterval — a chat page with 155 events ran 41+
+// synchronized timers that all fired in the same burst every minute, forcing
+// every message/tool/step component to re-render simultaneously (measured:
+// 123ms main-thread freeze per minute on phone-class CPU). Now there is a
+// single module-level clock, ref-counted by mounted consumers.
+const sharedNow = ref(Date.now());
+let clockConsumers = 0;
+let clockTimer: number | null = null;
+
+const startClock = () => {
+  clockConsumers++;
+  if (clockTimer === null) {
+    clockTimer = window.setInterval(() => {
+      sharedNow.value = Date.now();
+    }, 60000);
+  }
+};
+
+const stopClock = () => {
+  clockConsumers = Math.max(0, clockConsumers - 1);
+  if (clockConsumers === 0 && clockTimer !== null) {
+    clearInterval(clockTimer);
+    clockTimer = null;
+  }
+};
+
 export function useRelativeTime() {
-  // Create a reactive current time variable to trigger re-rendering
-  const currentTime = ref(Date.now());
+  onMounted(startClock);
+  onUnmounted(stopClock);
 
-  // Set a timer to update the time every minute
-  let timer: number | null = null;
-
-  onMounted(() => {
-    timer = window.setInterval(() => {
-      currentTime.value = Date.now();
-    }, 60000); // Update every minute
-  });
-
-  onUnmounted(() => {
-    if (timer !== null) {
-      clearInterval(timer);
-      timer = null;
-    }
-  });
-
-  // Calculate relative time, depends on currentTime for automatic updates
-  const relativeTime = computed(() => {
-    currentTime.value; // Depends on currentTime, recalculate when currentTime updates
-    return (timestamp: number) => formatRelativeTime(timestamp);
-  });
+  // Plain function that reads sharedNow INSIDE the render call — each
+  // component tracks the clock as its own dependency, so it re-renders when
+  // the minute ticks, but the render itself is cheap (markdown HTML is
+  // memoized in computed properties at the call sites).
+  const relativeTime = (timestamp: number) => {
+    sharedNow.value; // reactive dependency
+    return formatRelativeTime(timestamp);
+  };
 
   return {
     relativeTime
@@ -35,33 +50,16 @@ export function useRelativeTime() {
 
 export function useCustomTime() {
   const { t, locale } = useI18n();
-  
-  // Create a reactive current time variable to trigger re-rendering
-  const currentTime = ref(Date.now());
 
-  // Set a timer to update the time every minute
-  let timer: number | null = null;
+  onMounted(startClock);
+  onUnmounted(stopClock);
 
-  onMounted(() => {
-    timer = window.setInterval(() => {
-      currentTime.value = Date.now();
-    }, 60000); // Update every minute
-  });
-
-  onUnmounted(() => {
-    if (timer !== null) {
-      clearInterval(timer);
-      timer = null;
-    }
-  });
-
-  // Calculate custom formatted time, depends on currentTime for automatic updates
-  const customTime = computed(() => {
-    currentTime.value; // Depends on currentTime, recalculate when currentTime updates
-    return (timestamp: number) => formatCustomTime(timestamp, t, locale.value);
-  });
+  const customTime = (timestamp: number) => {
+    sharedNow.value; // reactive dependency
+    return formatCustomTime(timestamp, t, locale.value);
+  };
 
   return {
     customTime
   };
-} 
+}

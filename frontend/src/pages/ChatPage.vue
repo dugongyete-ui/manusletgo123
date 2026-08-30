@@ -344,6 +344,10 @@ const resetState = () => {
   if (cancelCurrentChat.value) {
     cancelCurrentChat.value();
   }
+  // Drop any pending streaming chunk buffer from the previous session
+  _cancelChunkTimer();
+  _chunkBuffer = '';
+  _lastFlushAt = 0;
 
   // Reset reactive state to initial values
   Object.assign(state, createInitialState());
@@ -388,16 +392,32 @@ const getLastStep = (): StepContent | undefined => {
   return undefined;
 }
 
-// Chunk buffer — accumulates tokens between RAF flushes
+// Chunk buffer — accumulates tokens between throttled flushes.
+// Previously flushed on EVERY animation frame (~60/s): each flush re-parsed
+// the FULL accumulated markdown (measured 23.8ms/flush at 10KB on desktop —
+// already over the 16.7ms frame budget, ~4-6× that on phone) and rebuilt the
+// whole v-html DOM subtree, making long streaming replies freeze the page.
+// Flushing at most every ~180ms (≈5.5 fps) cuts that CPU by ~12× while the
+// text still appears to type smoothly.
+const CHUNK_FLUSH_MS = 180;
 let _chunkBuffer = '';
-let _chunkRafId: number | null = null;
+let _chunkTimer: ReturnType<typeof setTimeout> | null = null;
+let _lastFlushAt = 0;
 
 const _flushChunkBuffer = () => {
-  _chunkRafId = null;
+  _chunkTimer = null;
+  _lastFlushAt = Date.now();
   if (_chunkBuffer && streamingMessageContent.value) {
     streamingMessageContent.value.content += _chunkBuffer;
     _chunkBuffer = '';
     scheduleScroll();
+  }
+};
+
+const _cancelChunkTimer = () => {
+  if (_chunkTimer !== null) {
+    clearTimeout(_chunkTimer);
+    _chunkTimer = null;
   }
 };
 
@@ -421,10 +441,7 @@ const handleMessageChunkEvent = (chunkData: MessageChunkEventData) => {
 
   if (chunkData.done) {
     // Flush any remaining buffered text immediately
-    if (_chunkRafId !== null) {
-      cancelAnimationFrame(_chunkRafId);
-      _chunkRafId = null;
-    }
+    _cancelChunkTimer();
     if (_chunkBuffer && streamingMessageContent.value) {
       streamingMessageContent.value.content += _chunkBuffer;
       _chunkBuffer = '';
@@ -438,10 +455,11 @@ const handleMessageChunkEvent = (chunkData: MessageChunkEventData) => {
     return;
   }
 
-  // Buffer the incoming token and flush on next animation frame
+  // Buffer the incoming token and flush on the next throttle window
   _chunkBuffer += chunkData.content;
-  if (_chunkRafId === null) {
-    _chunkRafId = requestAnimationFrame(_flushChunkBuffer);
+  if (_chunkTimer === null) {
+    const wait = Math.max(0, CHUNK_FLUSH_MS - (Date.now() - _lastFlushAt));
+    _chunkTimer = setTimeout(_flushChunkBuffer, wait);
   }
 }
 
@@ -819,6 +837,11 @@ onMounted(() => {
 });
 
 onUnmounted(() => {
+  _cancelChunkTimer();
+  if (scrollRafId !== null) {
+    cancelAnimationFrame(scrollRafId);
+    scrollRafId = null;
+  }
   if (cancelCurrentChat.value) {
     cancelCurrentChat.value();
     cancelCurrentChat.value = null;

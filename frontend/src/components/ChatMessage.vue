@@ -17,7 +17,7 @@
         <div
           class="md-prose relative block rounded-[12px] overflow-hidden bg-[var(--fill-white)] dark:bg-[var(--fill-tsp-white-main)] p-3 ltr:rounded-br-none rtl:rounded-bl-none border border-[var(--border-main)] dark:border-0"
           :class="{ 'msg-clamp': isLongUserMsg && !userMsgExpanded }"
-          v-html="renderMarkdown(messageContent.content)">
+          v-html="renderedContent">
         </div>
       </div>
       <!-- Long prompt: collapse to a fixed height with a soft fade, keep the
@@ -54,7 +54,7 @@
          clear, compact chat flow — expandable with the Show more toggle. -->
     <template v-if="isProgressNarration && isLongNarration">
       <div class="md-prose max-w-none p-0 m-0 prose dark:prose-invert text-[var(--text-primary)]"
-        v-html="renderMarkdown(clampedNarration)"></div>
+        v-html="renderedNarration"></div>
       <button type="button"
         class="self-start text-[13px] font-medium text-[var(--text-brand)] hover:underline clickable bg-transparent border-0 p-0"
         @click="narrationExpanded = !narrationExpanded">
@@ -63,7 +63,7 @@
     </template>
     <div v-else
       class="md-prose max-w-none p-0 m-0 prose dark:prose-invert text-[var(--text-primary)]"
-      v-html="renderMarkdown(messageContent.content)"
+      v-html="renderedContent"
       @click="handleMarkdownClick"></div>
     <!-- Copy action for the assistant reply (raw text incl. markdown source).
          Hidden while streaming so nobody copies a half-finished answer. -->
@@ -88,7 +88,7 @@
           <CheckIcon class="text-[var(--icon-white)] dark:text-[var(--icon-white-tsp)]" :size="10" />
         </div>
         <div class="truncate font-medium markdown-content"
-          v-html="stepContent.description ? renderMarkdown(stepContent.description) : ''">
+          v-html="renderedStepDescription">
         </div>
         <span class="flex-shrink-0 flex" @click="isExpanded = !isExpanded;">
           <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none"
@@ -246,6 +246,17 @@ const stepContent = computed(() => props.message.content as StepContent);
 const messageContent = computed(() => props.message.content as MessageContent);
 const toolContent = computed(() => props.message.content as ToolContent);
 const attachmentsContent = computed(() => props.message.content as AttachmentsContent);
+
+// ── Memoized markdown HTML ─────────────────────────────────────────────────
+// renderMarkdown (marked + highlight.js + DOMPurify) used to run as a plain
+// function call INSIDE the template — re-parsing the FULL message text on
+// EVERY re-render (measured 7.4ms per call for the 20.8k-char prompt on
+// desktop, ~30ms on phone). It re-ran on every minute-tick, every parent
+// re-render, every streaming flush. Caching in computed properties makes a
+// re-render cost ~0 unless the underlying text actually changed.
+const renderedContent = computed(() => renderMarkdown(messageContent.value.content));
+const renderedNarration = computed(() => renderMarkdown(clampedNarration.value));
+const renderedStepDescription = computed(() => renderMarkdown(stepContent.value.description || ''));
 
 const isExpanded = ref(true);
 
