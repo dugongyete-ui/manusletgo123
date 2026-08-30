@@ -152,6 +152,14 @@ class Settings(BaseSettings):
     # env var: MAX_CONSECUTIVE_FAILURES
     max_consecutive_failures: int = 3
 
+    # Orchestration engine for the plan→execute→update agent loop.
+    #   "langgraph" — PlanActGraphFlow: LangGraph StateGraph drives the SAME
+    #                state machine (identical agents, prompts, events, guards).
+    #   "custom"    — PlanActFlow: the original hand-rolled while-loop.
+    # Both flows share every agent and emit the same event contract; the flag
+    # only selects the loop driver. env var: AGENT_FLOW_ENGINE
+    agent_flow_engine: str = "langgraph"
+
     # Extra instructions appended to all agent system prompts at runtime.
     # Useful for per-deployment persona customisation without editing code.
     # env var: EXTEND_SYSTEM_MESSAGE

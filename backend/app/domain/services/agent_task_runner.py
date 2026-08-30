@@ -33,7 +33,9 @@ from app.domain.models.event import (
     StepStatus,
 )
 from app.domain.services.flows.plan_act import PlanActFlow
+from app.domain.services.flows.plan_act_graph import PlanActGraphFlow
 from app.domain.services.agents.zip_delivery import drop_zip_member_attachments
+from app.core.config import get_settings
 from app.domain.external.sandbox import Sandbox
 from app.domain.external.browser import Browser
 from app.domain.external.search import SearchEngine
@@ -129,7 +131,17 @@ class AgentTaskRunner(TaskRunner):
         # previous preview when a new one uploads — see _get_browser_screenshot).
         self._last_screenshot_id: Optional[str] = None
 
-        self._flow = PlanActFlow(
+        # Orchestration engine switch (data-driven, no code edit needed):
+        #   AGENT_FLOW_ENGINE=langgraph → LangGraph StateGraph driver (default)
+        #   AGENT_FLOW_ENGINE=custom    → original hand-rolled while-loop
+        # Both classes share the SAME agents, prompts, tools and event
+        # contract — see flows/plan_act_graph.py.
+        _flow_cls = (
+            PlanActGraphFlow
+            if get_settings().agent_flow_engine == "langgraph"
+            else PlanActFlow
+        )
+        self._flow = _flow_cls(
             self._agent_id,
             self._repository,
             self._session_id,
@@ -269,6 +281,17 @@ class AgentTaskRunner(TaskRunner):
     # delivered with the summary — no matter how it was created.
     _SCAN_MAX_DEPTH = 3
     _SCAN_MAX_ENTRIES = 400
+    # Dependency / runtime caches that must NEVER be treated as user
+    # artifacts. A single `npm install` creates hundreds of node_modules
+    # files; syncing them one-by-one froze a live task for 2m46s (every
+    # step/plan event was held hostage behind the uploads) and burned ~400
+    # GridFS uploads on the 512MB Atlas tier. They are restorable with a
+    # package manager — never deliverables. (Dot-directories like .git are
+    # already skipped by the dotfile rule below.)
+    _SCAN_JUNK_DIRS = frozenset({
+        "node_modules", "bower_components", "__pycache__", "venv",
+        "target", "coverage",
+    })
 
     async def _scan_user_home_files(self) -> dict:
         """Recursively map {absolute_path: size} for files under the user home.
@@ -315,7 +338,7 @@ class AgentTaskRunner(TaskRunner):
                     continue
                 child = f"{path.rstrip('/')}/{name}"
                 if is_dir:
-                    if name == "upload":
+                    if name == "upload" or name in self._SCAN_JUNK_DIRS:
                         continue
                     await _walk(child, depth + 1)
                 else:
@@ -826,6 +849,18 @@ class AgentTaskRunner(TaskRunner):
         # Paths that were claimed but did not exist yet — retried at every
         # sync point until they appear (or the task ends).
         pending_sync: set = set()
+        # ── Background artifact sync ──────────────────────────────────────
+        # Step-completion artifact syncing must NEVER block the event pump.
+        # Live incident (session 5a60e5b5): after a step whose shell ran
+        # `npm install`, the runner uploaded ~400 node_modules files one-by-one
+        # (2m46s) BEFORE yielding StepEvent(completed) — the plan panel froze
+        # at 0/5 while the agent was already browser-testing, and every later
+        # event (plan updates, next step) piled up behind the uploads.
+        # Syncs now run as a chained background task (at most one at a time);
+        # the final summary awaits it before its own sweep so no deliverable
+        # is lost. Mutations of files_written/pending_sync/home_baseline are
+        # in-place only (never rebind) so this task's references stay valid.
+        artifact_sync_task: Optional[asyncio.Task] = None
 
         def _is_generator_script(fi: FileInfo) -> bool:
             name = fi.filename or fi.file_path or ""
@@ -836,37 +871,79 @@ class AgentTaskRunner(TaskRunner):
                 # TODO: move to tool function
                 file_info = await self._handle_tool_event(event)
                 if file_info:
-                    # Deduplicate by file_path — keep the latest version
-                    files_written = [f for f in files_written if f.file_path != file_info.file_path]
+                    # Deduplicate by file_path — keep the latest version.
+                    # In-place mutation (never rebind): the background
+                    # artifact-sync task holds a reference to this exact list.
+                    files_written[:] = [f for f in files_written if f.file_path != file_info.file_path]
                     files_written.append(file_info)
             elif isinstance(event, StepEvent) and event.status == StepStatus.COMPLETED:
-                # Sync files explicitly listed in step.attachments (e.g. .pptx created by shell_exec).
-                # These are the agent's intended output files but are never tracked by file_write.
-                if event.step and event.step.attachments:
-                    for attachment_path in event.step.attachments:
-                        if not attachment_path:
-                            continue
-                        try:
-                            file_info = await self._sync_file_to_storage(attachment_path)
-                            if file_info:
-                                files_written = [f for f in files_written if f.file_path != file_info.file_path]
-                                files_written.append(file_info)
-                                logger.info(
-                                    f"Agent {self._agent_id} synced step attachment: {attachment_path}"
-                                )
-                            else:
-                                pending_sync.add(attachment_path)
-                        except Exception as e:
-                            logger.warning(
-                                f"Agent {self._agent_id} failed to sync step attachment {attachment_path}: {e}"
-                            )
-                # Artifact scan: catch everything the shell actually created
-                # in this step (heredocs, generated scripts, exports) — the
-                # deterministic path to "hasil selalu sampai ke user".
-                await self._sync_run_artifacts(home_baseline, files_written, pending_sync)
+                # ── NON-BLOCKING step artifact sync ──────────────────────
+                # Schedule the sync in the background and yield this event
+                # (and everything the flow emits next) immediately — see
+                # artifact_sync_task above for the incident this fixes.
+                _prev_sync = artifact_sync_task
+                _step = event.step
+
+                async def _bg_step_sync(
+                    prev: Optional[asyncio.Task] = _prev_sync,
+                    step=_step,
+                ) -> None:
+                    try:
+                        if prev is not None and not prev.done():
+                            # Serialize syncs: a slower earlier step's sync
+                            # must finish first so home scans never overlap
+                            # on the same paths.
+                            try:
+                                await prev
+                            except Exception:
+                                pass
+                        if step and step.attachments:
+                            # Sync files explicitly listed in step.attachments
+                            # (e.g. .pptx created by shell_exec). These are the
+                            # agent's intended output files but are never
+                            # tracked by file_write.
+                            for attachment_path in step.attachments:
+                                if not attachment_path:
+                                    continue
+                                try:
+                                    file_info = await self._sync_file_to_storage(attachment_path)
+                                    if file_info:
+                                        files_written[:] = [f for f in files_written if f.file_path != file_info.file_path]
+                                        files_written.append(file_info)
+                                        logger.info(
+                                            f"Agent {self._agent_id} synced step attachment: {attachment_path}"
+                                        )
+                                    else:
+                                        pending_sync.add(attachment_path)
+                                except Exception as e:
+                                    logger.warning(
+                                        f"Agent {self._agent_id} failed to sync step attachment {attachment_path}: {e}"
+                                    )
+                        # Artifact scan: catch everything the shell actually
+                        # created in this step (heredocs, generated scripts,
+                        # exports) — the deterministic path to "hasil selalu
+                        # sampai ke user". Junk dirs (node_modules, …) are
+                        # filtered inside the scan itself.
+                        await self._sync_run_artifacts(home_baseline, files_written, pending_sync)
+                    except Exception as e:
+                        logger.warning(
+                            f"Agent {self._agent_id} background artifact sync failed: {e}"
+                        )
+
+                artifact_sync_task = asyncio.create_task(_bg_step_sync())
             elif isinstance(event, MessageEvent):
                 if event.is_final:
                     # ── Final summary message — THE single delivery point ─────
+                    # A background step sync may still be uploading — wait for
+                    # it here (NOT earlier) so its files land in files_written
+                    # before the merge below, while step events themselves
+                    # were never delayed.
+                    if artifact_sync_task is not None:
+                        try:
+                            await artifact_sync_task
+                        except Exception:
+                            pass
+                        artifact_sync_task = None
                     # Last artifact sweep before assembling the summary: the
                     # shell may still have been writing a moment ago (files
                     # claimed early, created late) — retry everything now.
@@ -952,6 +1029,14 @@ class AgentTaskRunner(TaskRunner):
                     await asyncio.gather(*tasks_to_await, return_exceptions=True)
                     logger.info(f"Agent {self._agent_id} sandbox/MCP ready — starting execution")
 
+        # A step sync can still be in flight when the flow ends (e.g. the
+        # last step completed right before the summary message). Never orphan
+        # it: finish the uploads before this generator reports completion.
+        if artifact_sync_task is not None:
+            try:
+                await artifact_sync_task
+            except Exception:
+                pass
         logger.info(f"Agent {self._agent_id} completed processing one message")
 
     
