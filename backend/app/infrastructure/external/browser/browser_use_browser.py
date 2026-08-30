@@ -10,6 +10,279 @@ from app.domain.models.tool_result import ToolResult
 logger = logging.getLogger(__name__)
 
 
+# ── Shared JS snippets ─────────────────────────────────────────────────
+# Full pointer+mouse event sequence. Modern React/Vue widgets (Facebook's
+# DOB comboboxes, menus, sliders) listen to POINTER events — a plain
+# MouseEvent mousedown/mouseup/click sequence NEVER opens them. Verified
+# live on facebook.com/reg: only pointerdown->mousedown->pointerup->mouseup
+# ->click opens the combobox listbox.
+_POINTER_SEQUENCE_JS = """
+const fire = (el) => {
+    el.scrollIntoView({block: 'center', inline: 'nearest'});
+    const r = el.getBoundingClientRect();
+    const cx = r.left + r.width / 2, cy = r.top + r.height / 2;
+    const opts = {bubbles: true, cancelable: true, view: window,
+                  button: 0, buttons: 1, clientX: cx, clientY: cy};
+    const pd = Object.assign({}, opts, {pointerId: 1, pointerType: 'mouse', isPrimary: true});
+    try {
+        el.dispatchEvent(new PointerEvent('pointerover', pd));
+        el.dispatchEvent(new PointerEvent('pointerdown', pd));
+    } catch (e) {}
+    el.dispatchEvent(new MouseEvent('mouseover', opts));
+    el.dispatchEvent(new MouseEvent('mouseenter', opts));
+    el.dispatchEvent(new MouseEvent('mousedown', opts));
+    if (typeof el.focus === 'function') el.focus();
+    const up = Object.assign({}, opts, {buttons: 0});
+    const pu = Object.assign({}, pd, {buttons: 0});
+    try { el.dispatchEvent(new PointerEvent('pointerup', pu)); } catch (e) {}
+    el.dispatchEvent(new MouseEvent('mouseup', up));
+    if (typeof el.click === 'function') el.click();
+    else el.dispatchEvent(new MouseEvent('click', up));
+};
+"""
+
+# Click an element by visible text / aria-label / placeholder locator.
+# Runs entirely in-page: find best match, fire the pointer sequence, report.
+_LOCATOR_CLICK_JS = r"""
+(q) => {
+    const lower = q.trim().toLowerCase();
+    const cands = [];
+    const push = (el, why, score) => {
+        const r = el.getBoundingClientRect();
+        if (r.width < 2 || r.height < 2) return;
+        cands.push({el, why, score});
+    };
+    const vis = (el) => {
+        const s = getComputedStyle(el);
+        return s.display !== 'none' && s.visibility !== 'hidden' && parseFloat(s.opacity) > 0.05;
+    };
+    // Pass 1: attribute matches (strongest signals)
+    const all = Array.from(document.querySelectorAll('button,a,[role],input,select,textarea,label'));
+    for (const el of all) {
+        if (!vis(el)) continue;
+        const aria = (el.getAttribute('aria-label') || '');
+        const ph = (el.getAttribute('placeholder') || '');
+        const title = (el.getAttribute('title') || '');
+        const a = aria.toLowerCase(), p = ph.toLowerCase(), t = title.toLowerCase();
+        if (a === lower) push(el, 'aria-label', 100);
+        else if (p === lower) push(el, 'placeholder', 95);
+        else if (t === lower) push(el, 'title', 90);
+        else if (a.includes(lower) && lower.length > 2) push(el, 'aria-label~', 80);
+        else if (p.includes(lower) && lower.length > 2) push(el, 'placeholder~', 75);
+    }
+    // Pass 2: visible-text matches on interactive elements
+    const inter = Array.from(document.querySelectorAll(
+        'button,a,[role="button"],[role="combobox"],[role="tab"],[role="menuitem"],' +
+        '[role="option"],[role="checkbox"],[role="radio"],[role="switch"],[role="link"],' +
+        'input[type="button"],input[type="submit"],label,li,.option,.dropdown-item'));
+    for (const el of inter) {
+        if (!vis(el)) continue;
+        const txt = (el.innerText || el.value || '').trim().toLowerCase().replace(/\s+/g, ' ');
+        if (!txt) continue;
+        if (txt === lower) push(el, 'text', 85);
+        else if (txt.length <= 80 && txt.includes(lower) && lower.length > 2) push(el, 'text~', 70);
+    }
+    if (!cands.length) return JSON.stringify({ok: false, why: 'no visible element matches ' + q});
+    cands.sort((a, b) => b.score - a.score);
+    const topScore = cands[0].score;
+    const ties = cands.filter(c => c.score === topScore);
+    if (ties.length > 3) {
+        return JSON.stringify({ok: false, why: 'ambiguous (' + ties.length + ' equal matches)',
+            matches: ties.slice(0, 6).map(c => ({tag: c.el.tagName, role: c.el.getAttribute('role'),
+                aria: c.el.getAttribute('aria-label'), text: (c.el.innerText || '').trim().slice(0, 40)}))});
+    }
+    let el = cands[0].el;
+    // Container→trigger retarget: when the match is a WRAPPER (listbox/menu
+    // container with an aria-label), clicking the container is usually a
+    // no-op — retarget to the actionable control inside it (the .dd-button
+    // pattern: role=button child, or button/[role=combobox] descendant).
+    const role = (el.getAttribute('role') || '').toLowerCase();
+    if (role === 'listbox' || role === 'menu' || role === 'group' || role === 'radiogroup' || role === 'dialog') {
+        const inner = el.querySelector('[role="button"],[role="combobox"],button,.dd-button,[tabindex]:not([tabindex="-1"])');
+        if (inner && el.contains(inner)) el = inner;
+    }
+    const r = el.getBoundingClientRect();
+    const cx = r.left + r.width / 2, cy = r.top + r.height / 2;
+    const opts = {bubbles: true, cancelable: true, view: window, button: 0, buttons: 1, clientX: cx, clientY: cy};
+    const pd = Object.assign({}, opts, {pointerId: 1, pointerType: 'mouse', isPrimary: true});
+    try {
+        el.dispatchEvent(new PointerEvent('pointerover', pd));
+        el.dispatchEvent(new PointerEvent('pointerdown', pd));
+    } catch (e) {}
+    el.dispatchEvent(new MouseEvent('mouseover', opts));
+    el.dispatchEvent(new MouseEvent('mousedown', opts));
+    if (typeof el.focus === 'function') el.focus();
+    const up = Object.assign({}, opts, {buttons: 0});
+    const pu = Object.assign({}, pd, {buttons: 0});
+    try { el.dispatchEvent(new PointerEvent('pointerup', pu)); } catch (e) {}
+    el.dispatchEvent(new MouseEvent('mouseup', up));
+    if (typeof el.click === 'function') el.click();
+    else el.dispatchEvent(new MouseEvent('click', up));
+    return JSON.stringify({ok: true, matched_by: cands[0].why,
+        tag: el.tagName, role: el.getAttribute('role'),
+        aria: el.getAttribute('aria-label'),
+        text: (el.innerText || '').trim().slice(0, 60).replace(/\n/g, '|')});
+}
+"""
+
+# Open a custom dropdown by locator and pick an option — the strategy proven
+# live on facebook.com/reg DOB comboboxes (role=combobox triggers invisible to
+# the browser-use selector map + pointer-event-only interaction model).
+_LOCATOR_SELECT_JS = r"""
+(payload) => {
+    const {dropdown, option} = payload;
+    const lower = (s) => (s || '').trim().toLowerCase();
+    const vis = (el) => {
+        const s = getComputedStyle(el);
+        return s.display !== 'none' && s.visibility !== 'hidden' && parseFloat(s.opacity) > 0.05;
+    };
+    const fire = (el) => {
+        const r = el.getBoundingClientRect();
+        if (r.width < 2 || r.height < 2) return;
+        const cx = r.left + r.width / 2, cy = r.top + r.height / 2;
+        const opts = {bubbles: true, cancelable: true, view: window, button: 0, buttons: 1, clientX: cx, clientY: cy};
+        const pd = Object.assign({}, opts, {pointerId: 1, pointerType: 'mouse', isPrimary: true});
+        try {
+            el.dispatchEvent(new PointerEvent('pointerover', pd));
+            el.dispatchEvent(new PointerEvent('pointerdown', pd));
+        } catch (e) {}
+        el.dispatchEvent(new MouseEvent('mouseover', opts));
+        el.dispatchEvent(new MouseEvent('mousedown', opts));
+        if (typeof el.focus === 'function') el.focus();
+        const up = Object.assign({}, opts, {buttons: 0});
+        const pu = Object.assign({}, pd, {buttons: 0});
+        try { el.dispatchEvent(new PointerEvent('pointerup', pu)); } catch (e) {}
+        el.dispatchEvent(new MouseEvent('mouseup', up));
+        if (typeof el.click === 'function') el.click();
+        else el.dispatchEvent(new MouseEvent('click', up));
+    };
+    // 1. find the dropdown trigger: aria-label exact > contains > visible text
+    const triggers = Array.from(document.querySelectorAll(
+        '[role="combobox"],[role="listbox"],[aria-haspopup],button,[role="button"]'));
+    let trigger = null, how = '';
+    for (const el of triggers) {
+        if (!vis(el)) continue;
+        if (lower(el.getAttribute('aria-label')) === lower(dropdown)) { trigger = el; how = 'aria-label'; break; }
+    }
+    if (!trigger) for (const el of triggers) {
+        if (!vis(el)) continue;
+        const a = lower(el.getAttribute('aria-label'));
+        if (a && a.includes(lower(dropdown))) { trigger = el; how = 'aria-label~'; break; }
+    }
+    if (!trigger) for (const el of triggers) {
+        if (!vis(el)) continue;
+        const t = lower((el.innerText || '').replace(/\s+/g, ' '));
+        if (t === lower(dropdown)) { trigger = el; how = 'text'; break; }
+    }
+    if (!trigger) return JSON.stringify({ok: false, why: 'no dropdown trigger matches ' + dropdown});
+    // Container→trigger retarget (aria-label often sits on the wrapper div).
+    const tRole = (trigger.getAttribute('role') || '').toLowerCase();
+    if (tRole === 'listbox' || tRole === 'menu' || tRole === 'group') {
+        const inner = trigger.querySelector('[role="button"],[role="combobox"],button,.dd-button,[tabindex]:not([tabindex="-1"])');
+        if (inner && trigger.contains(inner)) trigger = inner;
+    }
+    const before = (trigger.innerText || '').trim().replace(/\n/g, '|');
+    return (async () => {
+        // 2. open it with the pointer sequence
+        fire(trigger);
+        const sleep = (ms) => new Promise(r => setTimeout(r, ms));
+        const countOpts = () => {
+            const boxes = Array.from(document.querySelectorAll(
+                '[role="listbox"],[role="menu"],.dropdown-menu,.dd'));
+            for (const lb of boxes) {
+                const vis = Array.from(lb.querySelectorAll(
+                    '[role="option"],[role="menuitem"],.dd-item,.option,.dropdown-item'
+                )).filter(o => {
+                    const s = getComputedStyle(o);
+                    const r = o.getBoundingClientRect();
+                    return s.display !== 'none' && s.visibility !== 'hidden' &&
+                           parseFloat(s.opacity) > 0.05 && r.width > 2 && r.height > 2;
+                });
+                if (vis.length) return vis.length;
+            }
+            return 0;
+        };
+        let n = 0;
+        for (let i = 0; i < 8; i++) { await sleep(100); n = countOpts(); if (n) break; }
+        let reopened = false;
+        if (!n) {
+            // Toggle-trap reopen: widgets that open on mousedown but close on
+            // the trailing click net to CLOSED after the full sequence. A
+            // mousedown-only pass re-opens without the closing toggle.
+            trigger.dispatchEvent(new MouseEvent('mousedown',
+                {bubbles: true, cancelable: true, view: window, button: 0, buttons: 1}));
+            reopened = true;
+            for (let i = 0; i < 8; i++) { await sleep(100); n = countOpts(); if (n) break; }
+        }
+        return JSON.stringify({ok: true, opened_by: how, trigger_text: before,
+                               options_visible: n, reopened: reopened});
+    })();
+}
+"""
+
+# Scan the live DOM for high-value ARIA widgets that are VISIBLE but missing
+# from the browser-use selector map (observed live: facebook.com/reg DOB
+# combobox triggers — role=combobox divs never enter the map, so the agent is
+# blind to the exact elements it needs to interact with).
+_WIDGET_SCAN_JS = r"""
+() => {
+    const vis = (el) => {
+        const s = getComputedStyle(el);
+        return s.display !== 'none' && s.visibility !== 'hidden' && parseFloat(s.opacity) > 0.05;
+    };
+    const PRIORITY = ['combobox', 'tab', 'switch', 'checkbox', 'radio', 'slider', 'menuitem', 'textbox', 'searchbox', 'spinbutton', 'button'];
+    const out = [];
+    const seen = new Set();
+    for (const role of PRIORITY) {
+        for (const el of document.querySelectorAll('[role="' + role + '"]')) {
+            if (seen.has(el)) continue;
+            const r = el.getBoundingClientRect();
+            if (!vis(el) || r.width < 2 || r.height < 2) continue;
+            seen.add(el);
+            out.push({role: role, tag: el.tagName,
+                      aria: (el.getAttribute('aria-label') || '').slice(0, 50),
+                      text: (el.innerText || '').trim().slice(0, 40).replace(/\n/g, '|'),
+                      x: Math.round(r.left + r.width / 2), y: Math.round(r.top + r.height / 2),
+                      expanded: el.getAttribute('aria-expanded')});
+            if (out.length >= 40) return JSON.stringify(out);
+        }
+    }
+    return JSON.stringify(out);
+}
+"""
+
+# Find visible elements by text/aria/role query (blind-spot-aware search).
+_FIND_ELEMENT_JS = r"""
+(payload) => {
+    const q = (payload.query || '').toLowerCase().trim();
+    const roleFilter = (payload.role || '').toLowerCase();
+    const vis = (el) => {
+        const s = getComputedStyle(el);
+        return s.display !== 'none' && s.visibility !== 'hidden' && parseFloat(s.opacity) > 0.05;
+    };
+    const out = [];
+    for (const el of document.querySelectorAll('button,a,input,select,textarea,[role],label,li')) {
+        const s = getComputedStyle(el);
+        if (!vis(el)) continue;
+        const r = el.getBoundingClientRect();
+        if (r.width < 2 || r.height < 2) continue;
+        const role = (el.getAttribute('role') || '').toLowerCase();
+        if (roleFilter && role !== roleFilter) continue;
+        const aria = el.getAttribute('aria-label') || '';
+        const ph = el.getAttribute('placeholder') || '';
+        const text = (el.innerText || el.value || '').trim();
+        if (!(text.toLowerCase().includes(q) || aria.toLowerCase().includes(q) || ph.toLowerCase().includes(q))) continue;
+        out.push({tag: el.tagName, role: el.getAttribute('role'),
+                  aria: aria.slice(0, 40), text: text.slice(0, 50).replace(/\n/g, '|'),
+                  x: Math.round(r.left + r.width / 2), y: Math.round(r.top + r.height / 2),
+                  expanded: el.getAttribute('aria-expanded')});
+        if (out.length >= 15) break;
+    }
+    return JSON.stringify(out);
+}
+"""
+
+
 class BrowserUseBrowser:
     """Browser implementation using the browser_use library (BrowserSession + CDP).
 
@@ -405,29 +678,40 @@ class BrowserUseBrowser:
 
         Returns (success, strategy_used_or_error_message).
         """
-        # ── Strategy 1: JS synthetic click with React-safe events ─────────────
+        # ── Strategy 1: JS synthetic click with pointer + mouse events ──────
         # PRIMARY since the browser_use actor click (Element.click(), CDP mouse
         # events) was observed to silently no-op on some targets — it returned
         # success while the page's onclick handler never fired. Direct JS event
         # dispatch always reaches the right document: the same proven mechanism
         # the select_* tools use.
+        # NOTE: the PointerEvent sequence is ESSENTIAL for modern React widgets
+        # (comboboxes/menus on facebook.com etc.) — they open on pointerdown,
+        # not mousedown. Verified live on the FB /reg DOB dropdowns.
         try:
             result = await element.evaluate("""() => {
                 try {
-                    // Scroll into view first
                     this.scrollIntoView({block: 'center', inline: 'nearest'});
-                    // Dispatch React-compatible mouse events
-                    const opts = {bubbles: true, cancelable: true, view: window};
+                    const r = this.getBoundingClientRect();
+                    const cx = r.left + r.width / 2, cy = r.top + r.height / 2;
+                    const opts = {bubbles: true, cancelable: true, view: window,
+                                  button: 0, buttons: 1, clientX: cx, clientY: cy};
+                    const pd = Object.assign({}, opts, {pointerId: 1, pointerType: 'mouse', isPrimary: true});
+                    try {
+                        this.dispatchEvent(new PointerEvent('pointerover', pd));
+                        this.dispatchEvent(new PointerEvent('pointerdown', pd));
+                    } catch (e) {}
                     this.dispatchEvent(new MouseEvent('mouseover', opts));
                     this.dispatchEvent(new MouseEvent('mouseenter', opts));
                     this.dispatchEvent(new MouseEvent('mousedown', opts));
-                    this.dispatchEvent(new MouseEvent('mouseup',   opts));
+                    if (typeof this.focus === 'function') this.focus();
+                    const up = Object.assign({}, opts, {buttons: 0});
+                    const pu = Object.assign({}, pd, {buttons: 0});
+                    try { this.dispatchEvent(new PointerEvent('pointerup', pu)); } catch (e) {}
+                    this.dispatchEvent(new MouseEvent('mouseup', up));
                     // Native HTMLElement.click() fires onclick AND performs
                     // default actions (form submit, anchor navigation).
                     if (typeof this.click === 'function') this.click();
-                    else this.dispatchEvent(new MouseEvent('click', opts));
-                    // Also trigger focus for inputs/buttons
-                    if (typeof this.focus === 'function') this.focus();
+                    else this.dispatchEvent(new MouseEvent('click', up));
                     return 'ok';
                 } catch(e) { return 'err:' + e.message; }
             }""")
@@ -862,12 +1146,21 @@ class BrowserUseBrowser:
         content = ""
         if include_content and state.dom_state is not None:
             content = state.dom_state.llm_representation() or ""
-        return {
+        observed = {
             "url": state.url or "",
             "title": state.title or "",
             "interactive_elements": elements,
             "content": content,
         }
+        # ARIA widget scan — surfaces VISIBLE interactive widgets that the
+        # selector map misses (combobox triggers etc.), with locator hints.
+        try:
+            widgets = await self._scan_aria_widgets()
+            if widgets:
+                observed["aria_widgets"] = widgets
+        except Exception:
+            pass
+        return observed
 
     async def view_page(self) -> ToolResult:
         """Return the current page content and interactive elements."""
@@ -932,6 +1225,7 @@ class BrowserUseBrowser:
                 data={
                     "open_tabs": tabs_info,
                     "interactive_elements": interactive_elements,
+                    "aria_widgets": await self._scan_aria_widgets(),
                     "content": content,
                 },
             )
@@ -971,19 +1265,21 @@ class BrowserUseBrowser:
         index: Optional[int] = None,
         coordinate_x: Optional[float] = None,
         coordinate_y: Optional[float] = None,
+        text: Optional[str] = None,
     ) -> ToolResult:
-        """Click an element by DOM index or by screen coordinates.
+        """Click an element by DOM index, by screen coordinates, or by text locator.
 
-        For index-based clicks uses Manus-style 3-strategy fallback chain:
-          1. Playwright element.click()  — standard, handles scroll-into-view
-          2. JS synthetic click          — React/Vue-safe mouse events via evaluate()
-          3. Raw CDP coordinates         — dispatchMouseEvent at bounding-box center
-
-        For coordinate clicks uses raw CDP directly (same as before).
-        DOM-settle wait is applied after every successful click so React state
-        and lazy-loaded DOM changes are stable before the next action.
+        Index clicks use the Manus-style 3-strategy fallback chain (now with
+        full PointerEvent sequences — required by modern React widgets).
+        Locator clicks (text=...) find a VISIBLE element by aria-label /
+        placeholder / visible text and fire the same pointer sequence in-page —
+        this reaches elements that are missing from the interactive-elements
+        list (e.g. role=combobox dropdown triggers on facebook.com).
         """
         try:
+            if text is not None and str(text).strip():
+                return await self._click_by_locator(str(text).strip())
+
             if coordinate_x is not None and coordinate_y is not None:
                 await self._cdp_click_at(coordinate_x, coordinate_y)
                 await self._wait_for_dom_settle()
@@ -1091,6 +1387,238 @@ class BrowserUseBrowser:
             return ToolResult(success=True)
         except Exception as exc:
             return ToolResult(success=False, message=f"Failed to click element: {exc}")
+
+    async def _click_by_locator(self, text: str) -> ToolResult:
+        """Click a visible element located by aria-label / placeholder / text.
+
+        Covers the selector-map blind spots (elements the browser-use
+        serializer never exposes) and elements beyond the 300-element list
+        cap. Fires the same pointer+mouse event sequence as index clicks,
+        then returns the post-action page observation.
+        """
+        import json as _json
+
+        try:
+            page = await self._get_current_page()
+            try:
+                pre_url = await page.get_url()
+            except Exception:
+                pre_url = ""
+
+            raw = await self._call_with_deadline(
+                page.evaluate(_LOCATOR_CLICK_JS, text), timeout=30.0
+            )
+            res = _json.loads(raw) if isinstance(raw, str) else (raw or {})
+
+            if not res.get("ok"):
+                matches = res.get("matches") or []
+                hint = (
+                    f" Closest matches: {_json.dumps(matches)[:300]}"
+                    if matches
+                    else ""
+                )
+                return ToolResult(
+                    success=False,
+                    message=(
+                        f"browser_click(text=...) failed: {res.get('why')}.{hint} "
+                        f"Try browser_find_element('{text}') to see exact matches, "
+                        f"or use coordinates."
+                    ),
+                )
+
+            await self._wait_for_dom_settle()
+
+            # Post-action awareness — same payload shape as index clicks.
+            try:
+                session = await self._ensure_session()
+                now_url = ""
+                try:
+                    now_url = await (await self._get_current_page()).get_url()
+                except Exception:
+                    pass
+                navigated = bool(now_url) and now_url != pre_url
+                observed = await self._observe_page_state(
+                    session, include_content=navigated
+                )
+                els = observed.get("interactive_elements") or []
+                els_sig = tuple(els)
+                elements_changed = (
+                    self._last_elements_signature is not None
+                    and els_sig != self._last_elements_signature
+                )
+                self._last_elements_signature = els_sig
+                observed["page_changed"] = navigated or elements_changed
+                observed["clicked"] = {
+                    "matched_by": res.get("matched_by"),
+                    "tag": res.get("tag"),
+                    "role": res.get("role"),
+                    "aria": res.get("aria"),
+                    "text": res.get("text"),
+                }
+                return ToolResult(
+                    success=True,
+                    message=(
+                        f"Clicked <{res.get('tag')} role={res.get('role')} "
+                        f"aria-label={res.get('aria')!r}> matched by {res.get('matched_by')}"
+                    ),
+                    data=observed,
+                )
+            except Exception:
+                return ToolResult(
+                    success=True,
+                    message=f"Clicked element matching {text!r} (matched by {res.get('matched_by')})",
+                )
+        except Exception as exc:
+            return ToolResult(success=False, message=f"Failed to click by text: {exc}")
+
+    async def find_element(
+        self, query: str, role: Optional[str] = None
+    ) -> ToolResult:
+        """Locate elements by text / aria-label / placeholder, optionally by role.
+
+        Searches BOTH the interactive-elements selector map (returns usable
+        indexes) and the live DOM (returns coordinates + locator hints for
+        elements the map does not expose). Use this whenever you cannot find
+        an element in the browser_view list — especially custom React
+        dropdowns (role=combobox) and widgets beyond the 300-element cap.
+        """
+        import json as _json
+
+        try:
+            ql = str(query or "").lower().strip()
+            if not ql:
+                return ToolResult(success=False, message="find_element: empty query")
+
+            # 1. Selector-map search → real indexes the agent can click.
+            map_hits: List[str] = []
+            try:
+                session = await self._ensure_session()
+                state = await session.get_browser_state_summary(
+                    include_screenshot=False
+                )
+                sm = (
+                    state.dom_state.selector_map
+                    if state.dom_state is not None
+                    else {}
+                ) or {}
+                for idx, node in sorted(sm.items()):
+                    attrs = node.attributes or {}
+                    nrole = (attrs.get("role") or "").lower()
+                    if role and role.lower() != nrole:
+                        continue
+                    text = (
+                        node.get_meaningful_text_for_llm()
+                        if hasattr(node, "get_meaningful_text_for_llm")
+                        else ""
+                    ) or ""
+                    aria = attrs.get("aria-label", "") or ""
+                    ph = attrs.get("placeholder", "") or ""
+                    if ql in text.lower() or ql in aria.lower() or ql in ph.lower():
+                        label = (text or aria or ph)[:60]
+                        map_hits.append(
+                            f"index {idx}: <{node.tag_name}> {label}"
+                            f" → browser_click(index={idx})"
+                        )
+                        if len(map_hits) >= 10:
+                            break
+            except Exception as exc:
+                logger.debug("find_element selector-map search failed: %s", exc)
+
+            # 2. Live-DOM search → coordinates + locator hints (blind-spot aware).
+            dom_hits: List[str] = []
+            try:
+                page = await self._get_current_page()
+                raw = await self._call_with_deadline(
+                    page.evaluate(
+                        _FIND_ELEMENT_JS, {"query": ql, "role": role or ""}
+                    ),
+                    timeout=30.0,
+                )
+                items = (
+                    _json.loads(raw) if isinstance(raw, str) else (raw or [])
+                )
+                for it in items:
+                    label = it.get("aria") or it.get("text") or ""
+                    dom_hits.append(
+                        f"<{it.get('tag')} role={it.get('role')} aria-label={it.get('aria')!r}> "
+                        f"text={it.get('text')!r} @ ({it.get('x')},{it.get('y')}) "
+                        f"expanded={it.get('expanded')} "
+                        f"→ browser_click(text={label!r}) or coordinates"
+                    )
+            except Exception as exc:
+                logger.debug("find_element live-DOM search failed: %s", exc)
+
+            if not map_hits and not dom_hits:
+                return ToolResult(
+                    success=False,
+                    message=(
+                        f"No visible element matches {query!r}"
+                        f"{' with role=' + role if role else ''}. "
+                        "Try a different spelling, a shorter substring, or "
+                        "browser_view() to inspect the page."
+                    ),
+                )
+
+            data = {
+                "in_interactive_list": map_hits,
+                "in_live_dom": dom_hits,
+                "hint": (
+                    "Elements listed under in_interactive_list can be clicked "
+                    "by index. Elements under in_live_dom are NOT in the index "
+                    "list — click them with browser_click(text=...) or by "
+                    "coordinates."
+                ),
+            }
+            return ToolResult(
+                success=True,
+                message=(
+                    f"{len(map_hits)} match(es) in interactive list, "
+                    f"{len(dom_hits)} in live DOM scan for {query!r}."
+                ),
+                data=data,
+            )
+        except Exception as exc:
+            return ToolResult(success=False, message=f"Failed to find element: {exc}")
+
+    async def _scan_aria_widgets(self) -> List[str]:
+        """Return formatted live-DOM ARIA widget entries for the observation payload.
+
+        These are elements that ARE visible and interactive in the real DOM but
+        are frequently missing from the browser-use selector map (combobox
+        triggers being the classic case). Giving the agent this list removes
+        the 'blind spot' that caused blind index-click flailing on
+        facebook.com/reg.
+        """
+        import json as _json
+
+        try:
+            page = await self._get_current_page()
+            raw = await self._call_with_deadline(
+                page.evaluate(_WIDGET_SCAN_JS), timeout=15.0
+            )
+            items = _json.loads(raw) if isinstance(raw, str) else (raw or [])
+            out: List[str] = []
+            for it in items:
+                label = it.get("aria") or ""
+                text = it.get("text") or ""
+                desc = label or text
+                if not desc:
+                    continue
+                out.append(
+                    f"<{it.get('tag')} role={it.get('role')} {desc!r}>"
+                    f"{' [open]' if it.get('expanded') in ('true', True) else ''}"
+                    f" @ ({it.get('x')},{it.get('y')})"
+                    f" → browser_click(text={desc!r})"
+                    if it.get("role") != "combobox"
+                    else f"<{it.get('tag')} role=combobox {desc!r}> text={text!r}"
+                    f"{' [open]' if it.get('expanded') in ('true', True) else ''}"
+                    f" @ ({it.get('x')},{it.get('y')})"
+                    f" → browser_smart_select(dropdown={desc!r}, option='...')"
+                )
+            return out[:30]
+        except Exception as exc:
+            logger.debug("aria widget scan failed: %s", exc)
+            return []
 
     async def input(
         self,
@@ -1608,12 +2136,22 @@ class BrowserUseBrowser:
         except Exception:
             return False
 
-    async def smart_select(self, index: int, text: str) -> ToolResult:
+    async def smart_select(
+        self,
+        index: Optional[int] = None,
+        option: Optional[str] = None,
+        dropdown: Optional[str] = None,
+    ) -> ToolResult:
         """Adaptive dropdown selector — 3-strategy chain (Manus.im style).
 
+        Strategy 0 (locator): find the trigger by aria-label/visible text
+            (``dropdown=...``) and drive it with pointer events. REQUIRED for
+            modern React comboboxes (role=combobox) whose triggers never appear
+            in the interactive-elements list — verified live on the
+            facebook.com/reg DOB dropdowns.
         Strategy 1 (native <select>): React-safe text match + prototype setter + synthetic events.
-        Strategy 2 (custom dropdown):  click trigger → verify list visible → scan DOM → click option.
-        Strategy 3 (text mismatch):    return available options list so agent retries with correct text.
+        Strategy 2 (custom dropdown by index): click trigger → verify list visible → scan DOM → click option.
+        Strategy 3 (text mismatch): return available options list so agent retries with correct text.
 
         Key Manus.im behaviours implemented here:
         - Visibility check: after opening custom dropdown we wait and CONFIRM the list appeared
@@ -1626,6 +2164,29 @@ class BrowserUseBrowser:
         """
         import json as _json
 
+        # Models routinely pass numeric options as JSON numbers (option=1995
+        # instead of "1995") — coerce BEFORE any string ops to avoid
+        # "'int' object has no attribute 'strip'" crashes that derail the
+        # whole task into blind-click loops (observed live in E2E test).
+        if option is not None:
+            option = str(option).strip()
+        if dropdown is not None:
+            dropdown = str(dropdown).strip()
+
+        # ── Strategy 0: locator-based (dropdown trigger by aria-label/text) ──
+        if dropdown and option is not None:
+            return await self._smart_select_locator(dropdown, option)
+
+        if index is None or option is None:
+            return ToolResult(
+                success=False,
+                message=(
+                    "smart_select: provide either (index, option) or "
+                    "(dropdown, option). dropdown = the trigger's aria-label "
+                    "or visible text (e.g. dropdown='Select day', option='15')."
+                ),
+            )
+        text = option
         logger.info("SMART_SELECT[%d] text=%r — trying S1-native-select", index, text)
         # ── Strategy 1: native <select> via React-safe JS ──────────────────────
         s1 = await self.select_by_text(index, text)
@@ -1690,6 +2251,34 @@ class BrowserUseBrowser:
                 except Exception:
                     break
 
+            # Toggle-trap reopen (mousedown-open + click-close widgets): the
+            # full click chain nets to CLOSED on such widgets. A mousedown-
+            # only pass re-opens the menu without the closing toggle.
+            if not visible_count:
+                try:
+                    await element.evaluate(
+                        "() => { this.dispatchEvent(new MouseEvent('mousedown', "
+                        "{bubbles: true, cancelable: true, view: window, button: 0, buttons: 1})); }"
+                    )
+                    for _ in range(6):  # 6 × 100 ms
+                        await asyncio.sleep(0.1)
+                        try:
+                            visible_count = await page.evaluate(f"""() => {{
+                                const nodes = document.querySelectorAll('{OPTION_SELECTORS}');
+                                let n = 0;
+                                for (const el of nodes) {{
+                                    const s = window.getComputedStyle(el);
+                                    if (s.display !== 'none' && s.visibility !== 'hidden' && parseFloat(s.opacity) >= 0.1) n++;
+                                }}
+                                return n;
+                            }}""")
+                            if visible_count > 0:
+                                break
+                        except Exception:
+                            break
+                except Exception:
+                    pass
+
             js_find_click = """(searchText) => {
                 const lower = searchText.trim().toLowerCase();
                 const SELECTORS = [
@@ -1697,6 +2286,26 @@ class BrowserUseBrowser:
                     '[aria-selected]', '[data-value]', '[data-option]',
                     'li', 'ul > li', 'ol > li', '.option', '.dropdown-item'
                 ];
+                const fire = (n) => {
+                    const r = n.getBoundingClientRect();
+                    const cx = r.left + r.width / 2, cy = r.top + r.height / 2;
+                    const opts = {bubbles: true, cancelable: true, view: window,
+                                  button: 0, buttons: 1, clientX: cx, clientY: cy};
+                    const pd = Object.assign({}, opts, {pointerId: 1, pointerType: 'mouse', isPrimary: true});
+                    try {
+                        n.dispatchEvent(new PointerEvent('pointerover', pd));
+                        n.dispatchEvent(new PointerEvent('pointerdown', pd));
+                    } catch (e) {}
+                    n.dispatchEvent(new MouseEvent('mouseover', opts));
+                    n.dispatchEvent(new MouseEvent('mousedown', opts));
+                    const up = Object.assign({}, opts, {buttons: 0});
+                    const pu = Object.assign({}, pd, {buttons: 0});
+                    try { n.dispatchEvent(new PointerEvent('pointerup', pu)); } catch (e) {}
+                    n.dispatchEvent(new MouseEvent('mouseup', up));
+                    if (typeof n.click === 'function') n.click();
+                    else n.dispatchEvent(new MouseEvent('click', up));
+                    return {cx: cx, cy: cy};
+                };
                 const seen = new Set();
                 // Exact match first
                 for (const sel of SELECTORS) {
@@ -1709,9 +2318,8 @@ class BrowserUseBrowser:
                         if (s.display === 'none' || s.visibility === 'hidden' || parseFloat(s.opacity) < 0.1) continue;
                         const t = (n.innerText || n.textContent || '').trim();
                         if (t.toLowerCase() === lower) {
-                            const r = n.getBoundingClientRect();
-                            n.click();
-                            return JSON.stringify({success:true, clicked:t, match:'exact', cx: r.left+r.width/2, cy: r.top+r.height/2});
+                            const hit = fire(n);
+                            return JSON.stringify({success:true, clicked:t, match:'exact', cx: hit.cx, cy: hit.cy});
                         }
                     }
                 }
@@ -1729,9 +2337,8 @@ class BrowserUseBrowser:
                         const t = (n.innerText || n.textContent || '').trim();
                         if (!t) continue;
                         if (t.toLowerCase().includes(lower)) {
-                            const r = n.getBoundingClientRect();
-                            n.click();
-                            return JSON.stringify({success:true, clicked:t, match:'partial', cx: r.left+r.width/2, cy: r.top+r.height/2});
+                            const hit = fire(n);
+                            return JSON.stringify({success:true, clicked:t, match:'partial', cx: hit.cx, cy: hit.cy});
                         }
                         if (visible.length < 20) visible.push(t.substring(0, 40));
                     }
@@ -1786,6 +2393,236 @@ class BrowserUseBrowser:
         # Not custom — option text mismatch, pass back original message with available options
         logger.warning("SMART_SELECT[%d] ✗ no matching strategy for text=%r", index, text)
         return ToolResult(success=False, message=f"smart_select: {reason}")
+
+    async def _smart_select_locator(self, dropdown: str, option: str) -> ToolResult:
+        """Strategy 0: open a custom dropdown by locator and pick an option.
+
+        The full pipeline proven live on facebook.com/reg DOB comboboxes:
+          1. locate trigger (aria-label exact > contains > visible text)
+          2. fire pointer+mouse event sequence to open the listbox
+          3. wait for visible options to appear
+          4. click the matching option with the same pointer sequence
+          5. verify the trigger's text changed to the chosen option
+        """
+        import json as _json
+
+        try:
+            page = await self._get_current_page()
+
+            # 1+2. find and open the trigger
+            raw = await self._call_with_deadline(
+                page.evaluate(_LOCATOR_SELECT_JS, {"dropdown": dropdown, "option": option}),
+                timeout=30.0,
+            )
+            res = _json.loads(raw) if isinstance(raw, str) else (raw or {})
+            if not res.get("ok"):
+                return ToolResult(
+                    success=False,
+                    message=(
+                        f"smart_select(dropdown={dropdown!r}): {res.get('why')}. "
+                        "Call browser_find_element() to see the exact trigger "
+                        "labels on this page."
+                    ),
+                )
+
+            # 3. wait for visible options (up to 1.5s)
+            option_js = """() => {
+                const boxes = Array.from(document.querySelectorAll(
+                    '[role="listbox"],[role="menu"],.dropdown-menu,ul[style*="display: block"]'));
+                for (const lb of boxes) {
+                    const vis = Array.from(lb.querySelectorAll(
+                        '[role="option"],[role="menuitem"],li,.option,.dropdown-item'
+                    )).filter(o => {
+                        const s = getComputedStyle(o);
+                        const r = o.getBoundingClientRect();
+                        return s.display !== 'none' && s.visibility !== 'hidden' &&
+                               parseFloat(s.opacity) > 0.05 && r.width > 2 && r.height > 2;
+                    });
+                    if (vis.length) {
+                        const texts = vis.map(o => (o.innerText || '').trim());
+                        return JSON.stringify({n: vis.length, texts: texts.slice(0, 60)});
+                    }
+                }
+                return JSON.stringify({n: 0});
+            }"""
+            found = None
+            for _ in range(12):  # 12 × 125ms = 1.5s
+                await asyncio.sleep(0.125)
+                try:
+                    raw = await self._call_with_deadline(
+                        page.evaluate(option_js), timeout=10.0
+                    )
+                    o = _json.loads(raw) if isinstance(raw, str) else (raw or {})
+                    if o.get("n", 0) > 0:
+                        found = o
+                        break
+                except Exception:
+                    break
+
+            # Toggle-trap reopen: some widgets open on mousedown but CLOSE on
+            # the trailing click (open→closed net effect from the full pointer
+            # sequence). Fire a mousedown-only pass to re-open without the
+            # closing toggle, then wait again.
+            if not found or not found.get("n"):
+                try:
+                    reopen_js = r"""(dd) => {
+                        const lower = (s) => (s || '').trim().toLowerCase();
+                        const els = Array.from(document.querySelectorAll(
+                            '[role="combobox"],[aria-haspopup],button,[role="button"]'));
+                        const el = els.find(e => lower(e.getAttribute('aria-label')) === lower(dd)) ||
+                                   els.find(e => lower(e.getAttribute('aria-label') || '').includes(lower(dd))) ||
+                                   els.find(e => lower((e.innerText || '').replace(/\s+/g, ' ')) === lower(dd));
+                        if (!el) return 'no-trigger';
+                        el.dispatchEvent(new MouseEvent('mousedown', {bubbles: true, cancelable: true, view: window, button: 0, buttons: 1}));
+                        return 'reopened';
+                    }"""
+                    await self._call_with_deadline(
+                        page.evaluate(reopen_js, dropdown), timeout=10.0
+                    )
+                    for _ in range(8):  # 8 × 125ms = 1s
+                        await asyncio.sleep(0.125)
+                        try:
+                            raw = await self._call_with_deadline(
+                                page.evaluate(option_js), timeout=10.0
+                            )
+                            o = _json.loads(raw) if isinstance(raw, str) else (raw or {})
+                            if o.get("n", 0) > 0:
+                                found = o
+                                break
+                        except Exception:
+                            break
+                except Exception:
+                    pass
+
+            if not found or not found.get("n"):
+                return ToolResult(
+                    success=False,
+                    message=(
+                        f"smart_select(dropdown={dropdown!r}): dropdown opened "
+                        f"(trigger text: {res.get('trigger_text')!r}) but no "
+                        "visible options appeared. The widget may need a "
+                        "different interaction — try browser_click(text=...) "
+                        "then browser_view()."
+                    ),
+                )
+
+            texts = found.get("texts") or []
+            lower = (option or "").strip().lower()
+            match_idx = None
+            for i, t in enumerate(texts):
+                if t.lower() == lower:
+                    match_idx = i
+                    break
+            if match_idx is None:
+                for i, t in enumerate(texts):
+                    if lower and lower in t.lower():
+                        match_idx = i
+                        break
+            if match_idx is None:
+                preview = ", ".join(repr(t) for t in texts[:15])
+                return ToolResult(
+                    success=False,
+                    message=(
+                        f"smart_select(dropdown={dropdown!r}): option {option!r} "
+                        f"not in the visible options. Options: [{preview}]. "
+                        "Retry with the exact text from this list."
+                    ),
+                )
+
+            # 4. click the matching option with the pointer sequence
+            pick_js = """(payload) => {
+                const {want} = payload;
+                const lower = want.toLowerCase();
+                const boxes = Array.from(document.querySelectorAll(
+                    '[role="listbox"],[role="menu"],.dropdown-menu,ul[style*="display: block"]'));
+                for (const lb of boxes) {
+                    const vis = Array.from(lb.querySelectorAll(
+                        '[role="option"],[role="menuitem"],li,.option,.dropdown-item'
+                    )).filter(o => {
+                        const s = getComputedStyle(o);
+                        const r = o.getBoundingClientRect();
+                        return s.display !== 'none' && s.visibility !== 'hidden' &&
+                               parseFloat(s.opacity) > 0.05 && r.width > 2 && r.height > 2;
+                    });
+                    const t = vis.find(o => (o.innerText || '').trim().toLowerCase() === lower) ||
+                              vis.find(o => lower.includes((o.innerText || '').trim().toLowerCase()) ||
+                                            (o.innerText || '').trim().toLowerCase().includes(lower));
+                    if (t) {
+                        const r = t.getBoundingClientRect();
+                        const cx = r.left + r.width / 2, cy = r.top + r.height / 2;
+                        const opts = {bubbles: true, cancelable: true, view: window,
+                                      button: 0, buttons: 1, clientX: cx, clientY: cy};
+                        const pd = Object.assign({}, opts, {pointerId: 1, pointerType: 'mouse', isPrimary: true});
+                        try {
+                            t.dispatchEvent(new PointerEvent('pointerover', pd));
+                            t.dispatchEvent(new PointerEvent('pointerdown', pd));
+                        } catch (e) {}
+                        t.dispatchEvent(new MouseEvent('mouseover', opts));
+                        t.dispatchEvent(new MouseEvent('mousedown', opts));
+                        const up = Object.assign({}, opts, {buttons: 0});
+                        const pu = Object.assign({}, pd, {buttons: 0});
+                        try { t.dispatchEvent(new PointerEvent('pointerup', pu)); } catch (e) {}
+                        t.dispatchEvent(new MouseEvent('mouseup', up));
+                        if (typeof t.click === 'function') t.click();
+                        else t.dispatchEvent(new MouseEvent('click', up));
+                        return JSON.stringify({ok: true, clicked: (t.innerText || '').trim()});
+                    }
+                }
+                return JSON.stringify({ok: false});
+            }"""
+            raw = await self._call_with_deadline(
+                page.evaluate(pick_js, {"want": option}), timeout=30.0
+            )
+            pick = _json.loads(raw) if isinstance(raw, str) else (raw or {})
+            if not pick.get("ok"):
+                return ToolResult(
+                    success=False,
+                    message=f"smart_select(dropdown={dropdown!r}): failed to click option {option!r}.",
+                )
+
+            await self._wait_for_dom_settle()
+
+            # 5. verify the trigger now shows the chosen value
+            try:
+                verify_js = r"""(dd) => {
+                    const lower = (s) => (s || '').trim().toLowerCase();
+                    const els = Array.from(document.querySelectorAll('[role="combobox"],[aria-haspopup],button,[role="button"]'));
+                    const el = els.find(e => lower(e.getAttribute('aria-label')) === lower(dd)) ||
+                               els.find(e => lower(e.getAttribute('aria-label') || '').includes(lower(dd)));
+                    if (!el) return JSON.stringify(null);
+                    return JSON.stringify((el.innerText || '').trim().replace(/\n/g, '|'));
+                }"""
+                raw = await self._call_with_deadline(
+                    page.evaluate(verify_js, dropdown), timeout=10.0
+                )
+                after = _json.loads(raw) if isinstance(raw, str) else raw
+                verified = bool(after) and option.lower() in (after or "").lower()
+            except Exception:
+                after, verified = None, False
+
+            logger.info(
+                "SMART_SELECT[locator %r → %r] ✓ verified=%s", dropdown, option, verified
+            )
+            msg = (
+                f"[locator-combobox] Selected {option!r} in {dropdown!r}"
+                + (f" — verified: trigger now reads {after!r}" if verified else "")
+            )
+            return ToolResult(
+                success=True,
+                message=msg,
+                data={
+                    "strategy": "locator_combobox",
+                    "dropdown": dropdown,
+                    "option": option,
+                    "verified": verified,
+                    "trigger_text_after": after,
+                },
+            )
+        except Exception as exc:
+            return ToolResult(
+                success=False,
+                message=f"smart_select(dropdown={dropdown!r}) failed: {exc}",
+            )
 
     async def verify_value(self, index: int, expected_text: str) -> ToolResult:
         """Verify that an interactive element has the expected value after interaction.
@@ -1855,12 +2692,33 @@ class BrowserUseBrowser:
             return ToolResult(success=False, message=f"verify_value failed: {exc}")
 
     async def console_exec(self, javascript: str) -> ToolResult:
-        """Execute arbitrary JavaScript in the current page context."""
+        """Execute arbitrary JavaScript in the current page context.
+
+        Returns BOTH the completion value of the code AND any console.log/
+        warn/error lines it produced (captured via the console shim). This
+        fixes the historical awareness hole where diagnostics written as
+        console.log(...) came back as an empty string — the agent ran a
+        probe, got "", and concluded nothing.
+        """
+        import json as _json
+
         try:
             page = await self._get_current_page()
             # Install the console capture shim FIRST so any console.* calls
-            # inside the user's code are recorded for browser_console_view().
+            # inside the user's code are recorded.
             await self._ensure_console_capture()
+
+            # Snapshot the log buffer length BEFORE execution.
+            before = 0
+            try:
+                before = await self._call_with_deadline(
+                    page.evaluate("() => (window.__consoleLogs || []).length"),
+                    timeout=10.0,
+                )
+                before = int(before or 0)
+            except Exception:
+                before = 0
+
             js = javascript.strip()
             if not (js.startswith("(") and "=>" in js):
                 # Bare JavaScript (not an arrow function). page.evaluate()
@@ -1869,10 +2727,29 @@ class BrowserUseBrowser:
                 # GLOBAL INDIRECT EVAL — this gives console-like semantics:
                 # multiple statements are allowed AND the completion value
                 # (last expression) is returned.
-                import json as _json
                 js = f"(async () => (0, eval)({_json.dumps(js)}))"
             result = await self._call_with_deadline(page.evaluate(js), timeout=60.0)
-            return ToolResult(success=True, data={"result": result})
+
+            # Collect the NEW console lines produced by this execution.
+            new_logs = []
+            try:
+                raw = await self._call_with_deadline(
+                    page.evaluate(
+                        "() => JSON.stringify((window.__consoleLogs || []).slice(%d).slice(-50))"
+                        % before
+                    ),
+                    timeout=10.0,
+                )
+                new_logs = (
+                    _json.loads(raw) if isinstance(raw, str) else (raw or [])
+                )
+            except Exception:
+                pass
+
+            data = {"result": result}
+            if new_logs:
+                data["console_logs"] = new_logs
+            return ToolResult(success=True, data=data)
         except Exception as exc:
             return ToolResult(success=False, message=f"Failed to execute JavaScript: {exc}")
 

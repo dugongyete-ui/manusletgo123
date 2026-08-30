@@ -48,17 +48,47 @@ class BrowserToolkit(BaseToolkit):
         self,
         index: Optional[int] = None,
         coordinate_x: Optional[float] = None,
-        coordinate_y: Optional[float] = None
+        coordinate_y: Optional[float] = None,
+        text: Optional[str] = None
     ) -> ToolResult:
-        """Click on elements in the current browser page. Use when clicking page elements is needed.
-        On success the result carries the observed page state afterwards: url, title, page_changed flag, fresh interactive elements (and page text when the click navigated). Read it to see what your click actually did before the next action.
-        
+        """Click on elements in the current browser page — by index, by coordinates, or by text locator.
+
+        The text locator (text="...") finds a VISIBLE element by aria-label, placeholder or visible
+        text and clicks it with the full pointer-event sequence. USE IT when the element you need is
+        NOT in the interactive_elements list — many modern React widgets (combobox dropdown
+        triggers, custom menus) never appear there. Check the aria_widgets list in browser_view
+        results for elements that require this form of clicking.
+
+        On success the result carries the observed page state afterwards: url, title, page_changed
+        flag, fresh interactive elements (and page text when the click navigated). Read it to see
+        what your click actually did before the next action.
+
         Args:
-            index: (Optional) Index number of the element to click
+            index: (Optional) Index number of the element to click (from interactive_elements)
             coordinate_x: (Optional) X coordinate of click position
             coordinate_y: (Optional) Y coordinate of click position
+            text: (Optional) Locator: aria-label, placeholder or visible text of the element to click (e.g. text="Select day")
         """
-        return await self.browser.click(index, coordinate_x, coordinate_y)
+        return await self.browser.click(index, coordinate_x, coordinate_y, text)
+    
+    @tool(parse_docstring=True)
+    async def browser_find_element(
+        self,
+        query: str,
+        role: Optional[str] = None
+    ) -> ToolResult:
+        """Locate elements on the current page by text, aria-label or placeholder — even when they are NOT in the interactive_elements list.
+
+        Use this BEFORE giving up on finding an element. It searches both the interactive-elements
+        list (returns clickable indexes) AND the live DOM (returns coordinates + text-locator hints
+        for elements the list does not expose — e.g. role=combobox dropdown triggers on React sites,
+        or elements beyond the 300-element cap).
+
+        Args:
+            query: Text to search for — substring of the visible text, aria-label or placeholder (e.g. "Select day", "gender", "Sign up")
+            role: (Optional) Filter by ARIA role (e.g. combobox, button, tab, option, checkbox, radio, switch, menuitem)
+        """
+        return await self.browser.find_element(query, role)
     
     @tool(parse_docstring=True)
     async def browser_input(
@@ -226,22 +256,35 @@ class BrowserToolkit(BaseToolkit):
         return await self.browser.get_select_options(index)
 
     @tool(parse_docstring=True)
-    async def browser_smart_select(self, index: int, text: str) -> ToolResult:
-        """Select a dropdown option by text — works on BOTH native <select> AND custom React/div dropdowns.
+    async def browser_smart_select(
+        self,
+        index: Optional[int] = None,
+        option: Optional[str] = None,
+        dropdown: Optional[str] = None
+    ) -> ToolResult:
+        """Select a dropdown option — the PRIMARY tool for ALL dropdowns and comboboxes.
 
-        This is the PRIMARY tool for ALL dropdown interactions. Use this instead of
-        browser_click + browser_view loops. One call handles everything automatically:
-        - Native <select>: sets value via React-safe synthetic events (no click needed)
-        - Custom dropdown (div/ul/role="option"): clicks trigger → scans visible options → clicks match
+        Three locator styles, use whichever fits:
+        1. dropdown="Select day", option="15"  — BY NAME (recommended for custom React comboboxes:
+           Facebook/Instagram-style DOB & gender pickers, Material-UI/Ant selects). The dropdown
+           locator is the trigger's aria-label or visible text; works even when the trigger is NOT
+           in the interactive_elements list.
+        2. index=123, option="June"             — by element index from browser_view.
+        3. For native <select> you may also use browser_select_by_text(index, text).
 
-        Returns success + which strategy was used. If option not found, returns visible options list
-        so you can immediately retry with the correct text.
+        One call handles everything automatically: finds the trigger, opens it with the pointer-event
+        sequence (required by React widgets that ignore plain clicks), waits for the option list,
+        clicks the matching option, and VERIFIES the trigger now shows the chosen value.
+
+        If the option text is not found, the visible options are returned so you can retry with the
+        exact text immediately.
 
         Args:
-            index: DOM index of the dropdown element (from browser_view interactive elements list).
-            text: The visible option text to select (e.g. "15", "June", "1992", "Male", "Indonesia").
+            index: (Optional) DOM index of the dropdown element (from browser_view interactive elements list).
+            option: The visible option text to select (e.g. "15", "June", "1992", "Male", "Indonesia").
+            dropdown: (Optional but recommended) Locator for the dropdown trigger: its aria-label or visible text (e.g. "Select day", "Month", "Country").
         """
-        return await self.browser.smart_select(index, text)
+        return await self.browser.smart_select(index, option, dropdown)
 
     @tool(parse_docstring=True)
     async def browser_verify_value(self, index: int, expected_text: str) -> ToolResult:

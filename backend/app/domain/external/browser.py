@@ -20,9 +20,18 @@ class Browser(Protocol):
         self,
         index: Optional[int] = None,
         coordinate_x: Optional[float] = None,
-        coordinate_y: Optional[float] = None
+        coordinate_y: Optional[float] = None,
+        text: Optional[str] = None
     ) -> ToolResult:
-        """Click element"""
+        """Click an element by index, coordinates, or text locator"""
+        ...
+    
+    async def find_element(
+        self,
+        query: str,
+        role: Optional[str] = None
+    ) -> ToolResult:
+        """Locate elements by text/aria-label/placeholder, optionally by role"""
         ...
     
     async def input(
@@ -109,8 +118,13 @@ class Browser(Protocol):
         """Select a native <select> option by visible text in one call"""
         ...
 
-    async def smart_select(self, index: int, text: str) -> ToolResult:
-        """Adaptive dropdown selector: handles native <select> AND custom React/div dropdowns"""
+    async def smart_select(
+        self,
+        index: Optional[int] = None,
+        option: Optional[str] = None,
+        dropdown: Optional[str] = None
+    ) -> ToolResult:
+        """Adaptive dropdown selector: native <select>, custom React dropdowns (by index), and locator-based comboboxes (by dropdown text/aria-label)"""
         ...
 
     async def verify_value(self, index: int, expected_text: str) -> ToolResult:

@@ -24,6 +24,68 @@ from app.domain.services.tools.base import Tool
 from app.domain.utils.robust_json_parser import RobustJsonParser, ToolCallParseError
 import openai
 import copy
+import re as _re
+import json as _json
+
+
+# ── Legacy <function=NAME>...</function> syntax salvage ─────────────────
+# Some providers (nemotron via certain gateways) occasionally emit the raw
+# tool-call wire format as PLAIN TEXT inside AIMessage.content instead of
+# parsed tool_calls. Observed live in session 6a935f37: the agent's FINAL
+# answer was literally "\n<function=browser_click>\n<parameter=index>\n1016\n..."
+# — leaked straight into the user's chat. These helpers parse that syntax
+# back into real tool_calls (so the intended action actually executes), and
+# strip any residue from final user-facing text.
+_FUNCTION_BLOCK_RE = _re.compile(r"<function=(\w+)>(.*?)</function>", _re.DOTALL)
+_PARAMETER_RE = _re.compile(r"<parameter=(\w+)>(.*?)</parameter>", _re.DOTALL)
+
+
+def _strip_function_syntax(text: str) -> str:
+    """Remove raw <function=...> blocks from user-facing text."""
+    if not text or "<function=" not in text:
+        return text
+    return _FUNCTION_BLOCK_RE.sub("", text).strip()
+
+
+def _salvage_function_calls(message: AIMessage) -> AIMessage:
+    """Promote raw <function=NAME> blocks in AIMessage.content to real tool_calls.
+
+    Returns the message unchanged when no legacy blocks are present.
+    """
+    content = message.content
+    if not isinstance(content, str) or "<function=" not in content:
+        return message
+
+    calls = []
+    for m in _FUNCTION_BLOCK_RE.finditer(content):
+        name = m.group(1)
+        body = m.group(2) or ""
+        args: Dict[str, Any] = {}
+        for pm in _PARAMETER_RE.finditer(body):
+            raw_val = (pm.group(2) or "").strip()
+            try:
+                args[pm.group(1)] = _json.loads(raw_val)
+            except (ValueError, TypeError):
+                args[pm.group(1)] = raw_val
+        calls.append(
+            {
+                "name": name,
+                "args": args,
+                "id": f"call-salvaged-{uuid.uuid4().hex[:12]}",
+                "type": "tool_call",
+            }
+        )
+    if not calls:
+        return message
+
+    cleaned = _strip_function_syntax(content)
+    logger.info(
+        "Salvaged %d raw <function=...> block(s) from message content into tool_calls",
+        len(calls),
+    )
+    return message.model_copy(
+        update={"tool_calls": calls, "content": cleaned}
+    )
 
 
 # ── Official Manus ``brief`` support ─────────────────────────────────────
@@ -529,6 +591,9 @@ class BaseAgent(ABC):
         _failure_budget = max(1, int(_settings.max_consecutive_failures))
 
         for iteration in range(self.max_iterations):
+            # Legacy wire-format leak repair: models sometimes emit raw
+            # <function=...> blocks as plain content instead of tool_calls.
+            message = _salvage_function_calls(message)
             if not message.tool_calls:
                 break
             # ── Content narration → visible progress line ──────────────────
@@ -750,7 +815,7 @@ class BaseAgent(ABC):
         else:
             yield ErrorEvent(error="Maximum iteration count reached, failed to complete the task")
         
-        yield MessageEvent(message=message.content)
+        yield MessageEvent(message=_strip_function_syntax(message.content))
     
     async def _ensure_memory(self):
         if not self.memory:

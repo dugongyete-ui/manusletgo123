@@ -294,7 +294,7 @@ class PlaywrightBrowser:
         self.page.interactive_elements_cache = []
         
         # Execute JavaScript to get interactive elements in the viewport
-        interactive_elements = await self.page.evaluate("""() => {
+        interactive_elements = await self.page.evaluate(r"""() => {
             const interactiveElements = [];
             const viewportHeight = window.innerHeight;
             const viewportWidth = window.innerWidth;
@@ -521,10 +521,13 @@ class PlaywrightBrowser:
         self,
         index: Optional[int] = None,
         coordinate_x: Optional[float] = None,
-        coordinate_y: Optional[float] = None
+        coordinate_y: Optional[float] = None,
+        text: Optional[str] = None
     ) -> ToolResult:
-        """Click an element"""
+        """Click an element by index, coordinates, or text locator."""
         await self._ensure_page()
+        if text is not None and text.strip():
+            return await self._click_by_locator(text.strip())
         if coordinate_x is not None and coordinate_y is not None:
             await self.page.mouse.click(coordinate_x, coordinate_y)
         elif index is not None:
@@ -890,7 +893,12 @@ class PlaywrightBrowser:
         except Exception as e:
             return ToolResult(success=False, message=f"select_by_text failed: {e}")
 
-    async def smart_select(self, index: int, text: str) -> ToolResult:
+    async def smart_select(
+        self,
+        index: Optional[int] = None,
+        option: Optional[str] = None,
+        dropdown: Optional[str] = None
+    ) -> ToolResult:
         """Adaptive dropdown selector — 3-strategy chain (Manus.im style).
 
         Strategy 1 (native <select>): React-safe text match + synthetic events.
@@ -898,6 +906,20 @@ class PlaywrightBrowser:
         Strategy 3 (last resort):      partial text match across all visible list items.
         """
         import json as _json
+
+        # Locator style is only fully implemented on BrowserUseBrowser (the
+        # primary runtime). On this legacy Playwright path fall back to a
+        # clear message instead of crashing.
+        if index is None:
+            return ToolResult(
+                success=False,
+                message=(
+                    "smart_select(dropdown=...) requires the browser-use runtime; "
+                    "use browser_find_element() to get the trigger, then "
+                    "browser_click(text=...) + browser_click on the option."
+                ),
+            )
+        text = option if option is not None else ""
 
         # Strategy 1: native <select>
         s1 = await self.select_by_text(index, text)
@@ -1227,6 +1249,120 @@ class PlaywrightBrowser:
                 logger.debug("console capture install failed: %s", exc)
         except Exception as exc:
             logger.debug("_ensure_console_capture failed: %s", exc)
+
+    async def _click_by_locator(self, text: str) -> ToolResult:
+        """Click a visible element by aria-label / placeholder / visible text."""
+        import json as _json
+
+        try:
+            await self._ensure_page()
+            js = r"""(q) => {
+                const lower = q.trim().toLowerCase();
+                const vis = (el) => {
+                    const s = getComputedStyle(el);
+                    return s.display !== 'none' && s.visibility !== 'hidden' && parseFloat(s.opacity) > 0.05;
+                };
+                const cands = [];
+                const push = (el, why, score) => {
+                    const r = el.getBoundingClientRect();
+                    if (r.width < 2 || r.height < 2) return;
+                    cands.push({el, why, score});
+                };
+                for (const el of document.querySelectorAll('button,a,[role],input,select,textarea,label')) {
+                    if (!vis(el)) continue;
+                    const a = (el.getAttribute('aria-label') || '').toLowerCase();
+                    const p = (el.getAttribute('placeholder') || '').toLowerCase();
+                    if (a === lower) push(el, 'aria-label', 100);
+                    else if (p === lower) push(el, 'placeholder', 95);
+                    else if (a.includes(lower) && lower.length > 2) push(el, 'aria-label~', 80);
+                }
+                for (const el of document.querySelectorAll('button,a,[role="button"],[role="combobox"],[role="tab"],[role="menuitem"],[role="option"],label,li')) {
+                    if (!vis(el)) continue;
+                    const t = (el.innerText || el.value || '').trim().toLowerCase().replace(/\s+/g, ' ');
+                    if (!t) continue;
+                    if (t === lower) push(el, 'text', 85);
+                    else if (t.length <= 80 && t.includes(lower) && lower.length > 2) push(el, 'text~', 70);
+                }
+                if (!cands.length) return JSON.stringify({ok: false, why: 'no match'});
+                cands.sort((a, b) => b.score - a.score);
+                const el = cands[0].el;
+                const r = el.getBoundingClientRect();
+                const cx = r.left + r.width / 2, cy = r.top + r.height / 2;
+                const opts = {bubbles: true, cancelable: true, view: window, button: 0, buttons: 1, clientX: cx, clientY: cy};
+                const pd = Object.assign({}, opts, {pointerId: 1, pointerType: 'mouse', isPrimary: true});
+                try {
+                    el.dispatchEvent(new PointerEvent('pointerover', pd));
+                    el.dispatchEvent(new PointerEvent('pointerdown', pd));
+                } catch (e) {}
+                el.dispatchEvent(new MouseEvent('mouseover', opts));
+                el.dispatchEvent(new MouseEvent('mousedown', opts));
+                if (typeof el.focus === 'function') el.focus();
+                const up = Object.assign({}, opts, {buttons: 0});
+                const pu = Object.assign({}, pd, {buttons: 0});
+                try { el.dispatchEvent(new PointerEvent('pointerup', pu)); } catch (e) {}
+                el.dispatchEvent(new MouseEvent('mouseup', up));
+                if (typeof el.click === 'function') el.click();
+                else el.dispatchEvent(new MouseEvent('click', up));
+                return JSON.stringify({ok: true, matched_by: cands[0].why, tag: el.tagName,
+                    role: el.getAttribute('role'), aria: el.getAttribute('aria-label')});
+            }"""
+            raw = await self.page.evaluate(js, text)
+            res = _json.loads(raw) if isinstance(raw, str) else (raw or {})
+            if not res.get("ok"):
+                return ToolResult(success=False, message=f"browser_click(text=...) failed: {res.get('why')}")
+            await asyncio.sleep(0.3)
+            return ToolResult(
+                success=True,
+                message=f"Clicked element matching {text!r} (matched by {res.get('matched_by')})",
+            )
+        except Exception as exc:
+            return ToolResult(success=False, message=f"Failed to click by text: {exc}")
+
+    async def find_element(self, query: str, role=None) -> ToolResult:
+        """Locate elements by text/aria-label/placeholder (live DOM scan)."""
+        import json as _json
+
+        try:
+            await self._ensure_page()
+            js = r"""(payload) => {
+                const q = (payload.query || '').toLowerCase().trim();
+                const roleFilter = (payload.role || '').toLowerCase();
+                const out = [];
+                for (const el of document.querySelectorAll('button,a,input,select,textarea,[role],label,li')) {
+                    const s = getComputedStyle(el);
+                    if (s.display === 'none' || s.visibility === 'hidden') continue;
+                    const r = el.getBoundingClientRect();
+                    if (r.width < 2 || r.height < 2) continue;
+                    const role = (el.getAttribute('role') || '').toLowerCase();
+                    if (roleFilter && role !== roleFilter) continue;
+                    const aria = el.getAttribute('aria-label') || '';
+                    const ph = el.getAttribute('placeholder') || '';
+                    const text = (el.innerText || el.value || '').trim();
+                    if (!(text.toLowerCase().includes(q) || aria.toLowerCase().includes(q) || ph.toLowerCase().includes(q))) continue;
+                    out.push({tag: el.tagName, role: el.getAttribute('role'), aria: aria.slice(0, 40),
+                              text: text.slice(0, 50).replace(/\n/g, '|'),
+                              x: Math.round(r.left + r.width / 2), y: Math.round(r.top + r.height / 2)});
+                    if (out.length >= 15) break;
+                }
+                return JSON.stringify(out);
+            }"""
+            raw = await self.page.evaluate(js, {"query": query, "role": role or ""})
+            items = _json.loads(raw) if isinstance(raw, str) else (raw or [])
+            hits = [
+                f"<{it.get('tag')} role={it.get('role')} aria-label={it.get('aria')!r}> "
+                f"text={it.get('text')!r} @ ({it.get('x')},{it.get('y')}) "
+                f"→ browser_click(text={(it.get('aria') or it.get('text'))!r})"
+                for it in items
+            ]
+            if not hits:
+                return ToolResult(success=False, message=f"No visible element matches {query!r}.")
+            return ToolResult(
+                success=True,
+                message=f"{len(hits)} match(es) for {query!r} in live DOM.",
+                data={"in_interactive_list": [], "in_live_dom": hits},
+            )
+        except Exception as exc:
+            return ToolResult(success=False, message=f"Failed to find element: {exc}")
 
     async def console_exec(self, javascript: str) -> ToolResult:
         """Execute JavaScript code"""
