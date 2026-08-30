@@ -22,11 +22,14 @@ from app.domain.models.event import (
     ToolEvent,
     ToolStatus,
     WaitEvent,
+    PlanEvent,
+    PlanStatus,
 )
 from app.domain.services.tools.base import BaseToolkit
 from langchain.messages import HumanMessage as LCHumanMessage
 import json
 import logging
+import time
 
 logger = logging.getLogger(__name__)
 
@@ -576,6 +579,24 @@ class ExecutionAgent(BaseAgent):
         self._silent_tool_count = 0
         self._narration_assist_count = 0
 
+        # Live plan-progress context: while this step runs, a throttled check
+        # (see _on_tool_round_end) may mark OTHER steps whose goals were
+        # already achieved by the ongoing activity as completed, emitting
+        # PlanEvents so the user's plan panel updates in real time instead
+        # of freezing until the step boundary.  The executor model often
+        # runs ahead of the current step's scope (it sees the user's whole
+        # goal in memory); without this the plan lags an entire step behind
+        # what the timeline visibly shows (observed live: a 9-minute step
+        # covering four phases while the panel stayed at "step 1 of 4").
+        self._step_progress = {
+            "plan": plan,
+            "step": step,
+            "started": time.monotonic(),
+            "last_check": None,
+            "rounds_since_check": 0,
+            "checks": 0,
+        }
+
         prompt = EXECUTION_PROMPT.format(
             step=step.description,
             message=message.message,
@@ -590,6 +611,157 @@ class ExecutionAgent(BaseAgent):
 
         step.status = ExecutionStatus.RUNNING
         yield StepEvent(status=StepStatus.STARTED, step=step)
+
+        try:
+            async for event in self._run_step_rounds(plan, step, message, prompt, vision_content):
+                yield event
+        finally:
+            # Always clear the progress context — a stale plan reference
+            # must never leak into the next step or the summarize phase.
+            self._step_progress = None
+
+    # ── Live plan progress ─────────────────────────────────────────────────
+    # Throttling for the mid-step progress check (see _on_tool_round_end):
+    # a phase-granular step can legitimately run for many minutes with dozens
+    # of tool rounds, and the plan panel must not stay frozen while the
+    # timeline visibly advances.  The check is a single cheap memory-free LLM
+    # call, so it is capped in both directions: never for young steps, never
+    # more often than the interval, and never past the total budget.
+    _PROGRESS_MIN_STEP_AGE = 60.0     # seconds before the first check
+    _PROGRESS_MIN_INTERVAL = 45.0     # seconds between checks
+    _PROGRESS_MIN_ROUNDS = 4          # tool rounds between checks
+    _PROGRESS_MAX_CHECKS = 12         # total checks per step (LLM budget)
+    _PROGRESS_ACTIVITY_WINDOW = 14    # recent tool results shown to the judge
+
+    async def _on_tool_round_end(self, iteration: int):
+        """End-of-round hook (invoked by BaseAgent.execute between rounds).
+
+        Runs the throttled plan-progress check while a step is executing and
+        yields a PlanEvent(UPDATED) whenever another step's goal was already
+        fully achieved by the ongoing activity.  Never raises — the check is
+        strictly best-effort; a failing judge call just means no update.
+        """
+        ctx = getattr(self, "_step_progress", None)
+        if not ctx:
+            return
+        ctx["rounds_since_check"] += 1
+        now = time.monotonic()
+        if now - ctx["started"] < self._PROGRESS_MIN_STEP_AGE:
+            return
+        if ctx["last_check"] is not None and (
+            now - ctx["last_check"] < self._PROGRESS_MIN_INTERVAL
+        ):
+            return
+        if ctx["rounds_since_check"] < self._PROGRESS_MIN_ROUNDS:
+            return
+        if ctx["checks"] >= self._PROGRESS_MAX_CHECKS:
+            return
+        ctx["last_check"] = now
+        ctx["rounds_since_check"] = 0
+        ctx["checks"] += 1
+        try:
+            async for event in self._check_plan_progress(ctx):
+                yield event
+        except Exception as exc:
+            # Best-effort by contract: a judge failure must never disturb
+            # the running step.
+            logger.debug("Plan progress check failed (ignored): %s", exc)
+
+    async def _check_plan_progress(self, ctx: dict):
+        """Ask a cheap judge whether pending steps' goals are already met.
+
+        Mechanism (format-contract only — no task-domain assumptions): the
+        judge sees the plan's own step descriptions plus the recent tool
+        activity recorded in agent memory, and may mark PENDING steps other
+        than the current one as completed.  Mutating the shared Plan instance
+        is safe: the orchestrator's get_next_step() skips completed steps and
+        update_plan preserves them.
+        """
+        plan: Plan = ctx["plan"]
+        current: Step = ctx["step"]
+        pending = [
+            s for s in (plan.steps or [])
+            if s.id != current.id and not s.is_done()
+        ]
+        if not pending:
+            return
+
+        # Recent tool activity digest from memory (name + result head),
+        # newest last — enough signal for the judge without dumping payloads.
+        mem = getattr(self, "memory", None)
+        activity: List[str] = []
+        for msg in reversed(mem.get_messages() if mem else []):
+            if msg.type != "tool" or not getattr(msg, "name", None):
+                continue
+            head = " ".join(str(msg.content).split())[:110]
+            activity.append(f"{msg.name}: {head}")
+            if len(activity) >= self._PROGRESS_ACTIVITY_WINDOW:
+                break
+        activity.reverse()
+        if not activity:
+            return
+
+        steps_desc = "\n".join(
+            f"- [{s.id}] ({s.status.value}) {s.description}"
+            for s in (plan.steps or [])
+        )
+        prompt = (
+            "You are judging the live progress of a multi-step plan.\n"
+            f"Plan steps (id | status | description):\n{steps_desc}\n\n"
+            f"Step currently being executed by the agent: [{current.id}].\n\n"
+            "Recent tool activity of the agent (oldest first):\n"
+            + "\n".join(activity)
+            + "\n\nQuestion: which PENDING steps OTHER than the current one "
+            "have had their goal FULLY achieved by this activity?\n"
+            "Rules: include a step ONLY if the evidence clearly shows its "
+            "whole goal is already met; partial progress is NOT completion; "
+            "when unsure, exclude the step.\n"
+            'Return ONLY compact JSON: {"completed_ids": ["<id>", ...]} '
+            '(empty array when none).'
+        )
+        text = await self.astream_text_with_fallback(
+            [
+                {
+                    "role": "system",
+                    "content": (
+                        "You are a strict progress judge for an AI agent's "
+                        "task plan. Answer only in the requested compact JSON."
+                    ),
+                },
+                {"role": "user", "content": prompt},
+            ]
+        )
+        text = (text or "").strip()
+        if text.startswith("```"):
+            text = text.strip("`").lstrip("json").strip()
+        try:
+            data = json.loads(text)
+        except (json.JSONDecodeError, ValueError):
+            logger.debug("Plan progress judge returned non-JSON — ignored")
+            return
+        ids = data.get("completed_ids") if isinstance(data, dict) else None
+        if not isinstance(ids, list):
+            return
+
+        changed = False
+        for sid in ids:
+            for s in pending:
+                if str(s.id) == str(sid):
+                    s.status = ExecutionStatus.COMPLETED
+                    changed = True
+                    logger.info(
+                        "Live plan progress: step %s goal already met "
+                        "during step %s — marking completed",
+                        s.id, current.id,
+                    )
+        if changed:
+            yield PlanEvent(status=PlanStatus.UPDATED, plan=plan)
+
+    async def _run_step_rounds(
+        self, plan: Plan, step: Step, message: Message, prompt: str, vision_content
+    ) -> AsyncGenerator[BaseEvent, None]:
+        """Body of execute_step after the StepEvent(STARTED) — separated so the
+        progress context is cleared in a finally block around it."""
 
         content = vision_content if vision_content else prompt
         retry_text_only = False

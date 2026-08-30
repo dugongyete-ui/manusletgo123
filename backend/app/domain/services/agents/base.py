@@ -811,6 +811,15 @@ class BaseAgent(ABC):
                     " | ".join(a.splitlines()[0][:80] for a in _advisories),
                 )
 
+            # ── Optional subclass hook: end-of-round observer ─────────────
+            # Lets a subclass watch the tool loop and inject events between
+            # rounds (e.g. live plan progress during long-running steps)
+            # without overriding the whole loop.  Absent by default.
+            _round_hook = getattr(self, "_on_tool_round_end", None)
+            if _round_hook is not None:
+                async for hook_event in _round_hook(iteration):
+                    yield hook_event
+
             message = await self.ask_with_messages(tool_responses)
         else:
             yield ErrorEvent(error="Maximum iteration count reached, failed to complete the task")

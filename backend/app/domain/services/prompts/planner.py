@@ -124,6 +124,7 @@ Note:
 - Only re-plan the following uncompleted steps, don't change the completed steps
 - Output the step id start with the id of first uncompleted step, re-plan the following steps
 - Delete the step if it is completed or not necessary
+- IMPORTANT: the executed step often achieved MORE than its own goal — the agent works continuously and may have fully finished the work of later steps too. If the step result shows that any later step's goal was already fully achieved, DELETE that step from the plan. The plan must reflect what has actually been done, not the original intention — otherwise the user's progress panel lags behind reality.
 - Carefully read the step result to determine if it is successful, if not, change the following steps
 - According to the step result, you need to update the plan steps accordingly
 - Keep the total number of steps within the original scale (3-6 for normal tasks, 8 max) — updates replace or adjust phases, they do not multiply them
