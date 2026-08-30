@@ -220,7 +220,9 @@ class PlannerAgent(BaseAgent):
                     names.append(n)
         return names
 
-    async def _acknowledgement_chunks(self, message: Message) -> AsyncGenerator[str, None]:
+    async def _acknowledgement_chunks(
+        self, message: Message, conversation_history: Optional[str] = None
+    ) -> AsyncGenerator[str, None]:
         """Yield the assistant's first reply to the user, token by token.
 
         The reply model judges the message itself — there is deliberately no
@@ -230,6 +232,16 @@ class PlannerAgent(BaseAgent):
           question answerable without tools) → a direct, complete answer.
           On the zero-step path the flow suppresses the planner's redundant
           plan.message, so this reply IS the user-visible answer.
+
+        ``conversation_history`` is a compact transcript of the session's
+        earlier turns (built by the flow from persisted session events).
+        Without it the reply model has NO memory of the conversation — so a
+        contextual follow-up like "what did we discuss before?" was answered
+        with "I have no previous conversation history" even though the
+        planner (which runs in parallel with full agent memory) knew the
+        answer.  The history is injected as read-only prompt text: this path
+        still never touches ``self.memory`` (avoids the race with the
+        parallel planner's first-time memory initialisation).
         """
         import re
 
@@ -253,7 +265,19 @@ class PlannerAgent(BaseAgent):
         # and owns the conversation-history lookup; keeping this fast path
         # memory-free avoids a race during first-time memory initialisation.
 
+        # Conversation history (may be empty on the session's first message).
+        # Keep it strictly informational: the CURRENT message below is the one
+        # being replied to; the history only tells the model what came before.
+        history_block = ""
+        if conversation_history and conversation_history.strip():
+            history_block = (
+                "[Conversation so far in this session — earlier turns]\n"
+                f"{conversation_history.strip()}\n\n"
+            )
+
         prompt = (
+            f"{history_block}"
+            f"[Current user message]\n"
             f"{message.message}{context_note}\n\n"
             "Write the assistant's first reply in the same language as the user.\n"
             "- If the message asks for work (research, browsing, files, code, "
@@ -264,7 +288,11 @@ class PlannerAgent(BaseAgent):
             "- If the message is purely conversational (greeting, thanks, small "
             "talk, a question answerable without any tools): reply to it directly, "
             "warmly, and as completely as the question requires — your reply will "
-            "be shown to the user as the assistant's actual answer.\n"
+            "be shown to the user as the assistant's actual answer. When the "
+            "message refers to anything from the earlier conversation above "
+            "(topics, questions, files, results, decisions), answer from that "
+            "history: you DO remember this conversation — NEVER claim you have "
+            "no memory of it or lack conversation history.\n"
             "No rigid format, no lists, no bullet points. "
             "Return plain text only. Do not return JSON, markdown code fences, or a plan."
         )
@@ -274,7 +302,10 @@ class PlannerAgent(BaseAgent):
             LCSystemMessage(
                 content=(
                     "You write the first reply of an AI assistant agent, on its "
-                    "behalf. Judge the user's message yourself. If it clearly "
+                    "behalf. Judge the user's message yourself. When earlier "
+                    "conversation turns are provided in the prompt, treat them "
+                    "as your own memory of this conversation and ground any "
+                    "reference to them in that history. If it clearly "
                     "asks for work, the agent HAS working tools (browser, shell, "
                     "file operations, web search, image tools, messaging) and "
                     "will start using them right after your one-line "
@@ -292,7 +323,9 @@ class PlannerAgent(BaseAgent):
         async for chunk in self.astream_chunks_with_fallback(context):
             yield chunk
 
-    async def acknowledge(self, message: Message) -> AsyncGenerator[BaseEvent, None]:
+    async def acknowledge(
+        self, message: Message, conversation_history: Optional[str] = None
+    ) -> AsyncGenerator[BaseEvent, None]:
         """Return one cleaned, atomic acknowledgement event.
 
         Keep this non-streaming API for callers that persist or replay planner
@@ -301,7 +334,7 @@ class PlannerAgent(BaseAgent):
         """
         try:
             parts: list[str] = []
-            async for chunk in self._acknowledgement_chunks(message):
+            async for chunk in self._acknowledgement_chunks(message, conversation_history):
                 parts.append(chunk)
             full_text = self._clean_acknowledgement("".join(parts))
             if full_text:
@@ -309,11 +342,13 @@ class PlannerAgent(BaseAgent):
         except Exception as e:
             logger.warning(f"Acknowledge generation failed, skipping: {e}")
 
-    async def acknowledge_stream(self, message: Message) -> AsyncGenerator[BaseEvent, None]:
+    async def acknowledge_stream(
+        self, message: Message, conversation_history: Optional[str] = None
+    ) -> AsyncGenerator[BaseEvent, None]:
         """Stream a cleaned acknowledgement to the live chat client."""
         try:
             parts: list[str] = []
-            async for chunk in self._acknowledgement_chunks(message):
+            async for chunk in self._acknowledgement_chunks(message, conversation_history):
                 parts.append(chunk)
                 yield MessageChunkEvent(role="assistant", content=chunk)
 

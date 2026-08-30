@@ -72,7 +72,7 @@ def _make_plan(n_steps=1, message=None, language="id"):
 
 def _build_flow(flow_cls, *, plan, ack_delivers=True, ack_chunks=None,
                 session_status=SessionStatus.PENDING, last_plan=None,
-                step_success=True, settings=None):
+                step_success=True, settings=None, session_events=None):
     """Build a flow skeleton of EITHER engine class with identical mocks."""
     flow = flow_cls.__new__(flow_cls)
     flow._agent_id = "test-agent"
@@ -80,6 +80,10 @@ def _build_flow(flow_cls, *, plan, ack_delivers=True, ack_chunks=None,
     flow.status = AgentStatus.IDLE
     flow.plan = None
     flow._last_step = None
+
+    # Captured argument of acknowledge_stream(message, conversation_history)
+    # — lets parity tests assert BOTH engines pass the SAME transcript.
+    captured_history = {}
 
     # ── planner mock ──────────────────────────────────────────────────────
     planner = type("P", (), {})()
@@ -91,12 +95,14 @@ def _build_flow(flow_cls, *, plan, ack_delivers=True, ack_chunks=None,
 
     planner.create_plan = create_plan
 
-    async def acknowledge_stream(msg):
+    async def acknowledge_stream(msg, conversation_history=None):
+        captured_history["value"] = conversation_history
         if ack_delivers:
             for chunk in (ack_chunks or ["Baik, saya mulai kerjakan."]):
                 yield MessageEvent(role="assistant", message=chunk)
 
     planner.acknowledge_stream = acknowledge_stream
+    flow.captured_history = captured_history
 
     async def update_plan(plan_, step_):
         yield PlanEvent(status=PlanStatus.UPDATED, plan=plan_)
@@ -127,6 +133,7 @@ def _build_flow(flow_cls, *, plan, ack_delivers=True, ack_chunks=None,
     # ── session repository mock ───────────────────────────────────────────
     session = type("S", (), {})()
     session.status = session_status
+    session.events = session_events or []
     session.get_last_plan = (lambda: last_plan) if last_plan else (lambda: None)
 
     repo = type("R", (), {})()
@@ -256,6 +263,55 @@ async def test_parity_zero_step_empty_message_fallback():
     msgs = [s for s in sigs["custom"] if s[0] == "MessageEvent"]
     assert len(msgs) == 1
     assert msgs[0][1]["message"] == "Baik, saya mulai pengerjaannya."  # id fallback
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Parity: conversation context injection (session history → first reply)
+# ─────────────────────────────────────────────────────────────────────────────
+
+@pytest.mark.asyncio
+async def test_parity_conversation_history_passed_identically():
+    """Both engines build the SAME digest from session events and pass it to
+    acknowledge_stream — the fix for the "AI has no conversation context" bug
+    (follow-up answered with 'I have no previous history' while the planner,
+    running in parallel WITH memory, knew the answer)."""
+    from app.domain.models.event import MessageEvent as ME
+
+    history_events = [
+        ME(role="user", message="Carikan informasi tentang Persib Bandung 2026"),
+        ME(role="assistant", message="Sedang mencari informasinya, satu saat ya."),
+        ME(role="assistant", message="# Laporan Persib 2026\n\nIsi laporan..."),
+        ME(role="assistant", message="mengunduh halaman…", is_progress=True),
+    ]
+    passed = {}
+    for name, cls in ENGINES:
+        flow = _build_flow(
+            cls, plan=_make_plan(0), session_events=history_events,
+        )
+        await _collect_async(flow, text="Sebelumnya kita bahas apa?")
+        passed[name] = flow.captured_history.get("value")
+
+    assert passed["custom"] == passed["langgraph"]
+    digest = passed["custom"]
+    # All 3 conversational turns present, progress narration excluded,
+    # current message excluded, roles rendered.
+    assert "User: Carikan informasi tentang Persib Bandung 2026" in digest
+    assert "Assistant: Sedang mencari informasinya, satu saat ya." in digest
+    assert "Assistant: # Laporan Persib 2026" in digest
+    assert "mengunduh halaman" not in digest          # is_progress skipped
+    assert "Sebelumnya kita bahas apa?" not in digest  # current msg excluded
+
+
+@pytest.mark.asyncio
+async def test_parity_first_message_empty_history():
+    """Session's first message → empty digest (no crash, no phantom history)."""
+    passed = {}
+    for name, cls in ENGINES:
+        flow = _build_flow(cls, plan=_make_plan(1))
+        await _collect_async(flow, text="Halo, buatkan website")
+        passed[name] = flow.captured_history.get("value")
+
+    assert passed["custom"] == passed["langgraph"] == ""
 
 
 # ─────────────────────────────────────────────────────────────────────────────

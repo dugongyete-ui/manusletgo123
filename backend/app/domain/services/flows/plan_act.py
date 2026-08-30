@@ -69,6 +69,94 @@ class PlanActFlow(BaseFlow):
             return "Baik, saya mulai pengerjaannya."
         return "On it — starting now."
 
+    # ── Conversation context for the streamed first reply ─────────────
+    # Caps keep the digest small: it is injected into EVERY first-reply
+    # prompt (a fast, user-facing path), so it must never balloon into a
+    # second copy of the whole transcript.
+    _DIGEST_MAX_MESSAGES = 16        # newest N conversational turns
+    _DIGEST_PER_MESSAGE_CHARS = 600  # head-truncate individual messages
+    _DIGEST_MAX_TOTAL_CHARS = 4000   # global budget, newest side kept
+
+    @classmethod
+    def _build_conversation_digest(cls, session, message: Message) -> str:
+        """Build a compact transcript of the session's EARLIER turns.
+
+        Source: persisted session events (user + assistant messages only —
+        progress narrations, plans, steps and tool events are skipped).
+
+        Why this exists: the streamed first reply (the "ack" path) is the
+        model call that answers conversational follow-ups, but it is
+        deliberately memory-free (no ``self.memory`` — that state belongs to
+        the parallel planner/executor agents).  Without a transcript a
+        follow-up like "what did we discuss before?" was answered with "I
+        have no previous conversation history" — even though the previous
+        turns were fully persisted in the session events.
+
+        The CURRENT message is excluded (it is already in the prompt as the
+        message being replied to): chat() early-persists the user message
+        BEFORE the flow runs, so it is normally the LAST user event here.
+        """
+        from app.domain.models.event import MessageEvent as _MessageEvent
+
+        turns: list[tuple[str, str]] = []
+        for ev in list(getattr(session, "events", None) or []):
+            role = text = None
+            is_progress = False
+            if isinstance(ev, _MessageEvent):
+                role, text, is_progress = ev.role, ev.message, ev.is_progress
+            elif isinstance(ev, dict) and ev.get("type") == "message":
+                # Defensive: a repository that returns raw dicts still works.
+                role = ev.get("role")
+                text = ev.get("message")
+                is_progress = bool(ev.get("is_progress"))
+            else:
+                continue  # plan / step / tool / title / done / error events
+            if is_progress:
+                continue  # step & tool narration — not a conversational turn
+            text = (text or "").strip()
+            if not text:
+                continue
+            if role == "user":
+                turns.append(("User", text))
+            elif role == "assistant":
+                turns.append(("Assistant", text))
+
+        # Drop the current message (early-persisted by chat() before run()).
+        current_text = (message.message or "").strip()
+        while turns and turns[-1][0] == "User" and turns[-1][1] == current_text:
+            turns.pop()
+
+        if not turns:
+            return ""
+
+        # Keep only the NEWEST turns, then render oldest → newest.
+        turns = turns[-cls._DIGEST_MAX_MESSAGES:]
+
+        lines: list[str] = []
+        for role, text in turns:
+            if len(text) > cls._DIGEST_PER_MESSAGE_CHARS:
+                text = text[: cls._DIGEST_PER_MESSAGE_CHARS - 1].rstrip() + "…"
+            lines.append(f"{role}: {text}")
+
+        # Enforce the global budget from the NEWEST side (recent context
+        # matters most for follow-ups).  The +1 per line accounts for the
+        # "\n" separator added by the final join, so the RESULT string
+        # (separators included) stays within the budget.
+        total = sum(len(line) for line in lines)
+        if total > cls._DIGEST_MAX_TOTAL_CHARS:
+            kept: list[str] = []
+            budget = cls._DIGEST_MAX_TOTAL_CHARS
+            for line in reversed(lines):
+                if budget < 2:  # room for content + separator only
+                    break
+                if len(line) + 1 > budget:
+                    line = line[: budget - 2].rstrip() + "…"
+                kept.append(line)
+                budget -= len(line) + 1
+            lines = list(reversed(kept))
+
+        return "\n".join(lines)
+
     def __init__(
         self,
         agent_id: str,
@@ -217,6 +305,11 @@ class PlanActFlow(BaseFlow):
         # emitting a 0-step plan wipes the visible steps in the UI panel.
         previous_plan = self.plan
 
+        # Compact transcript of the session's earlier turns — injected into the
+        # streamed first reply so conversational follow-ups ("what did we discuss
+        # before?") are answered WITH context instead of "I have no history".
+        conversation_history = self._build_conversation_digest(session, message)
+
         settings = get_settings()
         _max_steps = settings.max_steps
         _max_consecutive_failures = settings.max_consecutive_failures
@@ -258,7 +351,9 @@ class PlanActFlow(BaseFlow):
 
                 async def _produce_first_reply() -> None:
                     try:
-                        async for ack_event in self.planner.acknowledge_stream(message):
+                        async for ack_event in self.planner.acknowledge_stream(
+                            message, conversation_history
+                        ):
                             await event_queue.put(("ack", ack_event))
                     except Exception as exc:
                         # First reply is best-effort; the plan must still

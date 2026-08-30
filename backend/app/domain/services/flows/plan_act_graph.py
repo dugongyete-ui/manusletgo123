@@ -113,6 +113,13 @@ class PlanActGraphFlow(PlanActFlow):
         self.plan = session.get_last_plan()
         previous_plan = self.plan
 
+        # Compact transcript of the session's earlier turns — injected into the
+        # streamed first reply so conversational follow-ups ("what did we discuss
+        # before?") are answered WITH context instead of "I have no history"
+        # (builder inherited from PlanActFlow — identical behaviour required
+        # for engine parity).
+        conversation_history = self._build_conversation_digest(session, message)
+
         settings = get_settings()
         _max_steps = settings.max_steps
         _max_consecutive_failures = settings.max_consecutive_failures
@@ -156,7 +163,9 @@ class PlanActGraphFlow(PlanActFlow):
 
             async def _produce_first_reply() -> None:
                 try:
-                    async for ack_event in self.planner.acknowledge_stream(message):
+                    async for ack_event in self.planner.acknowledge_stream(
+                        message, conversation_history
+                    ):
                         await event_queue.put(("ack", ack_event))
                 except Exception as exc:
                     # First reply is best-effort; the plan must still

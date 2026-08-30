@@ -67,7 +67,7 @@ def _make_flow(plan: Plan, ack_llm_delivers: bool = True):
 
     planner.create_plan = create_plan
 
-    async def acknowledge_stream(msg):
+    async def acknowledge_stream(msg, conversation_history=None):
         if ack_llm_delivers:
             yield MessageEvent(role="assistant", message="Baik, saya mulai kerjakan.")
 
