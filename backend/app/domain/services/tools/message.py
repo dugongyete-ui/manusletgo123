@@ -41,4 +41,11 @@ class MessageToolkit(BaseToolkit):
             attachments: (Optional) List of question-related files or reference materials
             suggest_user_takeover: (Optional) Suggested operation for user takeover (enum: "none" or "browser")
         """
-        return ToolResult(success=True)
+        # The question itself is delivered by the executor from `text`; this
+        # result must still carry a visible message — an empty success used
+        # to render as "(No Content)" in the tool event UI and left the
+        # model blind to what just happened.
+        return ToolResult(
+            success=True,
+            message="Question sent to the user — the task is now waiting for their answer.",
+        )

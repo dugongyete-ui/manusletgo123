@@ -161,8 +161,11 @@ _LOCATOR_SELECT_JS = r"""
         else el.dispatchEvent(new MouseEvent('click', up));
     };
     // 1. find the dropdown trigger: aria-label exact > contains > visible text
+    // Native <select> elements count as triggers too — a plain HTML select
+    // with aria-label/visible text was previously invisible to this matcher,
+    // so dropdown="Pilih hari" failed with "no dropdown trigger matches".
     const triggers = Array.from(document.querySelectorAll(
-        '[role="combobox"],[role="listbox"],[aria-haspopup],button,[role="button"]'));
+        '[role="combobox"],[role="listbox"],[aria-haspopup],button,[role="button"],select'));
     let trigger = null, how = '';
     for (const el of triggers) {
         if (!vis(el)) continue;
@@ -186,6 +189,28 @@ _LOCATOR_SELECT_JS = r"""
         if (inner && trigger.contains(inner)) trigger = inner;
     }
     const before = (trigger.innerText || '').trim().replace(/\n/g, '|');
+    // Native <select>: no pointer dance, no popup to wait for — set the value
+    // directly and fire the same events a real user selection produces.
+    if (trigger.tagName === 'SELECT') {
+        const wanted = Array.from(trigger.options).find(
+            (o) => lower(o.text) === lower(option) || lower(o.value) === lower(option));
+        if (!wanted) {
+            return JSON.stringify({
+                ok: false, why: 'option not found on the select',
+                trigger_text: before,
+                options: Array.from(trigger.options).map((o) => o.text).filter(Boolean),
+            });
+        }
+        trigger.focus && trigger.focus();
+        trigger.value = wanted.value;
+        trigger.dispatchEvent(new Event('input', {bubbles: true}));
+        trigger.dispatchEvent(new Event('change', {bubbles: true}));
+        return JSON.stringify({
+            ok: true, opened_by: how + ':native-select',
+            trigger_text: before, options_visible: trigger.options.length,
+            selected: wanted.text, reopened: false,
+        });
+    }
     return (async () => {
         // 2. open it with the pointer sequence
         fire(trigger);
@@ -285,6 +310,32 @@ _FIND_ELEMENT_JS = r"""
     return JSON.stringify(out);
 }
 """
+
+
+# URL schemes the browser tools refuse up front. A data:/javascript:
+# navigation crashes the CDP session (observed live: the page ends as
+# "Empty Tab" with 0 elements and the session then hits 60s
+# Page.enable timeouts + WebSocket reconnects — the browser stays poisoned
+# for every later tool call in the task). file:// is rejected by the
+# browser_use security watchdog, but with an ugly low-level error; failing
+# fast with a clear, actionable message is kinder to the model.
+_BLOCKED_URL_SCHEMES = ("data:", "javascript:", "file:")
+
+
+def _scheme_rejection(url: str) -> Optional[ToolResult]:
+    """Return a clean failure ToolResult for unsafe URL schemes, else None."""
+    candidate = (url or "").strip().lower()
+    for scheme in _BLOCKED_URL_SCHEMES:
+        if candidate.startswith(scheme):
+            return ToolResult(
+                success=False,
+                message=(
+                    f"Cannot open {url}: '{scheme[:-1]}' URLs are not "
+                    f"supported by the browser tools. Use a normal "
+                    f"http(s):// page URL instead."
+                ),
+            )
+    return None
 
 
 class BrowserUseBrowser:
@@ -1288,6 +1339,14 @@ class BrowserUseBrowser:
             "interactive_elements": elements,
             "content": content,
         }
+        # Chrome updates the tab's title asynchronously after load — right
+        # after a navigation (especially on the fresh session a restart
+        # creates) the CDP target info can still carry the URL as the title
+        # (with or without the scheme). document.title is the authoritative
+        # source, so prefer it whenever it is set.
+        dom_title = await self._read_dom_title()
+        if dom_title:
+            observed["title"] = dom_title
         # ARIA widget scan — surfaces VISIBLE interactive widgets that the
         # selector map misses (combobox triggers etc.), with locator hints.
         try:
@@ -1297,6 +1356,23 @@ class BrowserUseBrowser:
         except Exception:
             pass
         return observed
+
+    async def _read_dom_title(self) -> str:
+        """document.title read from the live DOM (best-effort, "" on failure).
+
+        Chrome updates the tab title asynchronously after a load — the CDP
+        target info used by browser_use can lag behind (returning the URL or
+        an empty string right after a navigation / fresh session). The DOM
+        is the authoritative source.
+        """
+        try:
+            page = await self._get_current_page()
+            title = await self._call_with_deadline(
+                page.evaluate("() => document.title"), timeout=5.0,
+            )
+            return str(title or "").strip()
+        except Exception:
+            return ""
 
     async def view_page(self) -> ToolResult:
         """Return the current page content and interactive elements."""
@@ -1364,10 +1440,20 @@ class BrowserUseBrowser:
             except Exception:
                 pass
 
+            # Page title — same async-lag guard as _observe_page_state:
+            # the DOM's document.title wins whenever it is set.
+            title = state.title or ""
+            page_url = state.url or ""
+            dom_title = await self._read_dom_title()
+            if dom_title:
+                title = dom_title
+
             return ToolResult(
                 success=True,
                 data={
                     "open_tabs": tabs_info,
+                    "title": title,
+                    "url": page_url,
                     "interactive_elements": interactive_elements,
                     "aria_widgets": await self._scan_aria_widgets(),
                     "content": content,
@@ -1378,6 +1464,9 @@ class BrowserUseBrowser:
 
     async def navigate(self, url: str) -> ToolResult:
         """Navigate to the given URL."""
+        blocked = _scheme_rejection(url)
+        if blocked is not None:
+            return blocked
         try:
             logger.info("NAVIGATE → %s", url)
             session = await self._ensure_session()
@@ -1961,6 +2050,9 @@ class BrowserUseBrowser:
 
     async def open_tab(self, url: str) -> ToolResult:
         """Open a URL in a new browser tab using native browser_use API."""
+        blocked = _scheme_rejection(url)
+        if blocked is not None:
+            return blocked
         try:
             session = await self._ensure_session()
             await session.navigate_to(url, new_tab=True)
@@ -2695,6 +2787,25 @@ class BrowserUseBrowser:
                         "Call browser_find_element() to see the exact trigger "
                         "labels on this page."
                     ),
+                )
+
+            # Native <select> shortcut: the locator JS already set the value
+            # and fired input/change — there is no popup to wait for, so the
+            # generic "wait for visible options" path below must be skipped
+            # (it would otherwise time out and report a bogus failure).
+            if res.get("selected") is not None:
+                await self._wait_for_dom_settle()
+                return ToolResult(
+                    success=True,
+                    message=(
+                        f"smart_select(dropdown={dropdown!r}): selected "
+                        f"{res.get('selected')!r} on the native <select>."
+                    ),
+                    data={
+                        "strategy": "locator_native_select",
+                        "selected": res.get("selected"),
+                        "options": res.get("options"),
+                    },
                 )
 
             # 3. wait for visible options (up to 1.5s)

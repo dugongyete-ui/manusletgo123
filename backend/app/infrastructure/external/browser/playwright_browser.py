@@ -11,6 +11,11 @@ import logging
 # Set up logger for this module
 logger = logging.getLogger(__name__)
 
+# Same scheme policy as the browser_use backend — parity between engines.
+from app.infrastructure.external.browser.browser_use_browser import (
+    _scheme_rejection,
+)
+
 class PlaywrightBrowser:
     """Playwright client that provides specific implementation of browser operations"""
     
@@ -469,6 +474,9 @@ class PlaywrightBrowser:
             url: URL to navigate to
             timeout: Navigation timeout (milliseconds), default is 60 seconds
         """
+        blocked = _scheme_rejection(url)
+        if blocked is not None:
+            return blocked
         await self._ensure_page()
         try:
             # Clear cache as the page is about to change
@@ -664,6 +672,9 @@ class PlaywrightBrowser:
 
     async def open_tab(self, url: str) -> ToolResult:
         """Open a URL in a new browser tab."""
+        blocked = _scheme_rejection(url)
+        if blocked is not None:
+            return blocked
         try:
             await self._ensure_browser()
             contexts = self.browser.contexts
