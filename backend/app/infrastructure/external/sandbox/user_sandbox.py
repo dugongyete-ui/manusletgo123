@@ -123,7 +123,11 @@ class UserScopedSandbox:
         return self._upload_dir
 
     async def setup_user_home(self) -> None:
-        """Create user home and upload directories (idempotent, safe to call multiple times)."""
+        """Create user home and upload directories (idempotent, safe to call multiple times).
+
+        Also scaffolds the workspace operating manual (project/ folder:
+        AGENTS.md, behaviour core, skills) — see workspace_scaffold.
+        """
         try:
             await self._inner._run_admin_cmd(
                 f"mkdir -p '{self._upload_dir}' && chmod 750 '{self._user_home}'"
@@ -146,6 +150,22 @@ class UserScopedSandbox:
                 )
         except Exception as exc:
             logger.warning("UserScopedSandbox: failed to create home for user %s: %s", self._user_id, exc)
+
+        # Workspace operating manual (project/AGENTS.md + skills/) — one
+        # self-contained script through the sandbox protocol, idempotent,
+        # fail-open. Must run AFTER the home exists.
+        try:
+            from app.infrastructure.external.sandbox.workspace_scaffold import (
+                scaffold_workspace_manual,
+            )
+
+            await scaffold_workspace_manual(self, self._user_home)
+        except Exception as exc:
+            logger.warning(
+                "UserScopedSandbox: manual scaffold failed for %s: %s",
+                self._user_id,
+                exc,
+            )
 
     # ------------------------------------------------------------------
     # Sandbox protocol — all delegated to the inner singleton

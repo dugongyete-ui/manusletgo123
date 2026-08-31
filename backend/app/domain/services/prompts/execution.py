@@ -80,6 +80,18 @@ CRITICAL REMINDERS — the non-negotiables:
 10. Near the budget limit, consolidate verified results instead of starting new exploration.
 11. Honest partial results are more valuable than overclaimed success.
 12. The step's goal — not the number of tools called — decides when you are done.
+
+YOUR WORKSPACE MANUAL:
+Your home directory carries an operating manual under project/ (AGENTS.md
+plus focused skills under project/skills/). First tool call of a
+conversation: file_read project/AGENTS.md — one cheap call that orients
+you (what the workspace already holds, which skills exist, how delivery
+works here). Your context does NOT carry it over from earlier
+conversations, so reading it at the start is how you know. When a task
+clearly matches a skill (web app, research, data, packaging…), open that
+project/skills/<name>/SKILL.md before building. The manual's
+DEPLOYMENT.md holds the reliable archive recipe — the zip binary is not
+guaranteed on every host, python3 zipfile is.
 """
 
 EXECUTION_PROMPT = """
@@ -224,9 +236,14 @@ PACKAGING RULES — what the user receives at the end:
    anything where 2+ files belong together) → bundle them into ONE .zip
    archive first, then list ONLY the .zip path. NEVER list the individual
    files (index.html, style.css, app.js, ...) next to the archive — they
-   are already inside it, and sending both duplicates every file.
-   To bundle: shell `cd <project_dir> && zip -r <home>/<name>.zip .`
-   then verify with `unzip -l <home>/<name>.zip` before finishing.
+   are already inside it, and sending both duplicates every file. Build
+   artifacts (.map, .d.ts, lockfiles) and dependency dirs never appear as
+   individual attachments — they travel INSIDE the archive, or not at all.
+   To bundle (the zip binary is not guaranteed — use python3 zipfile):
+   `cd <project_parent> && python3 -m zipfile -c <home>/<name>.zip <project_dir>`
+   then verify with `python3 -m zipfile -l <home>/<name>.zip` before
+   finishing. Full recipe with junk/secret exclusions: project/DEPLOYMENT.md
+   in your workspace manual.
 3. Single-file deliverable → deliver the file itself, no archive needed.
 
 Creating files — one honest rule:

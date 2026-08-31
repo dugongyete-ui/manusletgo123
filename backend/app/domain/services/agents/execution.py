@@ -1085,11 +1085,78 @@ class ExecutionAgent(BaseAgent):
         from app.domain.services.tools.file import FileToolkit
 
         file_toolkit = next(
-            (tk for tk in self.toolkits if isinstance(tk, FileToolkit)), None
+            (tk for tk in (getattr(self, "toolkits", None) or [])
+             if isinstance(tk, FileToolkit)),
+            None,
         )
         if not file_toolkit:
             return attachments
         return await drop_zip_member_attachments(
+            file_toolkit.sandbox, attachments
+        )
+
+    async def _sanitize_oversized_archives(
+        self, attachments: List[FileInfo]
+    ) -> List[FileInfo]:
+        """Rebuild model-made archives that bloated with junk.
+
+        The 426MB-zip incident: a project zipped WITH node_modules hit
+        GridFS and blew the 512MB Atlas quota, blocking writes cluster-
+        wide. Oversize archives are inspected and rebuilt without junk
+        members before anything syncs. Fail-open on every error.
+        """
+        if not any(
+            (a.file_path or "").lower().endswith(".zip")
+            for a in attachments
+        ):
+            return attachments
+
+        from app.domain.services.agents.auto_bundle import (
+            sanitize_oversized_archives,
+        )
+        from app.domain.services.tools.file import FileToolkit
+
+        file_toolkit = next(
+            (tk for tk in (getattr(self, "toolkits", None) or [])
+             if isinstance(tk, FileToolkit)),
+            None,
+        )
+        if not file_toolkit:
+            return attachments
+        return await sanitize_oversized_archives(
+            file_toolkit.sandbox, attachments
+        )
+
+    async def _auto_bundle_deliverables(
+        self, attachments: List[FileInfo]
+    ) -> List[FileInfo]:
+        """Collapse a multi-file delivery with NO archive into ONE .zip.
+
+        The deterministic net behind the packaging rules: when the model
+        delivers loose members (build artifacts, sources) without any .zip,
+        the server builds the archive itself. Standalone documents
+        (.md/.txt/...) are never bundled. Mirrors the AgentTaskRunner's
+        final-summary net so both delivery paths behave identically.
+        """
+        if any(
+            (a.file_path or "").lower().endswith(".zip")
+            for a in attachments
+        ):
+            return attachments
+
+        from app.domain.services.agents.auto_bundle import (
+            auto_bundle_deliverables,
+        )
+        from app.domain.services.tools.file import FileToolkit
+
+        file_toolkit = next(
+            (tk for tk in (getattr(self, "toolkits", None) or [])
+             if isinstance(tk, FileToolkit)),
+            None,
+        )
+        if not file_toolkit:
+            return attachments
+        return await auto_bundle_deliverables(
             file_toolkit.sandbox, attachments
         )
 
@@ -1205,9 +1272,14 @@ class ExecutionAgent(BaseAgent):
                     if p and p not in already_listed:
                         already_listed.add(p)
                         attachments.append(FileInfo(file_path=p))
-                # ZIP-only delivery: when an archive is among the deliverables,
-                # drop the individual files already bundled inside it.
+                # Archive hygiene, in order: (1) rebuild bloated junk
+                # archives BEFORE anything syncs (quota protection),
+                # (2) drop members when an archive leads the delivery,
+                # (3) collapse loose multi-file deliveries into ONE .zip
+                # when no archive exists at all.
+                attachments = await self._sanitize_oversized_archives(attachments)
                 attachments = await self._drop_zip_member_attachments(attachments)
+                attachments = await self._auto_bundle_deliverables(attachments)
                 yield MessageEvent(
                     message=clean_text,
                     attachments=attachments if attachments else None,
@@ -1279,9 +1351,14 @@ class ExecutionAgent(BaseAgent):
                     if fp and fp not in paths:
                         paths.append(fp)
                 attachments = [FileInfo(file_path=fp) for fp in paths]
-                # ZIP-only delivery: when an archive is among the deliverables,
-                # drop the individual files already bundled inside it.
+                # Archive hygiene, in order: (1) rebuild bloated junk
+                # archives BEFORE anything syncs (quota protection),
+                # (2) drop members when an archive leads the delivery,
+                # (3) collapse loose multi-file deliveries into ONE .zip
+                # when no archive exists at all.
+                attachments = await self._sanitize_oversized_archives(attachments)
                 attachments = await self._drop_zip_member_attachments(attachments)
+                attachments = await self._auto_bundle_deliverables(attachments)
                 yield MessageEvent(
                     message=msg_obj.message,
                     attachments=attachments if attachments else None,

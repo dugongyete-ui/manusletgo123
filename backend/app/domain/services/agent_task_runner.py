@@ -265,12 +265,34 @@ class AgentTaskRunner(TaskRunner):
             logger.warning(f"Browser screenshot upload failed: {e}")
             return ""
 
+    # Hard cap on any single file synced to GridFS. The storage tier is
+    # 512MB TOTAL — one runaway archive (426MB "chatgpt-clone.zip" with
+    # node_modules inside) exhausted it and blocked writes cluster-wide.
+    # Legitimate deliverables in a chat context stay far below this.
+    _SYNC_MAX_FILE_BYTES = 100 * 1024 * 1024
+
     async def _sync_file_to_storage(self, file_path: str) -> Optional[FileInfo]:
         """Upload or update file and return FileInfo"""
         import mimetypes
         try:
             file_info = await self._session_repository.get_file_by_path(self._session_id, file_path)
             file_data = await self._sandbox.file_download(file_path)
+            # Quota protection: refuse to push runaway-huge files into the
+            # shared 512MB storage tier. The sanitize/auto-bundle layers
+            # normally shrink bloated archives long before this point —
+            # this is the last line of defence for any other path.
+            try:
+                data_size = file_data.getbuffer().nbytes
+            except Exception:
+                data_size = 0
+            if data_size > self._SYNC_MAX_FILE_BYTES:
+                logger.warning(
+                    "Agent %s refused to sync %s (%.0fMB > %dMB cap) — "
+                    "storage quota protected",
+                    self._agent_id, file_path, data_size / 1048576,
+                    self._SYNC_MAX_FILE_BYTES // 1048576,
+                )
+                return None
             if file_info:
                 await self._session_repository.remove_file(self._session_id, file_info.file_id)
             file_name = file_path.split("/")[-1]
@@ -344,6 +366,20 @@ class AgentTaskRunner(TaskRunner):
                 if isinstance(data, dict)
                 else getattr(data, "entries", None)
             ) or []
+            # The workspace operating manual (scaffolded at
+            # {home}/project/ — AGENTS.md + skills/) is platform
+            # scaffolding, not a deliverable: never scan it, never sync it,
+            # never deliver it. Marker-based (contents of THIS directory) so
+            # a genuine build folder named "project" (without the manual
+            # files) is still scanned normally.
+            if path == f"{home}/project":
+                entry_names = {
+                    (e.get("name") if isinstance(e, dict)
+                     else getattr(e, "name", "") or "")
+                    for e in raw_entries
+                }
+                if "AGENTS.md" in entry_names and "skills" in entry_names:
+                    return
             for entry in raw_entries:
                 if isinstance(entry, dict):
                     name = entry.get("name") or ""
@@ -1045,6 +1081,27 @@ class AgentTaskRunner(TaskRunner):
                         ):
                             known_paths.add(f.file_path)
                             merged.append(f)
+                    # ── Archive sanitize ─────────────────────────────────────
+                    # A model-made zip can bloat with node_modules (the
+                    # 426MB-zip incident that blew the Atlas quota): rebuild
+                    # oversize archives without junk BEFORE anything syncs.
+                    try:
+                        if self._sandbox and any(
+                            (f.file_path or "").lower().endswith(".zip")
+                            for f in merged
+                        ):
+                            from app.domain.services.agents.auto_bundle import (
+                                sanitize_oversized_archives,
+                            )
+
+                            merged = await sanitize_oversized_archives(
+                                self._sandbox, merged
+                            )
+                    except Exception as exc:
+                        logger.warning(
+                            "Archive sanitize failed (delivering as-is): %s",
+                            exc,
+                        )
                     # ── ZIP-only delivery ─────────────────────────────────────
                     # The artifact sweep above re-adds every file the tools
                     # wrote — including the individual html/css/js sources
@@ -1064,6 +1121,23 @@ class AgentTaskRunner(TaskRunner):
                             "ZIP-only delivery filter failed (delivering "
                             "unfiltered list): %s",
                             exc,
+                        )
+                    # ── Auto-bundle safety net ─────────────────────────────
+                    # Models drift: a multi-file build sometimes arrives as
+                    # loose members (build artifacts, lockfiles, sources)
+                    # with NO archive at all. Collapse it into ONE .zip
+                    # server-side; standalone documents (.md/.txt/...) stay
+                    # as files. Fail-open — never blocks delivery.
+                    if self._sandbox and not any(
+                        (f.file_path or "").lower().endswith(".zip")
+                        for f in merged
+                    ):
+                        from app.domain.services.agents.auto_bundle import (
+                            auto_bundle_deliverables,
+                        )
+
+                        merged = await auto_bundle_deliverables(
+                            self._sandbox, merged
                         )
                     event.attachments = merged or None
                     if len(merged) != len(files_written) or files_written:

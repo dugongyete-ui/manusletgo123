@@ -43,11 +43,32 @@ _FUNCTION_BLOCK_RE = _re.compile(r"<function=(\w+)>(.*?)</function>", _re.DOTALL
 _PARAMETER_RE = _re.compile(r"<parameter=(\w+)>(.*?)</parameter>", _re.DOTALL)
 
 
+# Qwen/Nemotron-style raw tool_call wire blocks. The streaming summarize
+# layer occasionally emits an EMPTY residue block (two newlines between
+# the tags) as the whole answer: the empty-prose guard then saw the TAGS
+# as text and the final bubble shipped with no summary (live: sessions
+# e6690289 / b00448, final message = the tags alone). Stripping the
+# blocks, including an unclosed trailing one, lets the guard see the
+# truth and fall back to the tool-loop, which produces the real answer.
+_TOOL_CALL_BLOCK_RE = _re.compile(r'<tool_call>(.*?)</tool_call>', _re.DOTALL)
+_TOOL_CALL_OPEN_RE = _re.compile(r'<tool_call>.*\Z', _re.DOTALL)
+
+
 def _strip_function_syntax(text: str) -> str:
-    """Remove raw <function=...> blocks from user-facing text."""
-    if not text or "<function=" not in text:
+    """Remove raw tool-call wire-format blocks from user-facing text.
+
+    Handles <function=NAME>...</function> (legacy) and raw Qwen-style
+    tool_call blocks, including empty residue blocks and an unclosed
+    trailing tag. Only the prose between the blocks survives.
+    """
+    if not text:
         return text
-    return _FUNCTION_BLOCK_RE.sub("", text).strip()
+    if "<function=" in text:
+        text = _FUNCTION_BLOCK_RE.sub("", text)
+    if "<tool_" + "call>" in text:
+        text = _TOOL_CALL_BLOCK_RE.sub("", text)
+        text = _TOOL_CALL_OPEN_RE.sub("", text)
+    return text.strip()
 
 
 def _salvage_function_calls(message: AIMessage) -> AIMessage:

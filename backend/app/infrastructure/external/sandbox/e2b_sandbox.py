@@ -1180,6 +1180,18 @@ class E2BSandbox:
 
     async def setup_user_home(self) -> None:
         await self._cmd("mkdir -p /home/user/upload")
+        # Workspace operating manual (project/AGENTS.md + skills/) — same
+        # code path as the shared-Replit wrapper: sandbox protocol only.
+        try:
+            from app.infrastructure.external.sandbox.workspace_scaffold import (
+                scaffold_workspace_manual,
+            )
+
+            await scaffold_workspace_manual(self, self.user_home)
+        except Exception as exc:
+            logger.warning(
+                "E2BSandbox: manual scaffold failed: %s", exc
+            )
 
     @property
     def user_home(self) -> str:
