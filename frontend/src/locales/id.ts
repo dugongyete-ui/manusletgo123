@@ -294,6 +294,7 @@ export default {
   'Source coverage': 'Cakupan sumber',
   'Calculation consistency': 'Konsistensi perhitungan',
   'Unresolved errors': 'Error belum teratasi',
+  'Final check': 'Pemeriksaan akhir',
   'Warnings': 'Peringatan',
   'Completed with warnings': 'Selesai dengan peringatan',
   'Needs review': 'Perlu ditinjau',

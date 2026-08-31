@@ -120,6 +120,7 @@ const CHECK_LABELS: Record<string, string> = {
   calculation_consistency: 'Calculation consistency',
   unresolved_errors: 'Unresolved errors',
   redirect_warnings: 'Source redirects',
+  gate: 'Final check',
 };
 
 const labeledChecks = computed<Array<ValidationCheck & { label: string }>>(() =>

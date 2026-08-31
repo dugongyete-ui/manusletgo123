@@ -294,6 +294,7 @@ export default {
   'Source coverage': 'Source coverage',
   'Calculation consistency': 'Calculation consistency',
   'Unresolved errors': 'Unresolved errors',
+  'Final check': 'Final check',
   'Warnings': 'Warnings',
   'Completed with warnings': 'Completed with warnings',
   'Needs review': 'Needs review',

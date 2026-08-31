@@ -287,3 +287,112 @@ async def test_note_contains_facts_not_template_script():
 
 def test_note_empty_without_result():
     assert validation_note_for_prompt(None) == ""
+
+
+# ── 9. regression: compacted / string payloads must never crash the gate ───
+#
+# Session 345eb263b2cd4cd7 (2026-08-31): context compaction had replaced old
+# search/browser results with ToolResult(success=True, data="(removed)") —
+# a STRING data field — and the gate crashed on `"(removed)".get("results")`
+# with "'str' object has no attribute 'get'", which then leaked to the UI
+# as "Validation could not complete: 'str' object has no attribute 'get'".
+
+@pytest.mark.asyncio
+async def test_compacted_result_stub_does_not_crash_gate():
+    plan = _plan([_step("1")])
+    messages = (
+        _round("info_search_web", {"query": "persib skuad"},
+               {"success": True, "data": "(removed)"}, call_id="c1")
+        + _round("browser_navigate", {"url": "https://contoh.example/a"},
+                 {"success": True, "data": "(removed)"}, call_id="c2")
+        + _round("info_search_web", {"query": "persib transfer"},
+                 {"success": True, "data": {"results": [
+                     {"title": "Sumber", "link": "https://sumber.example/x",
+                      "snippet": "cuplikan"},
+                 ]}}, call_id="c3")
+    )
+    result = await run_final_validation(plan, messages, _reader({}))
+    # The gate COMPLETED — no internal-error "gate" check was emitted.
+    assert next((c for c in result.checks if c.key == "gate"), None) is None
+    # Stubbed search contributes no evidence; the stubbed navigation is a
+    # real recorded visit so it stays (fallback to the requested URL);
+    # the intact search contributes its one real result.
+    assert len(result.evidence) == 2
+    urls = {e.url for e in result.evidence}
+    assert "https://sumber.example/x" in urls
+    assert "https://contoh.example/a" in urls
+    assert result.summary.evidence_count == 2
+
+
+@pytest.mark.asyncio
+async def test_aggressively_truncated_content_is_ignored_not_crashed():
+    plan = _plan([_step("1")])
+    # Aggressive compaction can also leave a ToolMessage whose JSON string
+    # was cut mid-payload → unparseable. The gate must treat it as unknown.
+    ai = AIMessage(content="", tool_calls=[{
+        "name": "info_search_web", "args": {"query": "x"},
+        "id": "c1", "type": "tool_call",
+    }])
+    tm = ToolMessage(
+        content='{"success": true, "data": {"resu',  # cut mid-JSON
+        tool_call_id="c1",
+    )
+    result = await run_final_validation(plan, [ai, tm], _reader({}))
+    assert next((c for c in result.checks if c.key == "gate"), None) is None
+    assert result.evidence == []
+
+
+@pytest.mark.asyncio
+async def test_string_tool_call_args_do_not_crash_gate():
+    plan = _plan([_step("1")])
+    # Pydantic rejects string args at construction time, but a
+    # deserialization/serialization quirk can still swap the dict for a
+    # JSON string AFTER the message is built — simulate that path.
+    ai = AIMessage(content="", tool_calls=[{
+        "name": "browser_navigate", "args": {},
+        "id": "c1", "type": "tool_call",
+    }])
+    ai.tool_calls[0]["args"] = '{"url": "https://contoh.example/beranda"}'
+    tm = ToolMessage(
+        content=json.dumps({"success": True, "data": {
+            "final_url": "https://contoh.example/beranda", "title": "Beranda"}}),
+        tool_call_id="c1",
+    )
+    result = await run_final_validation(plan, [ai, tm], _reader({}))
+    assert next((c for c in result.checks if c.key == "gate"), None) is None
+    assert len(result.evidence) == 1
+    assert result.evidence[0].url == "https://contoh.example/beranda"
+
+
+@pytest.mark.asyncio
+async def test_search_results_not_a_list_is_skipped():
+    plan = _plan([_step("1")])
+    messages = _round(
+        "info_search_web", {"query": "x"},
+        {"success": True, "data": {"results": "bukan-list"}},
+    )
+    result = await run_final_validation(plan, messages, _reader({}))
+    assert next((c for c in result.checks if c.key == "gate"), None) is None
+    assert result.evidence == []
+
+
+@pytest.mark.asyncio
+async def test_gate_crash_detail_is_professional_not_raw_exception(monkeypatch):
+    """If the gate itself ever crashes, the user-visible detail must be a
+    clean human sentence — a raw Python exception must never leak again."""
+    import app.domain.services.agents.validation_gate as vg
+
+    def boom(memory_messages):
+        raise AttributeError("'str' object has no attribute 'get'")
+
+    monkeypatch.setattr(vg, "_collect_tool_rounds", boom)
+    result = await vg.run_final_validation(None, [], _reader({}))
+    gate_check = next(c for c in result.checks if c.key == "gate")
+    assert gate_check.state.value == "warn"
+    assert result.overall == "needs_review"
+    assert result.warnings == 1
+    # Friendly, actionable wording — and NO raw exception text.
+    assert "could not finish" in gate_check.detail
+    assert "review" in gate_check.detail.lower()
+    assert "'str' object" not in gate_check.detail
+    assert "AttributeError" not in gate_check.detail

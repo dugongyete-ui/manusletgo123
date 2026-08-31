@@ -79,6 +79,42 @@ def _parse_tool_content(message) -> Optional[dict]:
         return None
 
 
+def _as_dict(value) -> dict:
+    """Coerce a tool-result `data` / tool-call `args` value into a dict.
+
+    Context compaction replaces old tool results with
+    ToolResult(success=True, data="(removed)") — a STRING data field
+    (regression, session 345eb263b2cd4cd7: the gate crashed on
+    `"(removed)".get("results")` → 'str' object has no attribute 'get').
+    Some providers also serialize tool-call args as a JSON string. This
+    helper accepts dicts as-is, tries one JSON parse for strings, and
+    returns {} for anything else — the caller then simply finds no
+    data, which is the honest outcome for a stubbed/compacted result.
+    """
+    if isinstance(value, dict):
+        return value
+    if isinstance(value, str):
+        try:
+            parsed = json.loads(value)
+            return parsed if isinstance(parsed, dict) else {}
+        except (ValueError, TypeError):
+            return {}
+    return {}
+
+
+def _as_args(value) -> dict:
+    """Normalize tool_call args (dict | JSON string | garbage) to a dict."""
+    if isinstance(value, dict):
+        return value
+    if isinstance(value, str):
+        try:
+            parsed = json.loads(value)
+            return parsed if isinstance(parsed, dict) else {}
+        except (ValueError, TypeError):
+            return {}
+    return {}
+
+
 def _collect_tool_rounds(memory_messages) -> List[Tuple[str, dict, Optional[dict]]]:
     """Pair each AIMessage tool_call (name, args) with its ToolMessage result.
 
@@ -88,10 +124,14 @@ def _collect_tool_rounds(memory_messages) -> List[Tuple[str, dict, Optional[dict
     rounds: List[Tuple[str, dict, Optional[dict]]] = []
     pending: dict = {}  # tool_call_id -> (name, args)
     for msg in memory_messages:
-        # AIMessage.tool_calls: [{name, args, id}]
+        # AIMessage.tool_calls: [{name, args, id}] — args is normally a
+        # dict, but robustness first: a string (or anything else) must
+        # never crash the gate downstream.
         for call in (getattr(msg, "tool_calls", None) or []):
             try:
-                pending[call.get("id", "")] = (call.get("name", ""), call.get("args") or {})
+                pending[call.get("id", "")] = (
+                    call.get("name", ""), _as_args(call.get("args"))
+                )
             except Exception:
                 continue
         if type(msg).__name__ == "ToolMessage":
@@ -166,9 +206,13 @@ def _extract_evidence(rounds) -> List[EvidenceEntry]:
     for name, args, result in rounds:
         ok = bool(result and result.get("success"))
         if name in SEARCH_TOOL_NAMES and ok:
-            data = result.get("data") or {}
+            data = _as_dict(result.get("data"))
             items = data.get("results") or []
+            if not isinstance(items, list):
+                continue
             for item in items[:20]:
+                if not isinstance(item, dict):
+                    continue
                 link = str(item.get("link") or item.get("url") or "").strip()
                 if not link:
                     continue
@@ -186,7 +230,7 @@ def _extract_evidence(rounds) -> List[EvidenceEntry]:
                 ))
         elif name in BROWSER_NAV_TOOLS:
             requested = str(args.get("url") or "").strip()
-            data = (result or {}).get("data") or {}
+            data = _as_dict((result or {}).get("data"))
             final_url = str(data.get("final_url") or requested)
             redirected = bool(
                 requested and final_url and _host(requested) and _host(final_url)
@@ -222,10 +266,11 @@ def _summarize_file_activity(rounds) -> Tuple[int, int]:
             continue
         if not (result and result.get("success")):
             continue
-        path = str(args.get("file") or "")
+        path = str(args.get("file") or "") if isinstance(args, dict) else ""
         if not path:
             continue
-        if args.get("append") or path in created:
+        append = isinstance(args, dict) and bool(args.get("append"))
+        if append or path in created:
             updated.add(path)
         else:
             created.add(path)
@@ -429,13 +474,20 @@ async def run_final_validation(
             evidence=evidence,
         )
     except Exception as exc:
-        # The gate must never take the task down with it.
+        # The gate must never take the task down with it. The full
+        # traceback goes to the server log only — the user-facing check
+        # detail stays a clean, human sentence (never a raw Python
+        # exception like "'str' object has no attribute 'get'").
         logger.exception("validation gate crashed: %s", exc)
         return ValidationResult(
             overall="needs_review",
             checks=[ValidationCheck(
                 key="gate", state=CheckState.WARN,
-                detail=f"Validation could not complete: {exc}",
+                detail=(
+                    "The automated final check could not finish because of"
+                    " an internal error, so this result was not fully"
+                    " verified. Please review the deliverables manually."
+                ),
             )],
             warnings=1,
             summary=ExecutionSummaryData(
