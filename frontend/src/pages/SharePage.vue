@@ -102,9 +102,10 @@
                 @toolClick="handleToolClick" />
             </template>
 
-            <!-- Final validation gate card (P0) — rendered when the task
-                 finished with a gate result. -->
-            <ValidationCard v-if="validationResult" :result="validationResult" />
+            <!-- Validation card hidden per product decision (T38): the raw
+                 gate log (file paths, mechanical check details) read as
+                 unprofessional to end users. Component kept at
+                 src/components/ValidationCard.vue for easy re-enable. -->
           </div>
 
           <div
@@ -187,7 +188,6 @@ import { useRouter } from 'vue-router';
 import { useI18n } from 'vue-i18n';
 import ChatMessage from '../components/ChatMessage.vue';
 import StepTimeline from '../components/StepTimeline.vue';
-import ValidationCard from '../components/ValidationCard.vue';
 import * as agentApi from '../api/agent';
 import { Message, MessageContent, ToolContent, StepContent, AttachmentsContent } from '../types/message';
 import {
@@ -197,8 +197,6 @@ import {
   ErrorEventData,
   TitleEventData,
   PlanEventData,
-  ValidationEventData,
-  ValidationResultData,
   AgentSSEEvent,
 } from '../types/event';
 import ToolPanel from '../components/ToolPanel.vue'
@@ -234,7 +232,6 @@ const createInitialState = () => ({
   lastEventId: undefined as string | undefined,
   attachments: [] as FileInfo[],
   replayCompleted: false,
-  validationResult: undefined as ValidationResultData | undefined,
 });
 
 // Create reactive state
@@ -253,7 +250,6 @@ const {
   lastTool,
   lastEventId,
   replayCompleted,
-  validationResult,
 } = toRefs(state);
 
 // ── Page-level state machine (P0: share page never shows a blank screen) ──
@@ -632,13 +628,6 @@ const handlePlanEvent = (planData: PlanEventData) => {
   plan.value = planData;
 }
 
-// Handle validation event — the final gate result (P0). Kept as state and
-// rendered as a card below the timeline (never a chat bubble: it is a task
-// artifact, not a message).
-const handleValidationEvent = (validationData: ValidationEventData) => {
-  validationResult.value = validationData.result;
-}
-
 // Main event handler function
 const handleEvent = (event: AgentSSEEvent) => {
   if (event.event === 'message') {
@@ -657,8 +646,6 @@ const handleEvent = (event: AgentSSEEvent) => {
     handleTitleEvent(event.data as TitleEventData);
   } else if (event.event === 'plan') {
     handlePlanEvent(event.data as PlanEventData);
-  } else if (event.event === 'validation') {
-    handleValidationEvent(event.data as ValidationEventData);
   }
   lastEventId.value = event.data.event_id;
 }
