@@ -1,8 +1,8 @@
 import type { FileInfo } from '../api/file';
 
 export type AgentSSEEvent = {
-  event: 'tool' | 'step' | 'message' | 'message_chunk' | 'error' | 'done' | 'title' | 'wait' | 'plan' | 'attachments';
-  data: ToolEventData | StepEventData | MessageEventData | MessageChunkEventData | ErrorEventData | DoneEventData | TitleEventData | WaitEventData | PlanEventData;
+  event: 'tool' | 'step' | 'message' | 'message_chunk' | 'error' | 'done' | 'title' | 'wait' | 'plan' | 'attachments' | 'validation';
+  data: ToolEventData | StepEventData | MessageEventData | MessageChunkEventData | ErrorEventData | DoneEventData | TitleEventData | WaitEventData | PlanEventData | ValidationEventData;
 }
 
 export interface BaseEventData {
@@ -63,4 +63,57 @@ export interface TitleEventData extends BaseEventData {
 
 export interface PlanEventData extends BaseEventData {
   steps: StepEventData[];
+}
+
+// ── Final validation gate (P0) ────────────────────────────────────────────
+export type CheckState = 'pass' | 'fail' | 'warn' | 'skipped';
+
+export interface ValidationCheck {
+  key: string;
+  state: CheckState;
+  detail: string;
+}
+
+export interface EvidenceEntry {
+  id: string;
+  summary: string;
+  url: string;
+  requested_url?: string;
+  title: string;
+  site_name?: string;
+  published_date?: string | null;
+  quote?: string;
+  verified: boolean;
+  source: 'search' | 'browser';
+  redirected?: boolean;
+}
+
+export interface ExecutionSummaryData {
+  started_at?: string | null;
+  finished_at?: string | null;
+  duration_seconds?: number | null;
+  total_steps: number;
+  steps_completed: number;
+  steps_failed: number;
+  tool_calls_total: number;
+  tool_calls_succeeded: number;
+  tool_calls_failed: number;
+  files_created: number;
+  files_updated: number;
+  evidence_count: number;
+  warnings: number;
+  errors: number;
+}
+
+export interface ValidationResultData {
+  overall: 'pass' | 'needs_review';
+  checks: ValidationCheck[];
+  unresolved_errors: number;
+  warnings: number;
+  summary: ExecutionSummaryData;
+  evidence: EvidenceEntry[];
+}
+
+export interface ValidationEventData extends BaseEventData {
+  result: ValidationResultData;
 }

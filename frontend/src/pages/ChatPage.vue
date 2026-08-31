@@ -112,6 +112,9 @@
               @toolClick="handleToolClick" />
           </template>
 
+          <!-- Final validation gate card (P0) — task artifact, not a chat bubble -->
+          <ValidationCard v-if="validationResult" :result="validationResult" />
+
           <!-- Loading indicator — hidden while streaming acknowledgment chunks -->
           <LoadingIndicator v-if="isLoading && !streamingMessageContent" :text="currentThinkingText || $t('Thinking')" />
           <!-- Wait indicator — agent is expecting user input -->
@@ -147,6 +150,7 @@ import { useI18n } from 'vue-i18n';
 import ChatBox from '../components/ChatBox.vue';
 import ChatMessage from '../components/ChatMessage.vue';
 import StepTimeline from '../components/StepTimeline.vue';
+import ValidationCard from '../components/ValidationCard.vue';
 import * as agentApi from '../api/agent';
 import { Message, MessageContent, ToolContent, StepContent, AttachmentsContent } from '../types/message';
 import {
@@ -157,6 +161,8 @@ import {
   ErrorEventData,
   TitleEventData,
   PlanEventData,
+  ValidationEventData,
+  ValidationResultData,
   AgentSSEEvent,
 } from '../types/event';
 import ToolPanel from '../components/ToolPanel.vue'
@@ -202,7 +208,8 @@ const createInitialState = () => ({
   attachments: [] as FileInfo[],
   shareMode: 'private' as 'private' | 'public', // Default to private mode
   linkCopied: false,
-  sharingLoading: false // Loading state for share operations
+  sharingLoading: false, // Loading state for share operations
+  validationResult: undefined as ValidationResultData | undefined,
 });
 
 // Create reactive state
@@ -228,7 +235,8 @@ const {
   attachments,
   shareMode,
   linkCopied,
-  sharingLoading
+  sharingLoading,
+  validationResult
 } = toRefs(state);
 
 // Flat ordered list of all non-message tools — used for panel navigation
@@ -648,6 +656,12 @@ const handlePlanEvent = (planData: PlanEventData) => {
   plan.value = planData;
 }
 
+// Handle validation event — the final gate result (P0): kept as state and
+// rendered as a card below the timeline.
+const handleValidationEvent = (validationData: ValidationEventData) => {
+  validationResult.value = validationData.result;
+}
+
 // Main event handler function
 const handleEvent = (event: AgentSSEEvent) => {
   if (event.event === 'message') {
@@ -687,6 +701,8 @@ const handleEvent = (event: AgentSSEEvent) => {
     handleTitleEvent(event.data as TitleEventData);
   } else if (event.event === 'plan') {
     handlePlanEvent(event.data as PlanEventData);
+  } else if (event.event === 'validation') {
+    handleValidationEvent(event.data as ValidationEventData);
   }
   lastEventId.value = event.data.event_id;
 }

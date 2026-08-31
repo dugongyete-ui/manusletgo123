@@ -7,6 +7,7 @@ import asyncio
 import ssl
 import websockets
 import logging
+import time
 from app.interfaces.dependencies import get_file_service
 
 from app.application.services.agent_service import AgentService
@@ -418,9 +419,20 @@ async def get_shared_session_files(
     session_id: str,
     agent_service: AgentService = Depends(get_agent_service)
 ) -> APIResponse[List[FileInfo]]:
+    _lookup_started = time.monotonic()
     files = await agent_service.get_shared_session_files(session_id)
+    if files is None:
+        logger.info(
+            "shared_session_files_lookup share_id=%s found=false load_ms=%d",
+            session_id, int((time.monotonic() - _lookup_started) * 1000),
+        )
+        raise NotFoundError("Shared session not found")
     for file in files:
         await get_file_service().enrich_with_file_url(file)
+    logger.info(
+        "shared_session_files_lookup share_id=%s found=true files=%d load_ms=%d",
+        session_id, len(files), int((time.monotonic() - _lookup_started) * 1000),
+    )
     return APIResponse.success(files)
 
 
@@ -451,10 +463,21 @@ async def get_shared_session(
     This endpoint allows public access to sessions that have been marked as shared.
     No authentication is required, but the session must be explicitly shared.
     """
+    _lookup_started = time.monotonic()
     session = await agent_service.get_shared_session(session_id)
+    _load_ms = int((time.monotonic() - _lookup_started) * 1000)
     if not session:
+        # Structured lookup log — share id, outcome, latency. No tokens or
+        # conversation content are ever logged here.
+        logger.info(
+            "shared_session_lookup share_id=%s found=false load_ms=%d",
+            session_id, _load_ms,
+        )
         raise NotFoundError("Shared session not found")
-    
+    logger.info(
+        "shared_session_lookup share_id=%s found=true status=%s events=%d load_ms=%d",
+        session_id, session.status, len(session.events), _load_ms,
+    )
     return APIResponse.success(SharedSessionResponse(
         session_id=session.id,
         title=session.title,

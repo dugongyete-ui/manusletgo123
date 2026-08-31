@@ -27,6 +27,7 @@ from app.domain.models.event import (
     PlanEvent,
     PlanStatus,
     TitleEvent,
+    ValidationEvent,
 )
 from app.domain.models.message import Message
 from app.domain.models.plan import ExecutionStatus, Plan, Step
@@ -122,10 +123,20 @@ def _build_flow(flow_cls, *, plan, ack_delivers=True, ack_chunks=None,
 
     executor.execute_step = execute_step
 
-    async def summarize(attachments, current_request=None):
+    async def summarize(attachments, current_request=None, validation=None):
         yield MessageEvent(role="assistant", message="hasil akhir", is_final=True)
 
     executor.summarize = summarize
+
+    # Validation-gate support on the executor mock: empty memory/toolkits →
+    # the gate runs for real in BOTH engines (emitting ValidationEvent) with
+    # zero tool rounds — keeping engine parity over the new event too.
+    class _Memory:
+        def get_messages(self):
+            return []
+
+    executor.memory = _Memory()
+    executor.toolkits = []
 
     flow.planner = planner
     flow.executor = executor
@@ -156,6 +167,19 @@ def _sig(event):
     d.pop("timestamp", None)
     if isinstance(event, PlanEvent) and d.get("plan"):
         d["plan"]["id"] = "<plan>"
+    if isinstance(event, ValidationEvent) and d.get("result"):
+        r = d["result"]
+        s = r.get("summary") or {}
+        # Wall-clock fields vary per run; normalise them away.
+        for k in ("started_at", "finished_at"):
+            if s.get(k) is not None:
+                s[k] = "<ts>"
+        if s.get("duration_seconds") is not None:
+            s["duration_seconds"] = 0
+        for ev in (r.get("evidence") or []):
+            ev["id"] = "<ev>"
+            if ev.get("accessed_date") is not None:
+                ev["accessed_date"] = "<ts>"
     return (type(event).__name__, d)
 
 
@@ -480,3 +504,43 @@ def test_task_runner_selects_engine_by_flag(monkeypatch):
     src = inspect.getsource(atr)
     assert "agent_flow_engine" in src
     assert "PlanActGraphFlow" in src and "PlanActFlow" in src
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Final validation gate integration (P0) — engine parity over the new event
+# ─────────────────────────────────────────────────────────────────────────────
+
+@pytest.mark.asyncio
+async def test_parity_validation_event_precedes_final_summary():
+    """Both engines emit ValidationEvent right before the is_final summary."""
+    for name, cls in ENGINES:
+        flow = _build_flow(cls, plan=_make_plan(2))
+        events = [e async for e in flow.run(Message(message="Buat laporan"))]
+
+        types = [type(e).__name__ for e in events]
+        assert "ValidationEvent" in types, f"{name}: gate event missing"
+        vi = types.index("ValidationEvent")
+        finals = [i for i, e in enumerate(events)
+                  if isinstance(e, MessageEvent) and e.is_final]
+        assert finals, f"{name}: no final summary"
+        assert vi < finals[0], f"{name}: gate must precede the final summary"
+
+        gate = events[vi]
+        assert gate.result.overall == "pass"
+        assert gate.result.summary.total_steps == 2
+        # Happy path keeps the plain COMPLETED status.
+        assert flow.plan.status == ExecutionStatus.COMPLETED
+
+
+@pytest.mark.asyncio
+async def test_parity_failed_step_yields_completed_with_warnings():
+    """A failed step makes the gate say needs_review — the plan must NOT lie
+    with a plain COMPLETED status (P0 acceptance criterion)."""
+    for name, cls in ENGINES:
+        flow = _build_flow(cls, plan=_make_plan(2), step_success=False)
+        events = [e async for e in flow.run(Message(message="Buat laporan"))]
+
+        gate = next(e for e in events if isinstance(e, ValidationEvent))
+        assert gate.result.overall == "needs_review"
+        assert gate.result.summary.steps_failed == 2
+        assert flow.plan.status == ExecutionStatus.COMPLETED_WITH_WARNINGS

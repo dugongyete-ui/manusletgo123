@@ -5,6 +5,7 @@ import CodeFileIcon from '../components/icons/CodeFileIcon.vue';
 import UnknownFilePreview from '../components/filePreviews/UnknownFilePreview.vue';
 import MarkdownFilePreview from '../components/filePreviews/MarkdownFilePreview.vue';
 import CodeFilePreview from '../components/filePreviews/CodeFilePreview.vue';
+import CsvFilePreview from '../components/filePreviews/CsvFilePreview.vue';
 import ImageFilePreview from '../components/filePreviews/ImageFilePreview.vue';
 
 export interface FileType {
@@ -53,7 +54,16 @@ export const getFileType = (filename: string): FileType => {
       preview: MarkdownFilePreview,
     };
   }
-  
+
+  // CSV gets its own interactive table preview (P1): metadata, sort,
+  // filter, pagination, integrity warnings, copy/raw/download.
+  if (file_extension === 'csv' || file_extension === 'tsv') {
+    return {
+      icon: CodeFileIcon,
+      preview: CsvFilePreview,
+    };
+  }
+
   if (file_extension && codeFileExtensions.includes(file_extension)) {
     return {
       icon: CodeFileIcon,
@@ -95,6 +105,11 @@ export const getFileTypeText = (filename: string): string => {
   // Markdown files
   if (file_extension === 'md') {
     return t('Markdown');
+  }
+
+  // CSV files
+  if (['csv', 'tsv'].includes(file_extension || '')) {
+    return 'CSV';
   }
 
   // Code files

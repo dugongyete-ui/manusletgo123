@@ -304,13 +304,18 @@ class AgentService:
             raise RuntimeError("Session not found")
         return session.files
     
-    async def get_shared_session_files(self, session_id: str) -> List[FileInfo]:
-        """Get files for a shared session"""
+    async def get_shared_session_files(self, session_id: str) -> Optional[List[FileInfo]]:
+        """Get files for a shared session
+
+        Returns None (instead of raising) when the session does not exist or
+        is not shared — the route maps that to a clean 404 so the share-page
+        file panel shows a proper not-found state rather than a 500.
+        """
         logger.info(f"Getting files for shared session {session_id}")
         session = await self._session_repository.find_by_id(session_id)
         if not session or not session.is_shared:
             logger.error(f"Shared session {session_id} not found or not shared")
-            raise RuntimeError("Session not found")
+            return None
         return session.files
 
     async def share_session(self, session_id: str, user_id: str) -> None:

@@ -12,6 +12,7 @@ from app.domain.models.event import (
     MessageEvent,
     DoneEvent,
     TitleEvent,
+    ValidationEvent,
 )
 from app.domain.models.plan import ExecutionStatus
 from app.core.config import get_settings
@@ -274,6 +275,11 @@ class PlanActFlow(BaseFlow):
         return stripped
 
     async def run(self, message: Message) -> AsyncGenerator[BaseEvent, None]:
+
+        # Real wall-clock start of THIS run — feeds the execution summary in
+        # the final validation gate (never fabricated).
+        from datetime import datetime as _dt
+        self._run_started_at = _dt.now()
 
         # Analyze vision images once up-front so every downstream agent
         # receives a consistent, text-enriched message without raw image data.
@@ -597,8 +603,36 @@ class PlanActFlow(BaseFlow):
                         f"Agent {self._agent_id} summary will deliver {len(step_attachments)} "
                         f"step deliverable(s): {step_attachments}"
                     )
+
+                # ── Final validation gate (P0) — same contract as the graph
+                # engine (engine parity): runs before the summary, emits one
+                # ValidationEvent, never raises, and feeds the facts to the
+                # model as context.
+                from app.domain.services.agents.validation_gate import (
+                    build_gate_file_reader,
+                    run_final_validation,
+                )
+
+                self._validation_result = None
+                try:
+                    self._validation_result = await run_final_validation(
+                        plan=self.plan,
+                        memory_messages=self.executor.memory.get_messages(),
+                        read_file=build_gate_file_reader(self.executor),
+                        started_at=getattr(self, "_run_started_at", None),
+                    )
+                    yield ValidationEvent(result=self._validation_result)
+                    logger.info(
+                        f"Agent {self._agent_id} validation gate overall="
+                        f"{self._validation_result.overall} warnings="
+                        f"{self._validation_result.warnings}"
+                    )
+                except Exception as exc:
+                    logger.warning(f"Agent {self._agent_id} validation gate skipped: {exc}")
+
                 async for event in self.executor.summarize(
-                    step_attachments, current_request=message.message
+                    step_attachments, current_request=message.message,
+                    validation=self._validation_result,
                 ):
                     yield event
                 logger.info(f"Agent {self._agent_id} summarizing completed, state changed from {AgentStatus.SUMMARIZING} to {AgentStatus.COMPLETED}")
@@ -613,8 +647,17 @@ class PlanActFlow(BaseFlow):
                     and previous_plan and previous_plan.steps
                 ):
                     completion_plan = previous_plan
-                completion_plan.status = ExecutionStatus.COMPLETED
-                logger.info(f"Agent {self._agent_id} plan has been completed")
+                # Validation gate outcome decides the final plan status
+                # (engine parity with the graph flow).
+                _validation = getattr(self, "_validation_result", None)
+                if _validation is not None and _validation.overall == "needs_review":
+                    completion_plan.status = ExecutionStatus.COMPLETED_WITH_WARNINGS
+                else:
+                    completion_plan.status = ExecutionStatus.COMPLETED
+                logger.info(
+                    f"Agent {self._agent_id} plan completed with status "
+                    f"{completion_plan.status}"
+                )
                 yield PlanEvent(status=PlanStatus.COMPLETED, plan=completion_plan)
                 self.status = AgentStatus.IDLE
                 break

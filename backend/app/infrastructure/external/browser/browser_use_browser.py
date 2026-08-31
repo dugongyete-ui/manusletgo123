@@ -1393,6 +1393,25 @@ class BrowserUseBrowser:
             # (element signature + seen-node keys), so the next action's
             # change detection compares against the right baseline.
             observed = await self._observe_page_state(session, include_content=True)
+            # Echo the FINAL URL explicitly + cross-domain redirect warning
+            # (same contract as the Playwright backend): the agent and the
+            # evidence register must know when the browser landed somewhere
+            # other than the requested domain.
+            observed["final_url"] = observed.get("url") or ""
+            try:
+                from urllib.parse import urlparse as _up
+                _req_host = (_up(url).hostname or "").lower()
+                _fin_host = (_up(observed["final_url"]).hostname or "").lower()
+                if _req_host and _fin_host and _req_host != _fin_host:
+                    observed["redirected"] = True
+                    observed["redirect_warning"] = (
+                        f"Target URL differs from the URL actually opened "
+                        f"(requested {url}, landed on {observed['final_url']}). "
+                        f"Verify this redirect is official before using the "
+                        f"page's data as evidence."
+                    )
+            except Exception:
+                pass
             return ToolResult(success=True, data=observed)
         except Exception as exc:
             return ToolResult(success=False, message=f"Failed to navigate to {url}: {exc}")

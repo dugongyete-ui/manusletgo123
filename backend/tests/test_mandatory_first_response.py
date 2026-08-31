@@ -90,7 +90,7 @@ def _make_flow(plan: Plan, ack_llm_delivers: bool = True):
 
     executor.execute_step = execute_step
 
-    async def summarize(attachments, current_request=None):
+    async def summarize(attachments, current_request=None, validation=None):
         yield MessageEvent(role="assistant", message="hasil akhir", is_final=True)
 
     executor.summarize = summarize

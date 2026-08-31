@@ -9,9 +9,7 @@
                 <div class="text-xs text-[var(--text-tertiary)] truncate">{{ getFileTypeText(file.filename) }}</div>
             </div>
         </div>
-        <div class="text-sm text-center text-[var(--text-tertiary)]">{{ t('This format cannot be previewed') }}。<br>{{
-            t('Please download the file to view its content') }}。
-        </div>
+        <div class="text-sm text-center text-[var(--text-tertiary)]">{{ t('This file cannot be previewed directly. The file was found and is available to download.') }}</div>
         <button @click="download"
             class="inline-flex items-center justify-center whitespace-nowrap font-medium transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring hover:opacity-90 active:opacity-80 bg-[var(--Button-primary-black)] text-[var(--text-onblack)] h-[36px] px-[12px] rounded-[10px] gap-[6px] text-sm">
             <Download :size="16" />

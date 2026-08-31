@@ -7,6 +7,10 @@ class ExecutionStatus(str, Enum):
     PENDING = "pending"
     RUNNING = "running"
     COMPLETED = "completed"
+    # Set by the final validation gate when the task finished but mechanical
+    # checks found failures or warnings (failed steps, missing/corrupt
+    # deliverables, failed tool calls). Old sessions never emit this value.
+    COMPLETED_WITH_WARNINGS = "completed_with_warnings"
     FAILED = "failed"
 
 class Step(BaseModel):
@@ -19,7 +23,11 @@ class Step(BaseModel):
     attachments: List[str] = []
 
     def is_done(self) -> bool:
-        return self.status == ExecutionStatus.COMPLETED or self.status == ExecutionStatus.FAILED
+        return (
+            self.status == ExecutionStatus.COMPLETED
+            or self.status == ExecutionStatus.COMPLETED_WITH_WARNINGS
+            or self.status == ExecutionStatus.FAILED
+        )
 
 class Plan(BaseModel):
     id: str = Field(default_factory=lambda: str(uuid.uuid4()))
@@ -33,7 +41,11 @@ class Plan(BaseModel):
     error: Optional[str] = None
 
     def is_done(self) -> bool:
-        return self.status == ExecutionStatus.COMPLETED or self.status == ExecutionStatus.FAILED
+        return (
+            self.status == ExecutionStatus.COMPLETED
+            or self.status == ExecutionStatus.COMPLETED_WITH_WARNINGS
+            or self.status == ExecutionStatus.FAILED
+        )
     
     def get_next_step(self) -> Optional[Step]:
         for step in self.steps:

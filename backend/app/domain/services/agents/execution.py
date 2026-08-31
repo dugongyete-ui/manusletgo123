@@ -25,6 +25,7 @@ from app.domain.models.event import (
     PlanEvent,
     PlanStatus,
 )
+from app.domain.models.validation import ValidationResult
 from app.domain.services.tools.base import BaseToolkit
 from langchain.messages import HumanMessage as LCHumanMessage
 import json
@@ -1095,6 +1096,7 @@ class ExecutionAgent(BaseAgent):
     async def summarize(
         self, step_attachments: Optional[List[str]] = None,
         current_request: Optional[str] = None,
+        validation: Optional["ValidationResult"] = None,
     ) -> AsyncGenerator[BaseEvent, None]:
         """Deliver the final result to the user.
 
@@ -1105,7 +1107,13 @@ class ExecutionAgent(BaseAgent):
             current_request: the user's request for THIS run. Session memory
                 accumulates across tasks; without explicit scoping the model
                 sometimes summarizes an EARLIER task from the same session.
+            validation: the final validation gate result (mechanical facts).
+                Rendered into the prompt as CONTEXT ONLY — the model writes
+                its own natural summary; nothing is scripted.
         """
+        from app.domain.services.agents.validation_gate import (
+            validation_note_for_prompt,
+        )
         from app.domain.services.agents.attachment_paths import (
             normalize_attachment_paths,
         )
@@ -1139,6 +1147,8 @@ class ExecutionAgent(BaseAgent):
             stream_prompt = SUMMARIZE_STREAM_PROMPT + scope_note
         else:
             stream_prompt = SUMMARIZE_STREAM_PROMPT
+        # Gate facts (if any) come last: pure context, no scripted phrasing.
+        stream_prompt += validation_note_for_prompt(validation)
         stream_context = context + [LCHumanMessage(content=stream_prompt)]
 
         full_text = ""

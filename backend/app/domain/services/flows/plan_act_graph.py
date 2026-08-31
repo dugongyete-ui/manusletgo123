@@ -46,6 +46,7 @@ from app.domain.models.event import (
     PlanEvent,
     PlanStatus,
     TitleEvent,
+    ValidationEvent,
 )
 from app.domain.models.message import Message
 from app.domain.models.plan import ExecutionStatus
@@ -128,6 +129,11 @@ class PlanActGraphFlow(PlanActFlow):
         # The step being executed / last executed (mirrors the original
         # ``step`` local reused by the UPDATING branch).
         self._last_step = None
+        # Real wall-clock start of THIS run — feeds the execution summary in
+        # the final validation gate (never fabricated).
+        from datetime import datetime as _dt
+        self._run_started_at = _dt.now()
+        self._validation_result = None
 
         # ── Node bodies: verbatim ports of the while-loop branches ────────
 
@@ -412,8 +418,36 @@ class PlanActGraphFlow(PlanActFlow):
                     f"Agent {self._agent_id} summary will deliver {len(step_attachments)} "
                     f"step deliverable(s): {step_attachments}"
                 )
+
+            # ── Final validation gate (P0) ──────────────────────────────────
+            # Runs BEFORE the summary: emits one ValidationEvent with the
+            # mechanical checks + execution summary + evidence register, and
+            # hands the same facts to the model as context so the summary can
+            # be honest about gaps. The gate itself never raises.
+            from app.domain.services.agents.validation_gate import (
+                build_gate_file_reader,
+                run_final_validation,
+            )
+
+            try:
+                self._validation_result = await run_final_validation(
+                    plan=self.plan,
+                    memory_messages=self.executor.memory.get_messages(),
+                    read_file=build_gate_file_reader(self.executor),
+                    started_at=getattr(self, "_run_started_at", None),
+                )
+                writer(ValidationEvent(result=self._validation_result))
+                logger.info(
+                    f"Agent {self._agent_id} validation gate overall="
+                    f"{self._validation_result.overall} warnings="
+                    f"{self._validation_result.warnings}"
+                )
+            except Exception as exc:
+                logger.warning(f"Agent {self._agent_id} validation gate skipped: {exc}")
+
             async for event in self.executor.summarize(
-                step_attachments, current_request=message.message
+                step_attachments, current_request=message.message,
+                validation=getattr(self, "_validation_result", None),
             ):
                 writer(event)
             logger.info(
@@ -434,8 +468,14 @@ class PlanActGraphFlow(PlanActFlow):
                 and previous_plan and previous_plan.steps
             ):
                 completion_plan = previous_plan
-            completion_plan.status = ExecutionStatus.COMPLETED
-            logger.info(f"Agent {self._agent_id} plan has been completed")
+            # The validation gate decides whether plain "completed" would be
+            # a lie: needs_review → completed_with_warnings (P0).
+            _validation = getattr(self, "_validation_result", None)
+            if _validation is not None and _validation.overall == "needs_review":
+                completion_plan.status = ExecutionStatus.COMPLETED_WITH_WARNINGS
+            else:
+                completion_plan.status = ExecutionStatus.COMPLETED
+            logger.info(f"Agent {self._agent_id} plan completed with status {completion_plan.status}")
             writer(PlanEvent(status=PlanStatus.COMPLETED, plan=completion_plan))
             self.status = AgentStatus.IDLE
             return {"status": "idle"}

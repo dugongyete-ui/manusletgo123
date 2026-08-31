@@ -459,7 +459,12 @@ class PlaywrightBrowser:
     
     async def navigate(self, url: str, timeout: Optional[int] = 15000) -> ToolResult:
         """Navigate to the specified URL
-        
+
+        The result echoes the FINAL URL after redirects. When the browser
+        landed on a different domain than the one requested, a
+        redirect_warning is included so the agent (and the user) can verify
+        the redirect is official before treating the page as evidence.
+
         Args:
             url: URL to navigate to
             timeout: Navigation timeout (milliseconds), default is 60 seconds
@@ -472,12 +477,29 @@ class PlaywrightBrowser:
                 await self.page.goto(url, timeout=timeout)
             except Exception as e:
                 logger.warning(f"Failed to navigate to {url}: {str(e)}")
-            return ToolResult(
-                success=True,
-                data={
-                    "interactive_elements": await self._extract_interactive_elements(),
-                }
-            )
+            # Capture where the browser ACTUALLY ended up (goto follows
+            # redirects silently) — the evidence register and the redirect
+            # warning both key off this.
+            final_url = getattr(self.page, "url", "") or url
+            data = {
+                "final_url": final_url,
+                "interactive_elements": await self._extract_interactive_elements(),
+            }
+            try:
+                from urllib.parse import urlparse as _up
+                _req_host = (_up(url).hostname or "").lower()
+                _fin_host = (_up(final_url).hostname or "").lower()
+                if _req_host and _fin_host and _req_host != _fin_host:
+                    data["redirected"] = True
+                    data["redirect_warning"] = (
+                        f"Target URL differs from the URL actually opened "
+                        f"(requested {url}, landed on {final_url}). Verify "
+                        f"this redirect is official before using the page's "
+                        f"data as evidence."
+                    )
+            except Exception:
+                pass
+            return ToolResult(success=True, data=data)
         except Exception as e:
             return ToolResult(success=False, message=f"Failed to navigate to {url}: {str(e)}")
     

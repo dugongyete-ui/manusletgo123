@@ -9,6 +9,7 @@ from app.domain.models.file import FileInfo
 import json
 from app.domain.models.search import SearchResultItem
 from app.domain.models.image import ImageSearchResultItem
+from app.domain.models.validation import ValidationResult
 
 
 class PlanStatus(str, Enum):
@@ -160,6 +161,13 @@ class MessageChunkEvent(BaseEvent):
     content: str = ""
     done: bool = False
 
+class ValidationEvent(BaseEvent):
+    """Final validation gate result — emitted once, right before the task's
+    final summary message. Carries the mechanical checks, the execution
+    summary counts, and the evidence register collected from the run."""
+    type: Literal["validation"] = "validation"
+    result: ValidationResult
+
 AgentEvent = Union[
     ErrorEvent,
     PlanEvent, 
@@ -167,6 +175,7 @@ AgentEvent = Union[
     StepEvent,
     MessageEvent,
     MessageChunkEvent,
+    ValidationEvent,
     DoneEvent,
     TitleEvent,
     WaitEvent,

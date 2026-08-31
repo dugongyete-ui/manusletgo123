@@ -14,7 +14,9 @@ from app.domain.models.event import (
     TitleEvent,
     ToolEvent,
     StepEvent,
+    ValidationEvent,
 )
+from app.domain.models.validation import ValidationResult as ValidationResultModel
 
 class BaseEventData(BaseModel):
     event_id: Optional[str]
@@ -230,6 +232,23 @@ class PlanSSEEvent(BaseSSEEvent):
             )
         )
 
+class ValidationEventData(BaseEventData):
+    """SSE payload of the final validation gate result."""
+    result: ValidationResultModel
+
+class ValidationSSEEvent(BaseSSEEvent):
+    event: Literal["validation"] = "validation"
+    data: ValidationEventData
+
+    @classmethod
+    def from_event(cls, event: ValidationEvent) -> Self:
+        return cls(
+            data=ValidationEventData(
+                **BaseEventData.base_event_data(event),
+                result=event.result,
+            )
+        )
+
 class CommonSSEEvent(BaseSSEEvent):
     event: str
     data: CommonEventData
@@ -242,6 +261,7 @@ AgentSSEEvent = Union[
     TitleSSEEvent,
     ToolSSEEvent,
     StepSSEEvent,
+    ValidationSSEEvent,
     DoneSSEEvent,
     ErrorSSEEvent,
     WaitSSEEvent,
