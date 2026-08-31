@@ -1,6 +1,6 @@
 # AGENTS.md — Operating Manual
 
-manual-version: 1
+manual-version: 2
 
 This folder is your operating manual. It was scaffolded automatically into your
 workspace — it is NOT user content, and it must never be edited, moved, zipped,
@@ -38,9 +38,15 @@ that make the difference between "it ran once" and "it actually works".
 
 ## Where your output goes
 
-Build task outputs NEVER go inside this folder. Create a sibling directory
-under your home, e.g. `<home>/my-app-name/`. This manual stays clean so it can
-be reused by every future task.
+Your builds live INSIDE this folder, in their own named subdirectory:
+`<home>/project/<your-app-name>/` (e.g. `project/kopi-senja/`). One build =
+one subfolder, named after the project in kebab-case. Keep the manual's own
+files at the root of `project/` and `project/skills/` untouched — they are
+scaffolding, not task output, and never get delivered.
+
+A standalone document (a report, a slide deck, a summary) may sit directly
+in `<home>/` or in `<home>/project/` as a single file — it does not need a
+subfolder.
 
 ## The delivery contract
 

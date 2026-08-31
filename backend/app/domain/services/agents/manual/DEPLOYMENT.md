@@ -10,13 +10,13 @@ Packaging and delivery — the last mile, where most "failed successes" happen.
 
 ## Building the archive (python zipfile — the zip binary is not guaranteed)
 ```sh
-cd <home>
+cd <home>/project
 python3 - <<'PY'
 import zipfile, os
 EXCLUDE_DIRS = {"node_modules", ".git", "__pycache__", "venv", ".venv", "dist-cache"}
 EXCLUDE_FILES = {".env", ".DS_Store"}
-root = "my-app-name"
-out = "my-app-name.zip"
+root = "my-app-name"            # the build subfolder inside project/
+out = "my-app-name.zip"          # the archive lands next to it, in project/
 with zipfile.ZipFile(out, "w", zipfile.ZIP_DEFLATED) as z:
     for dirpath, dirnames, filenames in os.walk(root):
         dirnames[:] = [d for d in dirnames if d not in EXCLUDE_DIRS]
@@ -31,10 +31,10 @@ PY
 
 ## Verify BEFORE finishing (mandatory)
 ```sh
-python3 -m zipfile -l <home>/<name>.zip     # every expected file listed?
+python3 -m zipfile -l <home>/project/<name>.zip     # every expected file listed?
 python3 - <<'PY'
 import zipfile
-z = zipfile.ZipFile("<home>/<name>.zip")
+z = zipfile.ZipFile("<home>/project/<name>.zip")
 bad = z.testzip()   # None means every member is intact
 print("corrupt member:", bad)
 PY

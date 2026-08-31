@@ -271,11 +271,80 @@ class AgentTaskRunner(TaskRunner):
     # Legitimate deliverables in a chat context stay far below this.
     _SYNC_MAX_FILE_BYTES = 100 * 1024 * 1024
 
-    async def _sync_file_to_storage(self, file_path: str) -> Optional[FileInfo]:
-        """Upload or update file and return FileInfo"""
+    def _manual_root_files(self) -> frozenset:
+        """Filenames of the scaffolded manual at project/ root (cached)."""
+        try:
+            from app.infrastructure.external.sandbox.workspace_scaffold import (
+                manual_root_filenames,
+            )
+            return manual_root_filenames()
+        except Exception:
+            return frozenset()
+
+    def _is_protected_delivery_path(self, file_path: str) -> bool:
+        """Paths that must NEVER be synced as a user deliverable.
+
+        The manual scaffolding lives at {home}/project/ — its ROOT files
+        (exact scaffold set: AGENTS.md, WORKFLOW.md, …) and project/skills/**
+        are platform files, not task output. Builds intentionally live in
+        subfolders (project/<app-name>/**) and MUST sync. Two zones are
+        protected:
+
+          * {home}/project/<manual root file> + {home}/project/skills/**
+            — the manual itself. A model that file_read's or re-writes its
+            own manual must not leak it into the session's file list (live
+            incident: AGENTS.md delivered to the user as a chat file).
+          * {home}/upload   — the landing zone for files the USER sent;
+            re-delivering the user's own uploads back to them is noise.
+        A task-produced document at project/report.md (not in the scaffold
+        set) is NOT blocked — only the manual's own filenames are.
+        """
+        home = getattr(self._sandbox, "user_home", None)
+        if not home or not file_path:
+            return False
+        p = file_path.rstrip("/")
+        up = f"{home}/upload"
+        if p == up or p.startswith(up + "/"):
+            return True
+        proj = f"{home}/project"
+        if p == proj:
+            return True  # the manual dir itself is never a deliverable
+        if p.startswith(proj + "/"):
+            rel = p[len(proj) + 1:]
+            first = rel.split("/", 1)[0]
+            if "/" not in rel and first in self._manual_root_files():
+                return True  # the manual's own root files
+            if first == "skills":
+                return True  # skill playbooks
+        return False
+
+    async def _sync_file_to_storage(
+        self, file_path: str, *, add_to_session: bool = True
+    ) -> Optional[FileInfo]:
+        """Upload or update file and return FileInfo.
+
+        ``add_to_session=False`` uploads to GridFS WITHOUT linking the file
+        into the session's visible file list. Used for every mid-task sync
+        (tool read-backs, artifact sweeps, step attachments): those uploads
+        are *candidates* — the file becomes user-visible ONLY when the final
+        summary's merge decides it is a deliverable (single zip for builds,
+        the file itself for documents). This is what makes the session file
+        list match the delivery contract instead of showing every
+        intermediate version the tools ever touched.
+        """
         import mimetypes
         try:
-            file_info = await self._session_repository.get_file_by_path(self._session_id, file_path)
+            if self._is_protected_delivery_path(file_path):
+                logger.info(
+                    "Agent %s refused to sync protected path %s "
+                    "(manual/upload zone — never a deliverable)",
+                    self._agent_id, file_path,
+                )
+                return None
+            file_info = (
+                await self._session_repository.get_file_by_path(self._session_id, file_path)
+                if add_to_session else None
+            )
             file_data = await self._sandbox.file_download(file_path)
             # Quota protection: refuse to push runaway-huge files into the
             # shared 512MB storage tier. The sanitize/auto-bundle layers
@@ -299,7 +368,8 @@ class AgentTaskRunner(TaskRunner):
             content_type, _ = mimetypes.guess_type(file_name)
             file_info = await self._file_storage.upload_file(file_data, file_name, self._user_id, content_type=content_type)
             file_info.file_path = file_path
-            await self._session_repository.add_file(self._session_id, file_info)
+            if add_to_session:
+                await self._session_repository.add_file(self._session_id, file_info)
             return file_info
         except Exception as e:
             # Concise one-line warning — a full traceback here floods the
@@ -367,11 +437,15 @@ class AgentTaskRunner(TaskRunner):
                 else getattr(data, "entries", None)
             ) or []
             # The workspace operating manual (scaffolded at
-            # {home}/project/ — AGENTS.md + skills/) is platform
-            # scaffolding, not a deliverable: never scan it, never sync it,
-            # never deliver it. Marker-based (contents of THIS directory) so
-            # a genuine build folder named "project" (without the manual
-            # files) is still scanned normally.
+            # {home}/project/ — its exact root file set + skills/) is
+            # platform scaffolding, not a deliverable: never scan those,
+            # never sync them, never deliver them. Builds intentionally
+            # live in project/<app-name>/ subfolders — those ARE scanned,
+            # as are task-produced documents at project/ root that are not
+            # part of the manual. Marker-based (contents of THIS directory)
+            # so a genuine build folder named "project" (without the
+            # manual files) is still scanned normally.
+            manual_root_set: frozenset = frozenset()
             if path == f"{home}/project":
                 entry_names = {
                     (e.get("name") if isinstance(e, dict)
@@ -379,7 +453,7 @@ class AgentTaskRunner(TaskRunner):
                     for e in raw_entries
                 }
                 if "AGENTS.md" in entry_names and "skills" in entry_names:
-                    return
+                    manual_root_set = self._manual_root_files()
             for entry in raw_entries:
                 if isinstance(entry, dict):
                     name = entry.get("name") or ""
@@ -390,6 +464,12 @@ class AgentTaskRunner(TaskRunner):
                     is_dir = getattr(entry, "type", "") == "dir"
                     size = getattr(entry, "size", 0) or 0
                 if not name or name.startswith("."):
+                    continue
+                # Manual root: skip the manual's own files and the skills/
+                # playbooks; scan build subfolders and task documents.
+                if name in manual_root_set or (
+                    manual_root_set and name == "skills"
+                ):
                     continue
                 child = f"{path.rstrip('/')}/{name}"
                 if is_dir:
@@ -430,9 +510,28 @@ class AgentTaskRunner(TaskRunner):
         # Retry paths that failed earlier (claimed before they existed).
         candidates.extend(p for p in pending if p not in candidates)
 
+        # Cross-session guard: a candidate whose exact (path, size) was
+        # already delivered to this user by ANOTHER session's final summary
+        # is contamination, not a new artifact — the shared home lets
+        # concurrent tasks "discover" each other's outputs after their own
+        # baseline was taken (live incident: hello.txt re-delivered by two
+        # later sessions). Explicit model attachments are NOT filtered —
+        # only this automatic sweep is.
+        from app.domain.services.agents import delivery_ledger
+        candidates = [
+            p for p in candidates
+            if not delivery_ledger.seen(
+                self._user_id, p, current.get(p)
+            )
+        ]
+
         for path in candidates:
             try:
-                file_info = await self._sync_file_to_storage(path)
+                # Candidate upload only — never enters the session file list
+                # here; the final-summary merge makes that decision.
+                file_info = await self._sync_file_to_storage(
+                    path, add_to_session=False
+                )
             except Exception as e:
                 logger.warning("Artifact sync failed for %s: %s", path, e)
                 continue
@@ -444,7 +543,7 @@ class AgentTaskRunner(TaskRunner):
                 ]
                 files_written.append(file_info)
                 logger.info(
-                    "Agent %s artifact delivered: %s", self._agent_id, path
+                    "Agent %s artifact candidate synced: %s", self._agent_id, path
                 )
             else:
                 pending.add(path)
@@ -490,13 +589,41 @@ class AgentTaskRunner(TaskRunner):
         return file_info
 
     async def _sync_message_attachments_to_storage(self, event: MessageEvent) -> None:
-        """Sync message attachments and update event attachments"""
+        """Sync FINAL message attachments into storage + the session file list.
+
+        This is the single point where a file becomes user-visible: mid-task
+        uploads are candidates (``add_to_session=False``), and only the
+        final summary's merge result lands here. For attachments already
+        uploaded during the run (they carry a file_id), we link them into
+        the session — replacing a stale same-path entry so the list shows
+        the newest delivered version exactly once.
+        """
         attachments: List[FileInfo] = []
         try:
             if event.attachments:
                 for attachment in event.attachments:
-                    # Skip re-syncing files that are already uploaded to storage
                     if attachment.file_id:
+                        try:
+                            existing = await self._session_repository.get_file_by_path(
+                                self._session_id, attachment.file_path
+                            )
+                            if existing and existing.file_id != attachment.file_id:
+                                await self._session_repository.remove_file(
+                                    self._session_id, existing.file_id
+                                )
+                            if not existing or existing.file_id != attachment.file_id:
+                                await self._session_repository.add_file(
+                                    self._session_id, attachment
+                                )
+                        except Exception as link_exc:
+                            # Linking is idempotent-ish and best-effort: a
+                            # duplicate entry is cosmetic, a broken message
+                            # is not.
+                            logger.warning(
+                                "Agent %s could not link delivered file %s "
+                                "to the session list: %s",
+                                self._agent_id, attachment.file_path, link_exc,
+                            )
                         attachments.append(attachment)
                         continue
                     file_info = await self._sync_file_to_storage(attachment.file_path)
@@ -663,10 +790,19 @@ class AgentTaskRunner(TaskRunner):
                             content=display_content,
                             old_content=old_content,
                         )
-                        if file_content:
-                            file_info = await self._sync_file_to_storage(file_path)
+                        if file_content and event.function_name in self._FILE_WRITE_FUNCTIONS:
+                            # Upload as a delivery CANDIDATE only — the file
+                            # becomes user-visible when the final summary's
+                            # merge decides it is a deliverable. Reads
+                            # (file_read) never sync at all: reading a file
+                            # (e.g. the workspace manual AGENTS.md) must
+                            # never deliver it (live incident: the manual
+                            # leaked into a user's chat file list).
+                            file_info = await self._sync_file_to_storage(
+                                file_path, add_to_session=False
+                            )
                             # Track written files so they can be auto-attached to the response
-                            if file_info and event.function_name in self._FILE_WRITE_FUNCTIONS:
+                            if file_info:
                                 synced_file = file_info
                     else:
                         # No `file` argument in the call — usually a failed
@@ -702,7 +838,9 @@ class AgentTaskRunner(TaskRunner):
                             downloaded = image_result.data.get("file_path") if isinstance(image_result.data, dict) else None
                         downloaded_file_id = None
                         if downloaded:
-                            synced_file = await self._sync_file_to_storage(downloaded)
+                            synced_file = await self._sync_file_to_storage(
+                                downloaded, add_to_session=False
+                            )
                             if synced_file and synced_file.file_id:
                                 downloaded_file_id = synced_file.file_id
                         event.tool_content = ImageToolContent(
@@ -1022,7 +1160,11 @@ class AgentTaskRunner(TaskRunner):
                                 if not attachment_path:
                                     continue
                                 try:
-                                    file_info = await self._sync_file_to_storage(attachment_path)
+                                    # Candidate upload only — the final
+                                    # summary decides user visibility.
+                                    file_info = await self._sync_file_to_storage(
+                                        attachment_path, add_to_session=False
+                                    )
                                     if file_info:
                                         files_written[:] = [f for f in files_written if f.file_path != file_info.file_path]
                                         files_written.append(file_info)
@@ -1168,6 +1310,16 @@ class AgentTaskRunner(TaskRunner):
                     if f.file_path:
                         delivered_paths.add(f.file_path)
                 await self._sync_message_attachments_to_storage(event)
+                # Cross-session ledger: remember exactly what THIS final
+                # summary delivered, so a concurrent/later session's home
+                # sweep does not re-deliver the same file to the user.
+                if event.is_final:
+                    from app.domain.services.agents import delivery_ledger
+                    for f in (event.attachments or []):
+                        if f.file_path:
+                            delivery_ledger.mark(
+                                self._user_id, f.file_path, f.size
+                            )
 
             yield event
 

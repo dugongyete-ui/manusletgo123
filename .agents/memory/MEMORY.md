@@ -6,3 +6,4 @@
 - [Adaptive dropdown handling](dropdown-handling.md) — browser_smart_select + browser_verify_value still active; browser_extract_text REMOVED; browser_use engine via CDP
 - [Human-like task awareness](human-like-awareness.md) — question-driven HOW YOU THINK, mandatory pre/post-tool narration, ghost-success detection, correction retry, cross-step referencing, max_steps/max_consecutive_failures guards, extend_system_message config
 - [Payload Too Large fix](payload-too-large-fix.md) — historical: browser DOM overflow → mid-step compaction every 10 iterations (predecessor of context-management.md)
+- [Delivery contract](delivery-contract.md) — final-summary is the single point where files become user-visible (add_to_session flag); file_read never syncs (AGENTS.md leak fix); delivery ledger blocks cross-session re-delivery; builds in project/<name>/ (manual v2); 1 zip for builds, loose files for documents

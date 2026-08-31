@@ -289,7 +289,7 @@ async def test_handle_tool_event_successful_write_still_syncs():
     runner._sandbox = _FakeSandbox(files={"/tmp/halo.py": "print('halo')"})
     synced = []
 
-    async def _sync(path):
+    async def _sync(path, *, add_to_session=True):
         synced.append(path)
         return type("F", (), {"file_id": "f1", "filename": "halo.py"})()
 
@@ -316,7 +316,7 @@ async def test_handle_tool_event_error_text_never_synced_as_content():
 
     sync_calls = []
 
-    async def _sync(path):
+    async def _sync(path, *, add_to_session=True):
         sync_calls.append(path)
         return None
 

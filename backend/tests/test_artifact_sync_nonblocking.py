@@ -52,6 +52,7 @@ def _runner_skeleton():
     runner = AgentTaskRunner.__new__(AgentTaskRunner)
     runner._agent_id = "test-agent"
     runner._session_id = "sess-test"
+    runner._user_id = "test-user"
     return runner
 
 
@@ -158,7 +159,7 @@ def _make_flow_runner(tracker: _SyncTracker, step_events, final_after=0.05):
     async def _no_tool_event(event):
         return None
 
-    async def _sync_attachment(path):
+    async def _sync_attachment(path, *, add_to_session=True):
         return FileInfo(file_id="f1", filename=path.split("/")[-1],
                         file_path=path, size=10)
 

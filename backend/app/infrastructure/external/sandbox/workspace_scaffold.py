@@ -43,7 +43,7 @@ _MANUAL_DIR = (
     / "manual"
 )
 
-MANUAL_VERSION = 1
+MANUAL_VERSION = 2
 _MARKER = f"manual-version: {MANUAL_VERSION}"
 _SCRIPT_PATH = "/tmp/dzeck_ws_manual_scaffold.py"
 _SESSION_ID = "ws-manual-scaffold"
@@ -67,6 +67,29 @@ def collect_manual_files() -> Dict[str, str]:
         except Exception as exc:
             logger.warning("Workspace manual: skip unreadable file %s: %s", rel, exc)
     return files
+
+
+_ROOT_FILES_CACHE: list = []
+
+
+def manual_root_filenames() -> frozenset:
+    """Filenames of the manual's root-level files (no subdirs), cached.
+
+    The delivery guards use this to separate the manual's own files
+    (project/AGENTS.md, project/WORKFLOW.md, …) from task output that
+    happens to sit in project/ — a build's own project/report.md is NOT
+    in this set and stays deliverable. Content is never read here: only
+    names, so the cache is cheap and safe to build lazily.
+    """
+    global _ROOT_FILES_CACHE
+    if not _ROOT_FILES_CACHE:
+        names = []
+        if _MANUAL_DIR.is_dir():
+            for path in _MANUAL_DIR.iterdir():
+                if path.is_file() and path.name != "__init__.py":
+                    names.append(path.name)
+        _ROOT_FILES_CACHE = sorted(names)
+    return frozenset(_ROOT_FILES_CACHE)
 
 
 def build_scaffold_script(user_home: str, files: Dict[str, str]) -> str:
