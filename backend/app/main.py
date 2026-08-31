@@ -1,7 +1,7 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, JSONResponse
 from contextlib import asynccontextmanager
 import logging
 import asyncio
@@ -98,6 +98,27 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="Dzeck AI Agent", lifespan=lifespan)
+
+# Database-backed routes must not run before Beanie has initialized the
+# document models.  Beanie installs the class-level query fields (for example
+# UserDocument.email) during init_beanie, so allowing an API request through
+# during the background startup task causes an AttributeError rather than a
+# useful service-unavailable response.
+@app.middleware("http")
+async def database_readiness_guard(request, call_next):
+    path = request.url.path.rstrip("/") or "/"
+    is_api_health = path == "/api/v1/health"
+    if path.startswith("/api/") and not is_api_health and not _app_ready:
+        return JSONResponse(
+            status_code=503,
+            content={
+                "status": "starting",
+                "ready": False,
+                "detail": "The API is still initializing. Please retry shortly.",
+            },
+            headers={"Retry-After": "3"},
+        )
+    return await call_next(request)
 
 # Configure CORS
 app.add_middleware(
