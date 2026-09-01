@@ -35,6 +35,10 @@ from app.domain.models.event import (
 from app.domain.services.flows.plan_act import PlanActFlow
 from app.domain.services.flows.plan_act_graph import PlanActGraphFlow
 from app.domain.services.agents.zip_delivery import drop_zip_member_attachments
+from app.domain.services.agents.delivery_hygiene import (
+    drop_junk_attachments,
+    fold_loose_files_into_archive,
+)
 from app.core.config import get_settings
 from app.domain.external.sandbox import Sandbox
 from app.domain.external.browser import Browser
@@ -1223,6 +1227,13 @@ class AgentTaskRunner(TaskRunner):
                         ):
                             known_paths.add(f.file_path)
                             merged.append(f)
+                    # ── Hard-junk net ─────────────────────────────────────
+                    # pid/log/lockfiles/.env/caches are NEVER deliverables —
+                    # no matter whether the model listed them or the sweep
+                    # found them (live incident: server.pid, server.log and
+                    # a 200KB package-lock.json shipped as cards next to
+                    # the archive).
+                    merged = drop_junk_attachments(merged)
                     # ── Archive sanitize ─────────────────────────────────────
                     # A model-made zip can bloat with node_modules (the
                     # 426MB-zip incident that blew the Atlas quota): rebuild
@@ -1262,6 +1273,29 @@ class AgentTaskRunner(TaskRunner):
                         logger.warning(
                             "ZIP-only delivery filter failed (delivering "
                             "unfiltered list): %s",
+                            exc,
+                        )
+                    # ── ZIP-only delivery (fold) ─────────────────────────
+                    # The member filter above only drops files that are
+                    # INSIDE the archive. The sweep re-adds everything the
+                    # tools wrote (template scrap, dist/ build outputs)
+                    # which no archive contains — those shipped as cards
+                    # NEXT TO the zip (user: "kalo sudah dibungkus jadi
+                    # zip, ngapain semuanya dikirim juga"). Fold them INTO
+                    # the archive: the user gets the zip + standalone
+                    # documents, nothing is lost. Fail-open.
+                    try:
+                        if self._sandbox and any(
+                            (f.file_path or "").lower().endswith(".zip")
+                            for f in merged
+                        ):
+                            merged = await fold_loose_files_into_archive(
+                                self._sandbox, merged
+                            )
+                    except Exception as exc:
+                        logger.warning(
+                            "ZIP-only fold failed (delivering unfiltered "
+                            "list): %s",
                             exc,
                         )
                     # ── Auto-bundle safety net ─────────────────────────────
