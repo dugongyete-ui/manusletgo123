@@ -56,19 +56,40 @@ _JUNK_DIR_SEGMENTS = frozenset(_EXCLUDE_DIRS) | {
 
 _FOLD_SCRIPT = (
     "import os, zipfile\n"
-    "zip_path, files = {zip_path!r}, {files!r}\n"
+    f"EX_DIRS = {sorted(_EXCLUDE_DIRS)!r}\n"
+    "zip_path, files, home = {zip_path!r}, {files!r}, {home!r}\n"
+    "JUNK_NAMES = {junk_names!r}\n"
+    "JUNK_EXTS = {junk_exts!r}\n"
+    "def _junk(arc):\n"
+    "    parts = [p for p in arc.split('/') if p]\n"
+    "    if any(p in EX_DIRS for p in parts[:-1]):\n"
+    "        return True\n"
+    "    base = parts[-1]\n"
+    "    if base in JUNK_NAMES:\n"
+    "        return True\n"
+    "    if base.startswith('.env.') and not base.endswith("
+    "('.example', '.sample', '.template')):\n"
+    "        return True\n"
+    "    return base.endswith(JUNK_EXTS)\n"
     "with zipfile.ZipFile(zip_path) as z:\n"
-    "    existing = {{os.path.basename(n) for n in z.namelist()"
-    " if not n.endswith('/')}}\n"
+    "    existing = set(z.namelist())\n"
     "seen, added = set(existing), 0\n"
     "with zipfile.ZipFile(zip_path, 'a', zipfile.ZIP_DEFLATED) as z:\n"
     "    for p in files:\n"
     "        if not os.path.isfile(p):\n"
     "            continue\n"
-    "        base = os.path.basename(p)\n"
-    "        arc, i = base, 1\n"
+    # Structure-preserving arcname: the file's path relative to the home
+    # (client/dist/index.html stays client/dist/index.html inside the
+    # archive — NOT a collision-renamed flat basename). Files outside the
+    # home fall back to basenames.
+    "        arc = os.path.relpath(p, home).replace(os.sep, '/')\n"
+    "        if arc.startswith('../'):\n"
+    "            arc = os.path.basename(p)\n"
+    "        if _junk(arc):\n"
+    "            continue\n"
+    "        stem, i = arc, 1\n"
     "        while arc in seen:\n"
-    "            stem, ext = os.path.splitext(base)\n"
+    "            stem, ext = os.path.splitext(stem)\n"
     "            arc = stem + '_' + str(i) + ext\n"
     "            i += 1\n"
     "        seen.add(arc)\n"
@@ -132,9 +153,16 @@ async def fold_loose_files_into_archive(
     files INTO that archive and keep the documents loose.
 
     Returns ``[archives + folded-into-zip] + [standalone documents]``.
-    ``sandbox`` must expose ``exec_command(session_id, exec_dir, command)``.
-    Fail-open: when the append command fails the list is returned unchanged
-    (loose files stay — a broken net must never block delivery).
+    ``sandbox`` must expose ``exec_command(session_id, exec_dir, command)``
+    and ``user_home``. Fail-open: when the append command fails the list
+    is returned unchanged (loose files stay — a broken net must never
+    block delivery).
+
+    Folded members keep their REAL directory structure (arcname = path
+    relative to the home) — the flat-basename variant produced the
+    collision-renamed ``favicon_1.svg``/``index_1.html`` mess and helped
+    flatten the archive the user extracted ("tidak ada folder sesuai
+    masing-masing"). Junk paths are never folded.
     """
     try:
         zip_paths = [
@@ -150,12 +178,20 @@ async def fold_loose_files_into_archive(
             if a.file_path
             and not (a.file_path or "").lower().endswith(".zip")
             and _ext(a.file_path) not in _DOC_EXTS
+            and not is_junk_path(a.file_path)  # never fold junk into a deliverable
         ]
         if not loose:
             return attachments
 
+        home = (getattr(sandbox, "user_home", None) or "").rstrip("/")
         loose_paths = [a.file_path for a in loose]
-        script = _FOLD_SCRIPT.format(zip_path=target_zip, files=loose_paths)
+        script = _FOLD_SCRIPT.format(
+            zip_path=target_zip,
+            files=loose_paths,
+            home=home or loose_paths[0].rsplit("/", 1)[0],
+            junk_names=sorted(_JUNK_BASENAMES),
+            junk_exts=_JUNK_EXTS,
+        )
         command = f"python3 -c {shlex.quote(script)}"
         result = await sandbox.exec_command("delivery-fold", "/tmp", command)
         ok = bool(result and getattr(result, "success", False))

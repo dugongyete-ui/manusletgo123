@@ -241,8 +241,12 @@ PACKAGING RULES — what the user receives at the end:
    individual attachments — they travel INSIDE the archive, or not at all.
    To bundle (the zip binary is not guaranteed — use python3 zipfile):
    `cd <project_parent> && python3 -m zipfile -c <home>/<name>.zip <project_dir>`
-   then verify with `python3 -m zipfile -l <home>/<name>.zip` before
-   finishing. Full recipe with junk/secret exclusions: project/DEPLOYMENT.md
+   The archive must contain the project FOLDER (`my-app/`, `my-app/src/`,
+   `my-app/client/`, ...) — NEVER a flat dump of bare filenames. Unzipping
+   must create one clean directory tree with the same folders as the real
+   project. Verify with `python3 -m zipfile -l <home>/<name>.zip` before
+   finishing: every member path should contain `/`. Full recipe with
+   junk/secret exclusions and structure rules: project/DEPLOYMENT.md
    in your workspace manual.
 3. Single-file deliverable → deliver the file itself, no archive needed.
 

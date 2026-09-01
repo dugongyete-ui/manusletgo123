@@ -91,8 +91,9 @@ class FakeSandbox:
     """Executes the fold script LOCALLY (same filesystem), like the real
     sandbox exec_command would in-sandbox."""
 
-    def __init__(self, root: Path):
+    def __init__(self, root: Path, user_home: str = None):
         self.root = root
+        self.user_home = user_home or str(root)
 
     async def exec_command(self, session_id: str, exec_dir: str, command: str):
         import shlex as _shlex
@@ -141,11 +142,13 @@ async def test_fold_collapses_loose_into_zip(tmp_path: Path) -> None:
         str(tmp_path / "project.zip"),
         str(tmp_path / "README.md"),
     ]
-    # The folded files must be INSIDE the archive now (nothing lost).
+    # The folded files must be INSIDE the archive now (nothing lost) —
+    # WITH their folder structure (flat basenames scattered the archive
+    # in the live incident).
     with ZipFile(tmp_path / "project.zip") as z:
         names = z.namelist()
-    assert "counter.ts" in names
-    assert "main.ts" in names
+    assert "client/src/counter.ts" in names
+    assert "client/src/main.ts" in names
     assert "App.tsx" in names  # original member untouched
 
 
@@ -176,7 +179,8 @@ async def test_fold_only_docs_is_noop(tmp_path: Path) -> None:
 
 @pytest.mark.asyncio
 async def test_fold_basename_collision_is_safe(tmp_path: Path) -> None:
-    """Two index.html at different paths fold without clobbering."""
+    """Two index.html at different paths fold STRUCTURED — distinct
+    arcnames, no clobbering, no flat dump (live incident: favicon_1.svg)."""
     with ZipFile(tmp_path / "site.zip", "w") as z:
         z.writestr("index.html", "original")
     for rel in ("a/index.html", "b/index.html"):
@@ -193,8 +197,35 @@ async def test_fold_basename_collision_is_safe(tmp_path: Path) -> None:
     assert [a.file_path for a in kept] == [str(tmp_path / "site.zip")]
     with ZipFile(tmp_path / "site.zip") as z:
         names = z.namelist()
-    assert names.count("index.html") == 1
-    assert "index_1.html" in names
+    assert names.count("index.html") == 1  # original member untouched
+    assert "a/index.html" in names
+    assert "b/index.html" in names
+    # Nothing got clobbered: 1 original + 2 structured folds.
+    assert len([n for n in names if n.endswith("index.html")]) == 3
+
+
+@pytest.mark.asyncio
+async def test_fold_never_folds_junk_or_secrets(tmp_path: Path) -> None:
+    """Junk/secrets are never appended INTO a deliverable archive."""
+    with ZipFile(tmp_path / "project.zip", "w") as z:
+        z.writestr("App.tsx", "export default () => null;")
+    for rel in ("app/server.pid", "app/.env.local", "app/src/index.js"):
+        p = tmp_path / rel
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(f"// {rel}")
+    sandbox = FakeSandbox(tmp_path)
+    attachments = [
+        fi(str(tmp_path / "project.zip")),
+        fi(str(tmp_path / "app/server.pid")),
+        fi(str(tmp_path / "app/.env.local")),
+        fi(str(tmp_path / "app/src/index.js")),
+    ]
+    kept = await fold_loose_files_into_archive(sandbox, attachments)
+    with ZipFile(tmp_path / "project.zip") as z:
+        names = z.namelist()
+    assert "app/src/index.js" in names       # real file folded, structured
+    assert not any(n.endswith(".pid") for n in names)
+    assert not any(n.split("/")[-1] == ".env.local" for n in names)
 
 
 @pytest.mark.asyncio

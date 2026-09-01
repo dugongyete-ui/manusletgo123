@@ -1275,6 +1275,30 @@ class AgentTaskRunner(TaskRunner):
                             "unfiltered list): %s",
                             exc,
                         )
+                    # ── Flat/junky archive restructure ─────────────────
+                    # A model-made zip can be FLAT (bare basenames —
+                    # extracting scatters every file, no folders; user:
+                    # "saat saya extract ... tidak ada folder sesuai
+                    # masing-masing") and can carry junk/secret members
+                    # (.env, lockfiles). Rebuild it so members mirror the
+                    # REAL project tree BEFORE folding loose files in.
+                    try:
+                        if self._sandbox and any(
+                            (f.file_path or "").lower().endswith(".zip")
+                            for f in merged
+                        ):
+                            from app.domain.services.agents.auto_bundle import (
+                                restructure_flat_archives,
+                            )
+
+                            merged = await restructure_flat_archives(
+                                self._sandbox, merged
+                            )
+                    except Exception as exc:
+                        logger.warning(
+                            "Zip restructure failed (delivering as-is): %s",
+                            exc,
+                        )
                     # ── ZIP-only delivery (fold) ─────────────────────────
                     # The member filter above only drops files that are
                     # INSIDE the archive. The sweep re-adds everything the

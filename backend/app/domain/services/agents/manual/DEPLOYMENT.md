@@ -36,15 +36,23 @@ python3 - <<'PY'
 import zipfile
 z = zipfile.ZipFile("<home>/project/<name>.zip")
 bad = z.testzip()   # None means every member is intact
+flat = [n for n in z.namelist() if "/" not in n and not n.endswith("/")]
 print("corrupt member:", bad)
+print("flat members (MUST be empty):", flat)
 PY
 ```
 If the listing misses files you intended, rebuild the archive — don't
-hand-wave it in the summary.
+hand-wave it in the summary. If `flat members` is NOT empty the archive
+is a flat dump — rebuild it properly (walk the project FOLDER as in the
+recipe above, `z.write(p, p)` with the folder as the arcname prefix).
 
 ## Archive hygiene
 - The zip contains the project FOLDER (`my-app-name/...`), not a flat dump —
-  unzipping creates one clean directory.
+  unzipping creates one clean directory. NEVER `z.write(p, os.path.basename(p))`
+  — that flattens everything and the user extracts a pile of loose files
+  with no folders.
+- Every member path inside the archive must contain `/` (a directory
+  component): `my-app-name/index.html`, `my-app-name/src/App.tsx`.
 - Secrets never enter archives (.env excluded, .env.example included).
 - Name it after the project, kebab-case: `kopi-shop.zip`, not `final2.zip`.
 

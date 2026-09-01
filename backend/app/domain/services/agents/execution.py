@@ -1095,6 +1095,40 @@ class ExecutionAgent(BaseAgent):
             file_toolkit.sandbox, attachments
         )
 
+    async def _restructure_flat_archives(
+        self, attachments: List[FileInfo]
+    ) -> List[FileInfo]:
+        """Rebuild flat/junky delivered archives into structured ones.
+
+        Live incident (session fbfcb72d): the model's zip carried bare
+        basenames — extraction scattered every file with no folders ("tidak
+        ada folder sesuai masing-masing") — plus a real .env. The net
+        rebuilds such archives so members mirror the real project tree.
+        Mirrors the AgentTaskRunner net so both delivery paths behave
+        identically. Fail-open on every error.
+        """
+        if not any(
+            (a.file_path or "").lower().endswith(".zip")
+            for a in attachments
+        ):
+            return attachments
+
+        from app.domain.services.agents.auto_bundle import (
+            restructure_flat_archives,
+        )
+        from app.domain.services.tools.file import FileToolkit
+
+        file_toolkit = next(
+            (tk for tk in (getattr(self, "toolkits", None) or [])
+             if isinstance(tk, FileToolkit)),
+            None,
+        )
+        if not file_toolkit:
+            return attachments
+        return await restructure_flat_archives(
+            file_toolkit.sandbox, attachments
+        )
+
     async def _sanitize_oversized_archives(
         self, attachments: List[FileInfo]
     ) -> List[FileInfo]:
@@ -1275,10 +1309,12 @@ class ExecutionAgent(BaseAgent):
                 # Archive hygiene, in order: (1) rebuild bloated junk
                 # archives BEFORE anything syncs (quota protection),
                 # (2) drop members when an archive leads the delivery,
-                # (3) collapse loose multi-file deliveries into ONE .zip
-                # when no archive exists at all.
+                # (3) rebuild flat/junky archives so members mirror the
+                # real project tree, (4) collapse loose multi-file
+                # deliveries into ONE .zip when no archive exists at all.
                 attachments = await self._sanitize_oversized_archives(attachments)
                 attachments = await self._drop_zip_member_attachments(attachments)
+                attachments = await self._restructure_flat_archives(attachments)
                 attachments = await self._auto_bundle_deliverables(attachments)
                 yield MessageEvent(
                     message=clean_text,
@@ -1354,10 +1390,12 @@ class ExecutionAgent(BaseAgent):
                 # Archive hygiene, in order: (1) rebuild bloated junk
                 # archives BEFORE anything syncs (quota protection),
                 # (2) drop members when an archive leads the delivery,
-                # (3) collapse loose multi-file deliveries into ONE .zip
-                # when no archive exists at all.
+                # (3) rebuild flat/junky archives so members mirror the
+                # real project tree, (4) collapse loose multi-file
+                # deliveries into ONE .zip when no archive exists at all.
                 attachments = await self._sanitize_oversized_archives(attachments)
                 attachments = await self._drop_zip_member_attachments(attachments)
+                attachments = await self._restructure_flat_archives(attachments)
                 attachments = await self._auto_bundle_deliverables(attachments)
                 yield MessageEvent(
                     message=msg_obj.message,
