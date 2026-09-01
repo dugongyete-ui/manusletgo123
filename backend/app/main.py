@@ -15,6 +15,7 @@ from app.interfaces.api.routes import router
 from app.infrastructure.logging import setup_logging
 from app.interfaces.errors.exception_handlers import register_exception_handlers
 from app.infrastructure.models.documents import AgentDocument, SessionDocument, UserDocument, ProjectDocument, FileFavoriteDocument
+from app.infrastructure.build_guard import ensure_fresh_frontend
 from beanie import init_beanie
 
 # Initialize logging system
@@ -75,6 +76,12 @@ async def _init_databases() -> None:
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     logger.info("Application startup - Dzeck AI Agent initializing")
+
+    # Self-heal the compiled frontend: a reprovision/snapshot restore can roll
+    # frontend/dist back to an old build while the source stays new (observed
+    # in production — the chat UI suddenly lost the collapsible-prompt/copy
+    # fixes). Rebuild in a background thread; fail-open, never blocks startup.
+    ensure_fresh_frontend()
 
     # Kick off DB init as a background task so the server starts immediately
     # and Replit's healthcheck can reach /health right away.
