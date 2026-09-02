@@ -133,7 +133,7 @@ async def test_file_write_event_syncs_as_candidate_only(tmp_path):
     [
         f"{HOME}/project/AGENTS.md",
         f"{HOME}/project/WORKFLOW.md",
-        f"{HOME}/project/skills/fullstack-web-app/SKILL.md",
+        f"{HOME}/project/skills/webdev-fullstack/SKILL.md",
         f"{HOME}/project",
         f"{HOME}/upload/foto-user.png",
     ],

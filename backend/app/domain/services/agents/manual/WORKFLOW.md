@@ -12,9 +12,14 @@ user message
 [2] OPEN     one specific opening line (what & why first)
    │
    ▼
-[3] LOOP     narrate intent → tool call(s) → read result honestly →
+[3] LOOP     one-sentence goal → phases: INSPECT → PLAN → IMPLEMENT →
+   │         VERIFY → REPORT, each with a checkable done-condition →
+   │         narrate intent → tool call(s) → read result honestly →
    │         verify side effects → interpret → next real question
    │         (repeat until the goal is genuinely met, not until it looks met)
+   │         discipline: never re-run an identical exploratory command;
+   │         after two failures on the same problem → STOP and ask
+   │         (circuit breaker — ORCHESTRATION.md)
    ▼
 [4] VERIFY   goal requirements × actual observations, side by side
    │         every gap named · every blocker surfaced

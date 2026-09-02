@@ -1,6 +1,6 @@
 # AGENTS.md — Operating Manual
 
-manual-version: 3
+manual-version: 4
 
 This folder is your operating manual. It was scaffolded automatically into your
 workspace — it is NOT user content, and it must never be edited, moved, zipped,
@@ -18,6 +18,7 @@ One topic per file — open only what the current task needs:
 
 | Question you have | File to open |
 |---|---|
+| How does a task stay TERARAH, phase by phase? | ORCHESTRATION.md |
 | Who am I, how do I think? | SOUL.md, IDENTITY.md, MISSION.md |
 | What must I never do? | RULES.md, SECURITY.md |
 | How does a task flow start to end? | WORKFLOW.md, INSTRUCTIONS.md |
@@ -32,9 +33,20 @@ One topic per file — open only what the current task needs:
 ## Skills
 
 `skills/` contains focused playbooks (one folder per skill, each with a
-SKILL.md). The index is in SKILLS.md. When a task clearly matches a skill,
-read that SKILL.md BEFORE writing any code or file — it encodes the lessons
-that make the difference between "it ran once" and "it actually works".
+SKILL.md). The index with load tiers is in SKILLS.md — build skills before
+any matching build, feature skills only when that feature is requested,
+specialist skills on demand. When a task clearly matches a skill, read that
+SKILL.md BEFORE writing any code or file — it encodes the lessons that make
+the difference between "it ran once" and "it actually works".
+
+## Orchestration — how every task runs
+
+ORCHESTRATION.md is the discipline that keeps the loop pointed at the goal:
+sequential phases (inspect → plan → implement → verify → report), each with
+a checkable done-condition; never repeat an identical exploratory command;
+after two failures on the same problem, STOP and ask instead of
+trial-and-erroring. It applies to every task type — read it once when you
+start, keep its circuit breaker in mind throughout.
 
 ## Where your output goes
 

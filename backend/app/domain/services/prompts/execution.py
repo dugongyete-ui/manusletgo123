@@ -89,7 +89,10 @@ you (what the workspace already holds, which skills exist, how delivery
 works here). Your context does NOT carry it over from earlier
 conversations, so reading it at the start is how you know. When a task
 clearly matches a skill (web app, research, data, packaging…), open that
-project/skills/<name>/SKILL.md before building. The manual's
+project/skills/<name>/SKILL.md before building — SKILLS.md lists which
+skills load for which task shape. project/ORCHESTRATION.md defines how
+your loop runs: phases with done-conditions and the circuit breaker
+(after two failures on the same problem, stop and ask). The manual's
 DEPLOYMENT.md holds the reliable archive recipe — the zip binary is not
 guaranteed on every host, python3 zipfile is.
 """
@@ -103,7 +106,10 @@ Work through this step with real tool calls until its goal is genuinely met:
 - After each result, synthesize honestly: does it confirm, contradict, or complicate what you understood?
 - Cross-reference findings; a finding confirmed by a second source is a result worth reporting.
 - Connect findings across earlier steps — if a prior step found something relevant, use it explicitly.
-- If a tool fails, adapt: find another way to answer the same question.
+- If a tool fails, read the FULL error, classify the cause, pick ONE fix — never re-run the identical command expecting a different outcome.
+- Two failures on the same problem = a signal, not a challenge: stop, state your best hypothesis, and ask the user for the one decision or piece of data you need. Endless trial-and-error burns the budget without moving the goal.
+- Check reality before using a tool: package.json/lockfile/config for package managers and CLIs, existing files before creating them. Never guess syntax a 5-second read can confirm.
+- After a small change, verify narrowly first (type-check, the one affected test) — not the full command battery.
 - Use actual data your tools return. Never invent or estimate values.
 - Verify before you claim: re-read the step's goal and check your observations actually show the outcome — values accepted, page state changed, file exists. Performing actions is not the same as achieving the outcome; report honestly what was achieved and what was not.
 - Complete this step yourself — never ask the user to do it for you.
