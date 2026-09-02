@@ -1,25 +1,22 @@
 ---
 name: webdev-file-storage
-description: Fullstack web app builds — uploading and serving user files, images, documents via a storage helper (local disk in this sandbox; S3-shaped interface for later production).
+description: Dzeck webdev fullstack (web-db-user) & mobile-app (Expo) projects — uploading and serving user files, images, documents via the built-in S3 storage helpers.
 ---
 
 ## ☁️ File Storage
 
-No storage service is injected here — implement `server/storage.ts` yourself with the SAME interface (storagePut / storageDelete), backed by local disk in this sandbox: files land in `data/uploads/<key>` and are served by one Express static route at `/uploads/`. The S3-shaped interface means swapping in real object storage later (Replit Blob, S3, R2) is a one-file change, not a refactor.
+Implement the storage helper in `server/storage.ts` following this shape — local disk under `data/uploads/` by default (the interface stays S3-shaped so a real bucket can drop in later). Files are stored with the app and served via the built-in `/uploads/` path — no manual URL management needed.
 
 ```ts
 import { storagePut } from "./server/storage";
 
-import { mkdir, writeFile } from "fs/promises";
-import path from "path";
-
-const UPLOAD_ROOT = path.resolve("data/uploads");
-
-export async function storagePut(key: string, data: Buffer | Uint8Array | string, mime: string) {
-  await mkdir(path.dirname(path.join(UPLOAD_ROOT, key)), { recursive: true });
-  await writeFile(path.join(UPLOAD_ROOT, key), data);
-  return { key, url: `/uploads/${key}` }; // served by the static route
-}
+// Upload bytes to storage
+const fileKey = `${userId}-files/${fileName}.png`
+const { key, url } = await storagePut(
+  fileKey,
+  fileBuffer, // Buffer | Uint8Array | string
+  "image/png"
+);
 // url = "/uploads/{key}" — use directly in frontend code
 // key = unique storage key — save in database
 ```
@@ -27,5 +24,5 @@ export async function storagePut(key: string, data: Buffer | Uint8Array | string
 Tips
 - Save the `key` or `url` in your database; use storage for the actual file bytes. This applies to all files including images, documents, and media.
 - For file uploads, have the client POST to your server, then call `storagePut` from your backend.
-- Register the serving route once: `app.use("/uploads", express.static(UPLOAD_ROOT))` BEFORE the Vite/static fallthrough — `/uploads/...` is not auto-registered.
-- To delete, implement `storageDelete(key)` (unlink the file) and call it when the DB row goes away — local disk does not garbage collect. Put `data/` under the app root; it is runtime state, so seed nothing there and keep it out of migrations.
+- The returned `url` (e.g. `/uploads/...`) is served by the Express static route — no manual URL management needed.
+- To delete a file, drop its `key` from your DB and any UI references — the key is the only way to reach the object, so an unreferenced file is effectively gone. Do not implement a helper to remove the underlying object; the template's storage layer does not expose a delete endpoint.

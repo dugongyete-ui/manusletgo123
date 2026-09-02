@@ -4,8 +4,6 @@ description: Guide for creating or updating skills that extend Dzeck via special
 license: Complete terms in LICENSE.txt
 ---
 
-*Note for this workspace:* the companion `scripts/` and `references/` directories are not shipped here — apply the design patterns described in this document directly; the paths below describe the upstream layout.
-
 # Skill Creator
 
 This skill provides guidance for creating effective skills.
@@ -20,6 +18,8 @@ Skills are modular, self-contained packages that extend Dzeck's capabilities by 
 2. Tool integrations - Instructions for working with specific file formats or APIs
 3. Domain expertise - Company-specific knowledge, schemas, business logic
 4. Bundled resources - Scripts, references, and assets for complex and repetitive tasks
+
+> Note for this workspace: the `scripts/` and `references/` companions of this skill are not shipped here — follow the workflow by hand; the paths below are where they would live.
 
 ## Core Principles
 
@@ -145,12 +145,12 @@ When creating a new skill from scratch, always run the `init_skill.py` script. T
 Usage:
 
 ```bash
-python project/skills/skill-creator/scripts/init_skill.py <skill-name>
+python skills/skill-creator/scripts/init_skill.py <skill-name>
 ```
 
 The script:
 
-- Creates the skill directory at `project/skills/<skill-name>/`
+- Creates the skill directory at `skills/<skill-name>/`
 - Generates a SKILL.md template with proper frontmatter and TODO placeholders
 - Creates example resource directories: `scripts/`, `references/`, and `templates/`
 - Adds example files in each directory that can be customized or deleted
@@ -165,9 +165,9 @@ When editing the (newly-generated or existing) skill, remember that the skill is
 
 Consult these helpful guides based on your skill's needs:
 
-- **Multi-step processes**: See `project/skills/skill-creator/references/workflows.md` for sequential workflows and conditional logic
-- **Output formats or quality standards**: See `project/skills/skill-creator/references/output-patterns.md` for template and example patterns
-- **Progressive Disclosure Patterns**: See `project/skills/skill-creator/references/progressive-disclosure-patterns.md` for splitting content across files.
+- **Multi-step processes**: See `skills/skill-creator/references/workflows.md` for sequential workflows and conditional logic
+- **Output formats or quality standards**: See `skills/skill-creator/references/output-patterns.md` for template and example patterns
+- **Progressive Disclosure Patterns**: See `skills/skill-creator/references/progressive-disclosure-patterns.md` for splitting content across files.
 
 These files contain established best practices for effective skill design.
 
@@ -204,7 +204,7 @@ Once development of the skill is complete, validate and deliver it to the user.
 Run the validation script to ensure the skill meets all requirements:
 
 ```bash
-python project/skills/skill-creator/scripts/quick_validate.py <skill-name>
+python skills/skill-creator/scripts/quick_validate.py <skill-name>
 ```
 
 If validation fails, fix the errors and run validation again.
@@ -214,12 +214,12 @@ If validation fails, fix the errors and run validation again.
 Use `message` tool to send the SKILL.md file as attachment:
 
 ```
-project/skills/{skill-name}/SKILL.md
+skills/{skill-name}/SKILL.md
 ```
 
 The system will automatically:
 
-1. Detect the path pattern `project/skills/*/SKILL.md`
+1. Detect the path pattern `skills/*/SKILL.md`
 2. Package the skill directory into a `.skill` file
 3. Send to frontend as a special card with options:
    - Add to My Skills

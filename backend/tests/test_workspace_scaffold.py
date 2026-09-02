@@ -83,7 +83,13 @@ def test_script_contains_every_file_and_marker_logic():
     assert "/home/runner/project" in script
     assert "MANUAL_WROTE" in script
     assert "MANUAL_SKIP" in script
-    for rel in ("AGENTS.md", "skills/webdev-fullstack/SKILL.md", "RULES.md"):
+    for rel in (
+        "AGENTS.md",
+        "skills/webdev-readme-fullstack/SKILL.md",
+        "skills/dzeck-pptx/SKILL.md",
+        "Rancangan_Notifikasi_User_melalui_Chat.md",
+        "RULES.md",
+    ):
         assert rel.replace("/", "\\/") in script or rel in script
 
 

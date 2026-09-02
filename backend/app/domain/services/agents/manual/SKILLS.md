@@ -8,8 +8,8 @@ the difference between "ran once" and "actually works".
 
 | Skill | Use when |
 |---|---|
-| webdev-fullstack | full web app: frontend + backend + database + auth (tRPC/React/Express/Drizzle stack guide) |
-| webdev-static | static site (web-static): pure frontend, no server |
+| webdev-readme-fullstack | fullstack web app (web-db-user): the complete template guide — auth, database, file storage, backend API, integrations |
+| webdev-readme-static | static site (web-static): the complete guide for static builds — conventions, file layout |
 | python-api-service | REST API in Python (FastAPI/Flask) |
 | browser-automation | form filling, scraping, logged-in flows via CDP |
 | data-analysis | CSV/data → cleaning → charts → written report |
@@ -23,13 +23,13 @@ the difference between "ran once" and "actually works".
 | webdev-file-storage | uploading/serving user files, images, documents |
 | webdev-maps-integration | maps, geocoding, directions, places |
 | webdev-owner-notifications | pushing operational alerts to the app owner |
-| webdev-periodic-updates | ANY scheduled work — recurring jobs, cron, periodic notifications. MUST read before any scheduled-work code |
+| webdev-periodic-updates | ANY scheduled work — recurring jobs, end-user-scheduled cron, periodic notifications. Read FIRST before planning or coding anything that runs on a schedule |
 
 ## Specialist skills — on demand, not at session start
 
 | Skill | Use when |
 |---|---|
-| slides-pptx | writing slide decks in the PPTX XML syntax (read it when you are ready to start editing, not during research) |
+| dzeck-pptx | writing slides in the PPTX XML syntax (read it when you are ready to start editing, not during research) |
 | typst-pdf-maker | polished PDF documents that Markdown-to-PDF cannot produce (typography, math, precise layouts) |
 | tts-prompter | crafting TTS prompts before entering generate mode for speech tasks |
 | document-writing | long-form documents, structured reports |

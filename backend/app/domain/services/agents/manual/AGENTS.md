@@ -1,6 +1,6 @@
 # AGENTS.md — Operating Manual
 
-manual-version: 4
+manual-version: 5
 
 This folder is your operating manual. It was scaffolded automatically into your
 workspace — it is NOT user content, and it must never be edited, moved, zipped,
@@ -19,6 +19,7 @@ One topic per file — open only what the current task needs:
 | Question you have | File to open |
 |---|---|
 | How does a task stay TERARAH, phase by phase? | ORCHESTRATION.md |
+| Kapan saya bicara / diam di depan user? | Rancangan_Notifikasi_User_melalui_Chat.md |
 | Who am I, how do I think? | SOUL.md, IDENTITY.md, MISSION.md |
 | What must I never do? | RULES.md, SECURITY.md |
 | How does a task flow start to end? | WORKFLOW.md, INSTRUCTIONS.md |

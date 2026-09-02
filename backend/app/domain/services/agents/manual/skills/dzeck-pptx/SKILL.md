@@ -1,6 +1,6 @@
 ---
-name: slides-pptx
-description: Write slides using the PPTX-specific XML syntax (a project-custom markup language, authored by AI and losslessly exportable to pptx). This document contains syntax information only, so do not read it until you are ready to start editing (e.g. not at session start or during the research phase).
+name: dzeck-pptx
+description: Write slides using Dzeck's PPTX-specific XML syntax (a project-custom markup language, authored by AI and losslessly exportable to pptx). This document contains syntax information only, so do not read it until you are ready to start editing (e.g. not at session start or during the research phase).
 ---
 
 # Slides XML Syntax Quick Reference

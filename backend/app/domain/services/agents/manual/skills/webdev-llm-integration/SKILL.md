@@ -1,11 +1,11 @@
 ---
 name: webdev-llm-integration
-description: Fullstack web app builds — LLM integration for AI features, chat completions, structured JSON responses, streaming. Server-side helper pattern against an OpenAI-compatible provider.
+description: Dzeck webdev fullstack (web-db-user) & mobile-app (Expo) projects — built-in LLM integration for AI features, chat completions, structured JSON responses, model listing/selection, streaming, thinking/reasoning.
 ---
 
 ## LLM Integration
 
-No credentials are injected here. The app calls an OpenAI-compatible provider of the USER's choice — their key lives in `.env` (`LLM_API_KEY`, `LLM_BASE_URL`, `LLM_MODEL`), server-side only. Keep the `invokeLLM` shape below as the interface so swapping providers is a one-file change. If the user has no key yet, wire the interface, read from env, and surface a clean "missing key" error — never hardcode keys or fake responses.
+Use the LLM helper pattern below. Credentials come from the app's own `.env` — the user provides `LLM_API_KEY` (plus `LLM_API_URL` when their provider is an OpenAI-compatible endpoint); no platform injects anything here.
 
 ```ts
 import { invokeLLM } from "./server/_core/llm";
@@ -57,7 +57,7 @@ const response = await invokeLLM({
 
 Tips
 - Always call llm functions from server-side code (e.g., inside tRPC procedures), to avoid exposing your API key.
-- LLM calls spend the user's API credits — cache identical requests where sensible and stream long answers.
+- LLM calls bill the user's own provider account — surface provider errors honestly instead of silently retrying.
 - All models support streaming, but `invokeLLM()` doesn't expose `stream` — modify the helper to pass `stream: true` and parse the SSE response if you need it. When proxying SSE, listen on `res` close (not `req`) and guard with a `finished` flag, or the upstream gets aborted after the first event.
 - LLM responses often contain markdown. Use `<Streamdown>{content}</Streamdown>` (imported from `streamdown`) to render markdown content with proper formatting and streaming support.
 
@@ -70,7 +70,7 @@ const { data } = await listLLMModels();
 const ids = data.map(m => m.id);
 ```
 
-Returns OpenAI-standard model metadata for each available ID (an OpenAI-compatible provider answers the same listing: `curl "$LLM_BASE_URL/v1/models" -H "Authorization: Bearer $LLM_API_KEY"`).
+Returns OpenAI-standard model metadata for each available ID. From the project shell you can also peek at it directly: `curl "$LLM_API_URL/v1/models" -H "Authorization: Bearer $LLM_API_KEY"`.
 
 **Combine with `invokeLLM`** to discover IDs at runtime instead of hardcoding:
 

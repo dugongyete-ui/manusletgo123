@@ -1,13 +1,13 @@
 ---
 name: typst-pdf-maker
-description: "Generate professional, high-quality PDF documents with Typst. Use for reports, academic papers, resumes, structured documents, mathematical typesetting, code-rich documents, precise layouts, and CJK typography when Markdown-to-PDF is insufficient. Install the typst CLI first (pip install typst or the official release binary) — it is not preinstalled in this sandbox. Route ordinary presentation requests to the slides-pptx skill unless the user explicitly requires Typst-generated PDF slides."
+description: "Generate professional, high-quality PDF documents with Typst. Use for reports, academic papers, resumes, structured documents, mathematical typesetting, code-rich documents, precise layouts, and CJK typography when Markdown-to-PDF is insufficient. Select one skill-owned asset or compatible Typst Universe base before adding packages. Route ordinary presentation requests to Dzeck Slides/PPTX unless the user explicitly requires Typst-generated PDF slides."
 ---
-
-*Note for this workspace:* the companion `scripts/` and `references/` directories are not shipped here — follow the documented CLI flags and layout rules by hand; install the typst CLI first (`pip install typst` or the release binary).
 
 # Typst PDF Maker
 
-Use Typst for polished, structured PDF documents that require precise typography or layout control. Do not use this skill as the default presentation channel: route ordinary slide requests to the slides-pptx skill, and reserve Typst slide engines for explicit Typst or PDF-slide requirements.
+Use Typst for polished, structured PDF documents that require precise typography or layout control. Do not use this skill as the default presentation channel: route ordinary slide requests to Dzeck Slides/PPTX, and reserve Typst slide engines for explicit Typst or PDF-slide requirements.
+
+> Note for this workspace: `typst` may not be pre-installed — check `typst --version` first and install it if needed. The `scripts/` and `references/` companions are not shipped here; compile with `typst compile` directly following this workflow.
 
 ## Prerequisite
 
@@ -43,7 +43,7 @@ Treat routing as one deterministic planning step rather than repeated package br
 2. Run the deterministic planner once after the manifest is complete. This is the normal way to find templates and packages: it reads `references/routing-catalog.json` without loading the entire catalog into conversational context. Freeze the resulting plan when base initialization or authoring begins. Rerun only to resolve the plan's recorded `ambiguous` or `needs-confirmation` question, after a user or publication hard constraint changes, or after an explicitly recorded blocked/patch-required condition changes. A late optional visual idea is not a rerouting reason.
 
    ```bash
-   python3 project/skills/typst-pdf-maker/scripts/plan_document.py \
+   python3 skills/typst-pdf-maker/scripts/plan_document.py \
      .typst-content-manifest.json \
      --output .typst-build-plan.json
    ```
@@ -65,7 +65,7 @@ The catalog is a registry, not a directory containing downloaded template source
 
 | Plan result | Required action |
 |---|---|
-| `channel: "Dzeck-slides-pptx"` | Exit this skill and use Dzeck Slides/PPTX. |
+| `channel: "dzeck-slides-pptx"` | Exit this skill and use Dzeck Slides/PPTX. |
 | `state: "ambiguous"` or `"needs-confirmation"` | Ask only the plan's `question`, update the manifest, and rerun. Do not initialize anything yet. |
 | `state: "blocked"` | Stop before initialization and report `base.block_reason`. |
 | `state: "patch-required"` | Apply only `base.patch_note`, then run the minimum compile preflight. |
@@ -83,14 +83,14 @@ Read `references/routing-catalog.json` directly only when diagnosing why a route
 Prepare a portable project from the shared report theme and native entry. Do not copy individual asset files manually or recreate the global style from scratch.
 
 ```bash
-python3 project/skills/typst-pdf-maker/scripts/prepare_document.py report \
-  <home>/my-report \
+python3 skills/typst-pdf-maker/scripts/prepare_document.py report \
+  project/my-report \
   --title "Report title" \
   --subtitle "Optional subtitle" \
   --author "Dzeck AI"
 ```
 
-Edit `<home>/my-report/main.typ` after the generated title page, outline, and page-counter reset. The entry imports the colocated `report-theme.typ`, which owns page defaults, typography, paragraph rhythm, headings, code blocks, links, and figure breaking. The native entry uses the R4 chapter-emphasis report rhythm by default: no first-line indent, `0.84B` paragraph spacing, and level-specific heading spacing relative to the body size `B`. For continuous longform prose, select `rhythm: "longform"` to use the T1 no-indent profile with a visible `0.65B` paragraph gap. Follow the ownership and profile rules in `references/layout-rhythm.md` instead of changing unrelated template or package styles. For non-trivial authoring, repair, or verification, read `references/production-workflow.md` once after routing; do not reload it during every edit cycle.
+Edit `project/my-report/main.typ` after the generated title page, outline, and page-counter reset. The entry imports the colocated `report-theme.typ`, which owns page defaults, typography, paragraph rhythm, headings, code blocks, links, and figure breaking. The native entry uses the R4 chapter-emphasis report rhythm by default: no first-line indent, `0.84B` paragraph spacing, and level-specific heading spacing relative to the body size `B`. For continuous longform prose, select `rhythm: "longform"` to use the T1 no-indent profile with a visible `0.65B` paragraph gap. Follow the ownership and profile rules in `references/layout-rhythm.md` instead of changing unrelated template or package styles. For non-trivial authoring, repair, or verification, read `references/production-workflow.md` once after routing; do not reload it during every edit cycle.
 
 Before migrating Markdown or HTML into native Typst, map source syntax deliberately. Markdown `**bold**` becomes Typst `*bold*`; literal heading numbers must be removed when automatic heading numbering is active; HTML tables must become Typst tables.
 
@@ -99,8 +99,8 @@ Author a coherent, dependency-closed batch before compiling; do not compile afte
 Use discrete compilation by default. The wrapper prints bounded short diagnostics, writes the complete diagnostic stream from that compile to an artifact, and evaluates strict mode against the untruncated stream:
 
 ```bash
-python3 project/skills/typst-pdf-maker/scripts/generate_pdf.py \
-  <home>/my-report/main.typ --strict
+python3 skills/typst-pdf-maker/scripts/generate_pdf.py \
+  project/my-report/main.typ --strict
 ```
 
 Use `--diagnostics full` only when the short stream lacks enough source context. Do not automatically run both formats. Reserve `--watch` for an explicitly requested human continuous-editing session; autonomous editing uses discrete compile gates.
@@ -108,8 +108,8 @@ Use `--diagnostics full` only when the short stream lacks enough source context.
 After a successful compile, run the deterministic verifier with a document-appropriate profile. Keep its JSON report as an artifact and return only the one-line summary to conversational context. When the report is `PASS`, do not separately rerun `pdfinfo`, `pdftotext`, `pdffonts`, or `pdfimages` checks already covered by that profile. Use a direct inspection command only to diagnose a reported `FAIL`, `WARN`, or `UNKNOWN`, or to answer a requirement the verifier does not represent:
 
 ```bash
-python3 project/skills/typst-pdf-maker/scripts/verify_pdf.py \
-  <home>/my-report/main.pdf --profile text-document
+python3 skills/typst-pdf-maker/scripts/verify_pdf.py \
+  project/my-report/main.pdf --profile text-document
 ```
 
 During iteration, visually inspect changed pages, adjacent reflow pages, affected navigation pages, and high-risk pages. Finish in standard review mode with a strict compile, deterministic verification, and the representative contact-sheet set produced by `scripts/render_review.py`; inspect individual pages only when a sheet flags a concern. Escalate to exhaustive every-page review only when the user explicitly requests it, sampled pages reveal a systemic defect, the verifier reports an anomaly needing visual diagnosis, or a theme, page-geometry, or global-pagination change invalidates the sample. Read `references/production-workflow.md` for the gate model, review modes, and context policy. Read `references/typst-patterns.md` only when the required layout feature is not already demonstrated by the prepared project.
@@ -119,16 +119,16 @@ During iteration, visually inspect changed pages, adjacent reflow pages, affecte
 Prepare a portable project that copies the source to `source.md`, binds the Markdown entry to that local path, and records the original path in `.typst-document.json`:
 
 ```bash
-python3 project/skills/typst-pdf-maker/scripts/prepare_document.py markdown \
+python3 skills/typst-pdf-maker/scripts/prepare_document.py markdown \
   /path/to/source.md \
-  <home>/markdown-report
+  project/markdown-report
 ```
 
 Compile the prepared entry:
 
 ```bash
-python3 project/skills/typst-pdf-maker/scripts/generate_pdf.py \
-  <home>/markdown-report/main.typ --strict
+python3 skills/typst-pdf-maker/scripts/generate_pdf.py \
+  project/markdown-report/main.typ --strict
 ```
 
 Treat the Markdown entry as an adapter, not a second theme. It imports `report-theme.typ`, maps Markdown mathematics through a dedicated math package, normalizes auto-width Markdown tables, and intentionally leaves first-line indentation disabled so Markdown block separation remains natural. Extend the entry for title-page behavior; do not merge or duplicate global style blocks.

@@ -1,13 +1,11 @@
 ---
 name: webdev-image-generation
-description: Fullstack web app builds — AI image creation or editing via a server-side helper against a provider of the user's choice.
+description: Dzeck webdev fullstack (web-db-user) & mobile-app (Expo) projects — AI image creation or editing, model listing/selection.
 ---
 
 ## Image Generation Integration
 
-No internal ImageService exists here. Two honest lanes:
-- **Build-time (preferred in this sandbox):** YOU generate art while building — hand-crafted SVG/CSS illustrations, or permissively licensed assets — and ship them as static files. Zero keys, zero cost, works in the delivered zip.
-- **Runtime generation:** implement `generateImage()` in `server/_core/imageGeneration.ts` against a provider of the USER's choice (key in `.env`, server-side only), returning a stored URL via the storage helper. Keep the call shape below so providers stay swappable.
+Implement the image generation helper following this shape — it calls an OpenAI-compatible image endpoint with the key from `.env` (the user provides `IMAGE_API_KEY` / `IMAGE_API_URL`).
 
 Example usage:
 ```ts

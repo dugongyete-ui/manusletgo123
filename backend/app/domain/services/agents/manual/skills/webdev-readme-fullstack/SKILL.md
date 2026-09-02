@@ -1,11 +1,11 @@
 ---
-name: webdev-fullstack
-description: Fullstack web app builds (frontend + backend + database + auth) — the complete development guide for the fullstack template stack. Covers conventions, file layout, and the map of per-integration skill docs. Read BEFORE starting any fullstack web app build.
+name: webdev-readme-fullstack
+description: Dzeck webdev fullstack (web-db-user) projects — the complete development guide for the template that fullstack webdev projects are built on. Covers what ships out of the box (user auth, database, file storage, backend API, external integrations), coding conventions, file layout, and the map of per-integration skill docs. The same guide arrives auto-injected in webdev_init_project / webdev_add_feature results.
 ---
 
-# Web App Template (tRPC + JWT Auth + Database)
+# Web App Template (tRPC + Dzeck Auth + Database)
 
-This template gives you a React 19 + Tailwind 4 + Express 4 + tRPC 11 stack with JWT session auth wired in. Procedures are your contracts, types flow end to end, and authentication "just works".
+This template gives you a React 19 + Tailwind 4 + Express 4 + tRPC 11 stack with session auth (JWT) already wired. Procedures are your contracts, types flow end to end, and authentication "just works".
 
 **This sandbox (Replit / E2B):** there is no pre-scaffolded project — YOU create these files yourself with `file_write`, using this guide as the blueprint, inside `<home>/project/<app-name>/`. Use `npm` (pnpm is not installed). For the database prefer SQLite (drizzle-orm + better-sqlite3 — file-based, zero config, runs everywhere) unless the user provides a real DATABASE_URL; the MySQL listings below are the pattern reference — same table shapes, sqlite-core imports.
 
@@ -15,14 +15,14 @@ This template gives you a React 19 + Tailwind 4 + Express 4 + tRPC 11 stack with
 
 - **tRPC-first:** define procedures in `server/routers.ts`, consume them with `trpc.*` hooks.
 - **Superjson out of the box:** return Drizzle rows directly—`Date` stays a `Date`.
-- **Auth baked in:** `/api/auth/callback` completes JWT session login, `protectedProcedure` injects `ctx.user`.
+- **Auth baked in:** `/api/auth/callback` completes session login, `protectedProcedure` injects `ctx.user`.
 - **Gateway-ready:** all RPC traffic is under `/api/trpc`, making it easy to route at the edge.
 
 ---
 
 ## Build Loop (Four Touch Points)
 
-1. Update schema in `drizzle/schema.ts`, run `npm run db:generate` (drizzle-kit generate) to produce migration SQL, then read the generated `.sql` file and apply it via shell_exec — `npx drizzle-kit migrate`, or a tiny `node apply-migrations.js` using better-sqlite3 that runs each `.sql` in order. Keep the TypeScript schema and actual database in sync.
+1. Update schema in `drizzle/schema.ts`, run `npx drizzle-kit generate` to produce migration SQL, then read the generated `.sql` file and apply it via `shell_exec`. Keep the TypeScript schema and actual database in sync.
 2. Add database helpers in `server/db.ts` (return raw results).
 3. Add or extend procedures in `server/routers.ts`, then wire the UI with `trpc.*.useQuery/useMutation`.
 4. Build frontend experience according to `Frontend Workflow`
@@ -44,7 +44,7 @@ client/src/lib/trpc.ts → tRPC client binding
 client/src/pages/ → Feature UI that calls trpc hooks
 ```
 
-Framework plumbing (OAuth, context, Vite bridge) lives under `server/_core`.
+Framework plumbing (auth, context, Vite bridge) lives under `server/_core`.
 
 ---
 
@@ -74,11 +74,14 @@ Only touch the files under "←" markers. Anything under `server/_core` or other
 
 ### ⚠️ Handling Images & Media
 
-Keep media INSIDE the project — the zip archive is the deliverable, so assets must travel with it: `client/public/assets/` (referenced as `/assets/hero.png`) or `client/src/assets/` for imported media.
+**DO** keep images and media inside the project — the zip archive IS the deliverable, so assets must travel with it: `client/public/assets/` (referenced as `/assets/hero.png`) or `client/src/assets/` for imported media. Compress oversized images first (a photo banner does not need to be 4MB); target total media under a few MB.
 
-**Keep the archive lean:** compress oversized images first (a photo banner does not need to be 4MB); target total media under a few MB. For a later production deployment, swap `client/public/assets/` for object storage with the same URL shape — code changes stay minimal.
+**Required workflow:**
+1. Copy assets into the project: `cp path/to/image.png client/public/assets/`
+2. Reference the asset directly in your code: `<img src="/assets/image.png" />`
+3. For a later production deployment, swap `client/public/assets/` for object storage with the same URL shape — code changes stay minimal.
 
-Only small configuration files like `favicon.ico`, `robots.txt`, and `manifest.json` belong in `client/public/`.
+Only small configuration files like `favicon.ico`, `robots.txt`, and `manifest.json` also belong in `client/public/`.
 
 Files in `client/public` are available at the root of your site—reference them with absolute paths (`/robots.txt`, etc.) from HTML templates, JSX, or meta tags.
 
@@ -86,7 +89,7 @@ Files in `client/public` are available at the root of your site—reference them
 
 ## Authentication Flow
 
-- JWT session auth completes at `/api/auth/callback` and drops a session cookie.
+- Session login completes at `/api/auth/callback` and drops a session cookie.
 - Each request to `/api/trpc` builds context via `server/_core/context.ts`, making the current user available as `ctx.user`.
 - Wrap protected logic in `protectedProcedure`; public access uses `publicProcedure`.
 - Frontend reads auth state with `trpc.auth.me.useQuery()` and invokes `trpc.auth.logout.useMutation()`—no cookie plumbing required.
@@ -95,13 +98,14 @@ Files in `client/public` are available at the root of your site—reference them
 
 ## Environment Variables
 
-No platform injects envs into user apps here. The app's own secrets live in `.env` (never committed, never zipped) with a committed empty-value `.env.example` alongside:
-- `DATABASE_URL`: SQLite file path (`file:./data/app.db`) or a user-provided database URL
-- `JWT_SECRET`: session cookie signing secret — generate one, never hardcode
-- `PORT`: dev server port (default 3000 inside the sandbox)
-- integration keys (maps, LLM, SMTP...) only when that feature exists
+Available envs (this sandbox injects nothing — you create them in `.env`, never committed, never zipped, with a committed `.env.example` listing the keys):
+- `DATABASE_URL`: SQLite file path (`file:./data/app.db`) by default, or a MySQL/TiDB connection string the user provides
+- `JWT_SECRET`: Session cookie signing secret — generate one, never hardcode
+- `PORT`: dev server port (default 3000)
+- Integration keys (`LLM_API_KEY`, `SMTP_*`, maps, storage) only when that feature exists
 
-Read them through ONE `server/_core/env.ts` helper (dotenv + zod validation) so every module imports a single source of truth. Never read process.env scattered across files.
+Do not edit these directly in code or commit `.env` files.
+Read envs through ONE helper — `server/_core/env.ts` (dotenv + zod validation) — so every module imports a single source of truth; never read `process.env` scattered across files.
 
 ---
 
@@ -182,7 +186,7 @@ Bake motion taste in from the first line of code. Snappy, physically intuitive i
 
 ## Feature Checklist
 
-- [ ] Tables updated in `drizzle/schema.ts`, migration generated via `npm run db:generate`, SQL applied via shell_exec
+- [ ] Tables updated in `drizzle/schema.ts`, migration generated via `npx drizzle-kit generate`, SQL applied via `shell_exec`
 - [ ] Query helper added in `server/db.ts` (returns raw Drizzle rows)
 - [ ] Procedure created in `server/routers.ts` (choose `public` vs `protected`)
 - [ ] UI calls the procedure via `trpc.*.useQuery/useMutation`
@@ -243,7 +247,7 @@ adminOnlyProcedure: protectedProcedure.use(({ ctx, next }) => {
 
 **Managing Admins**
 - To promote a user to admin, update the `role` field directly in the database via the system UI or SQL
-- If you need additional roles beyond `admin`/`user`, extend the enum in `drizzle/schema.ts`, run `npm run db:generate`, and apply the generated SQL via shell_exec
+- If you need additional roles beyond `admin`/`user`, extend the enum in `drizzle/schema.ts`, run `npx drizzle-kit generate`, and apply the generated SQL via `shell_exec`
 
 ---
 
@@ -388,7 +392,7 @@ export const users = mysqlTable("users", {
    * Use this for relations between tables.
    */
   id: int("id").autoincrement().primaryKey(),
-  /** Auth identifier (openId / JWT sub) returned from the auth callback. Unique per user. */
+  /** Auth identifier (openId) returned from the auth callback. Unique per user. */
   openId: varchar("openId", { length: 64 }).notNull().unique(),
   name: text("name"),
   email: varchar("email", { length: 320 }),
@@ -676,7 +680,7 @@ function createAuthContext(): { ctx: TrpcContext; clearedCookies: CookieCall[] }
     openId: "sample-user",
     email: "sample@example.com",
     name: "Sample User",
-    loginMethod: "jwt",
+    loginMethod: "dzeck",
     role: "user",
     createdAt: new Date(),
     updatedAt: new Date(),
@@ -771,7 +775,7 @@ export const files = sqliteTable('files', {
 });
 ```
 
-Store file bytes through the storage helper (see `skills/webdev-file-storage/SKILL.md` in this workspace's manual).
+Use `storagePut()` to upload files (see `skills/webdev-file-storage/SKILL.md`).
 
 ### Navigation dead-ends in subpages
 **Problem:** Creating nested routes without escape routes—no header nav, no sidebar, no back button.
@@ -820,13 +824,18 @@ Store file bytes through the storage helper (see `skills/webdev-file-storage/SKI
 
 This template ships pre-configured integrations. BEFORE implementing a feature that needs one, read the matching skill doc:
 
-Paths are relative to `project/` in your workspace.
-
 | Integration | Skill doc | When to use |
 |---|---|---|
-| LLM / AI chat | `skills/webdev-llm-integration/SKILL.md` | AI features, chat completions, structured JSON responses, streaming |
-| Image generation | `skills/webdev-image-generation/SKILL.md` | AI image creation or editing |
-| File storage | `skills/webdev-file-storage/SKILL.md` | Uploading/serving user files, images, documents |
+| LLM / AI chat | `skills/webdev-llm-integration/SKILL.md` | AI features, chat completions, structured JSON responses, model listing/selection, streaming, thinking/reasoning |
+| Voice transcription | `skills/webdev-voice-transcription/SKILL.md` | Speech-to-text via Whisper API |
+| Image generation | `skills/webdev-image-generation/SKILL.md` | AI image creation or editing, model listing/selection |
+| File storage (S3) | `skills/webdev-file-storage/SKILL.md` | Uploading/serving user files, images, documents |
 | Google Maps | `skills/webdev-maps-integration/SKILL.md` | Maps, geocoding, directions, places |
-| Owner notifications | `skills/webdev-owner-notifications/SKILL.md` | Push alerts to the app owner |
-| Periodic updates / cron | `skills/webdev-periodic-updates/SKILL.md` | Scheduled work — recurring jobs, cron, periodic notifications. MUST read before any scheduled-work code |
+| Data API | `skills/webdev-data-api/SKILL.md` | External data via Dzeck API Hub |
+| Owner notifications | `skills/webdev-owner-notifications/SKILL.md` | Push alerts to the project owner |
+| Dzeck OAuth | `skills/webdev-dzeck-oauth/SKILL.md` | OAuth redirect URL handling, invite/magic links |
+| Periodic updates / cron | `skills/webdev-periodic-updates/SKILL.md` | Scheduled work — recurring jobs, end-user-scheduled cron, periodic notifications. MUST read before any scheduled-work code |
+| Custom Dockerfile | `skills/webdev-custom-dockerfile/SKILL.md` | Extra system binaries or another language runtime in production |
+| SSR conversion | `skills/webdev-ssr-conversion/SKILL.md` | Making this template server-side rendered for SEO / link previews / crawler-visible content |
+
+Rows whose skill doc is not present in this workspace's `skills/` were not shipped here — implement that feature directly from its row description, or ask the user for the details it needs.

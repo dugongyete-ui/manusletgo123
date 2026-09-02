@@ -1,13 +1,13 @@
 ---
 name: webdev-maps-integration
-description: Fullstack web app builds — Google Maps integration for maps, geocoding, directions, places (user-provided key) with a zero-key Leaflet fallback.
+description: Dzeck webdev fullstack (web-db-user) projects — Google Maps integration for maps, geocoding, directions, places.
 ---
 
 ## 🗺️ Maps Integration
 
-**No proxy here — the key question comes first.** Google Maps JS API runs client-side with a standard API key: when maps are genuinely required, ASK the user for their key (or whether they have one). Load it via env-driven config, never hardcoded. A normal key unlocks the full standard feature set: Places, Geocoder, Directions, Drawing, Street View.
+**CRITICAL: decide the maps stack WITH the user.** Google Maps JS API runs client-side with a standard API key — ALL features work (advanced drawing, heatmaps, Street View, all layers, Places API) with a normal key. Ask the user for their key when maps are required; if they have none, Leaflet + OpenStreetMap tiles is the zero-key fallback. Authentication is NOT automatic here — no proxy injects a key.
 
-**Default: frontend SDK** - Build `client/src/components/Map.tsx` exposing a MapView with an onMapReady callback; initialize whatever Maps service the feature needs (geocoding, directions, places, drawing) inside it. 
+**Default: Use Frontend SDK** - Import MapView from `client/src/components/Map.tsx` and initialize ANY Google Maps service (geocoding, directions, places, drawing, visualization, geometry, etc.) in the onMapReady callback. 
 
 **Use Backend API only when:**
 - Persisting data (save routes/locations to database)
@@ -16,6 +16,6 @@ description: Fullstack web app builds — Google Maps integration for maps, geoc
 
 **Implementation:**
 - Frontend: See `client/src/components/Map.tsx` for component usage - ALL Google Maps JavaScript API features work
-- Backend: create tRPC procedures that call the Maps REST APIs server-side (key from env) when persisting routes or doing bulk geocoding
+- Backend: Create tRPC procedures using `makeRequest` from `server/_core/map.ts`
 
-**Zero-key fallback:** if the user has no key, Leaflet + OpenStreetMap tiles covers display, markers, and basic geocoding with no account at all — offer it instead of blocking the build.
+NEVER hardcode keys into source or commit them — load from env config. Do not silently pick a stack the user didn't choose; decide with them.

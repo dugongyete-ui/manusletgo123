@@ -1,10 +1,12 @@
 ---
-name: webdev-static
-description: Static web builds (web-static) — the complete development guide for static sites. Covers conventions and file layout. Read BEFORE starting a static site build.
+name: webdev-readme-static
+description: Dzeck webdev static (web-static) projects — the complete development guide for the template that static webdev sites are built on. Covers what ships out of the box, coding conventions, and file layout. The same guide arrives auto-injected in webdev_init_project / webdev_add_feature results.
 ---
 # Web App Template (Static Frontend)
 
 Pure React 19 + Tailwind 4 template with shadcn/ui baked in. **Use this README as the checklist for shipping static experiences.**
+
+**This sandbox (Replit / E2B):** there is no pre-scaffolded project — YOU create these files yourself with `file_write`, using this guide as the blueprint, inside `<home>/project/<app-name>/`. Use `npm` (pnpm is not installed).
 
 > **Note:** This template includes a minimal `shared/` and `server/` directory with placeholder types to support imported templates. These are just compatibility placeholders - web-static remains a true static-only template without API functionality.
 
@@ -35,11 +37,14 @@ shared/         ← Placeholder for imported template compatibility
 
 ### ⚠️ Handling Images & Media
 
-Keep media INSIDE the project — the zip archive is the deliverable, so assets must travel with it: `client/public/assets/` (referenced as `/assets/hero.png`) or `client/src/assets/` for imported media.
+**DO** keep images and media inside the project — the zip archive IS the deliverable, so assets must travel with it: `client/public/assets/` (referenced as `/assets/hero.png`) or `client/src/assets/` for imported media. Compress oversized images first (a photo banner does not need to be 4MB); target total media under a few MB.
 
-**Keep the archive lean:** compress oversized images first; target total media under a few MB. For a later production deployment, swap for object storage with the same URL shape.
+**Required workflow:**
+1. Copy assets into the project: `cp path/to/image.png client/public/assets/`
+2. Reference the asset directly in your code: `<img src="/assets/image.png" />`
+3. For a later production deployment, swap `client/public/assets/` for object storage with the same URL shape — code changes stay minimal.
 
-Only small configuration files like `favicon.ico`, `robots.txt`, and `manifest.json` belong in `client/public/`.
+Only small configuration files like `favicon.ico`, `robots.txt`, and `manifest.json` also belong in `client/public/`.
 
 Files in `client/public` are available at the root of your site—reference them with absolute paths (`/robots.txt`, etc.) from HTML templates, JSX, or meta tags.
 
@@ -119,12 +124,12 @@ When implementing features that match these categories, MUST evaluate the compon
 
 ## 🗺️ Maps Integration
 
-**Google Maps in a static build:** the Maps JS API runs client-side with a standard API key. If maps are required, ask the user for their key and load it from an env-driven config — never hardcode keys into source. All standard features (Places, Geocoder, Directions, Drawing) work with a normal key.
+**CRITICAL: decide the maps stack WITH the user.** Google Maps JS API runs client-side with a standard API key — ALL features work (advanced drawing, heatmaps, Street View, all layers, Places API) with a normal key. Ask the user for their key when maps are required; if they have none, Leaflet + OpenStreetMap tiles is the zero-key fallback.
 
 **Implementation:**
 - Frontend: Import MapView from `client/src/components/Map.tsx` and initialize ANY Google Maps service (geocoding, directions, places, drawing, visualization, geometry, etc.) in the onMapReady callback. ALL Google Maps JavaScript API features work directly in the browser.
 
-Leaflet + OpenStreetMap tiles is the zero-key fallback when the user has no Maps key — decide with them, not for them.
+NEVER hardcode keys into source or commit them — load from env config. Do not silently pick a stack the user didn't choose; decide with them.
 
 ---
 
@@ -226,15 +231,6 @@ Leaflet + OpenStreetMap tiles is the zero-key fallback when the user has no Maps
     "vite": "^7.1.7",
     "vitest": "^2.1.4"
   },
-  "packageManager": "pnpm@10.4.1+sha512.c753b6c3ad7afa13af388fa6d808035a008e30ea9993f58c6663e2bc5ff21679aa834db094987129aa4d488b86df57f7b634981b2f827cdcacc698cc0cfb88af",
-  "pnpm": {
-    "patchedDependencies": {
-      "wouter@3.7.1": "patches/wouter@3.7.1.patch"
-    },
-    "overrides": {
-      "tailwindcss>nanoid": "3.3.7"
-    }
-  }
 }
 ```
 
