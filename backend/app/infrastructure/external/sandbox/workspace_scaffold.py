@@ -43,7 +43,7 @@ _MANUAL_DIR = (
     / "manual"
 )
 
-MANUAL_VERSION = 5
+MANUAL_VERSION = 6
 _MARKER = f"manual-version: {MANUAL_VERSION}"
 _SCRIPT_PATH = "/tmp/dzeck_ws_manual_scaffold.py"
 _SESSION_ID = "ws-manual-scaffold"

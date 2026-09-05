@@ -30,6 +30,7 @@ MANUAL = (
 )
 
 USER_SKILLS = [
+    "web-design-engineer",
     "webdev-readme-fullstack",
     "webdev-readme-static",
     "webdev-llm-integration",
@@ -71,6 +72,7 @@ FORBIDDEN_CMD_SNIPPETS = ["pnpm install", "pnpm test", "pnpm drizzle-kit", "pnpm
 # The user's original line counts — installed files must stay COMPLETE
 # (allow small deltas for the honest env-adaptation notes, never a trim).
 MIN_LINES = {
+    "web-design-engineer": 490,       # user original: 491
     "webdev-readme-fullstack": 840,   # user original: 854
     "webdev-readme-static": 683,      # user original: 693
     "webdev-periodic-updates": 270,   # user original: 275 (was trimmed to 144!)
@@ -178,6 +180,7 @@ def test_user_communication_design_doc_pasted() -> None:
 def test_skills_index_lists_tiers() -> None:
     text = (MANUAL / "SKILLS.md").read_text(encoding="utf-8")
     for skill in (
+        "web-design-engineer",
         "webdev-readme-fullstack",
         "webdev-readme-static",
         "webdev-periodic-updates",

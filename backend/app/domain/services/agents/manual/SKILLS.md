@@ -8,6 +8,7 @@ the difference between "ran once" and "actually works".
 
 | Skill | Use when |
 |---|---|
+| web-design-engineer | ANY visual front-end deliverable (landing page, dashboard, prototype, HTML slide deck, animation, UI mockup, data viz) — the design-quality playbook: design system declaration, style recipes, anti-cliché rules, variant exploration |
 | webdev-readme-fullstack | fullstack web app (web-db-user): the complete template guide — auth, database, file storage, backend API, integrations |
 | webdev-readme-static | static site (web-static): the complete guide for static builds — conventions, file layout |
 | python-api-service | REST API in Python (FastAPI/Flask) |
