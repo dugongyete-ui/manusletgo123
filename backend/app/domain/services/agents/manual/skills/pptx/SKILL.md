@@ -248,14 +248,14 @@ When you need to create a presentation that follows an existing template's desig
      python scripts/rearrange.py template.pptx working.pptx 0,34,34,50,52
      ```
    * The script handles duplicating repeated slides, deleting unused slides, and reordering automatically
-   * Slide indices are 0-based (first slide is 0, second slide is 1, etc.)
+   * Slide indices are 0-based (first slide is 0, second is 1, etc.)
    * The same slide index can appear multiple times to duplicate that slide
 
 5. **Extract ALL text using the `inventory.py` script**:
    * **Run inventory extraction**:
-      ```bash
-      python scripts/inventory.py working.pptx text-inventory.json
-      ```
+     ```bash
+     python scripts/inventory.py working.pptx text-inventory.json
+     ```
    * **Read text-inventory.json**: Read the entire text-inventory.json file to understand all shapes and their properties. **NEVER set any range limits when reading this file.**
 
    * The inventory JSON structure:

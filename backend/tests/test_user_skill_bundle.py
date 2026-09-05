@@ -40,10 +40,39 @@ USER_SKILLS = [
     "webdev-owner-notifications",
     "webdev-periodic-updates",
     "pptx",
+    "docx",
+    "pdf",
+    "xlsx",
     "persistent-computing",
     "skill-creator",
     "tts-prompter",
     "typst-pdf-maker",
+    # -- installed from ComposioHQ/awesome-claude-skills (2026-09-06) --
+    "artifacts-builder",
+    "brand-guidelines",
+    "canvas-design",
+    "changelog-generator",
+    "competitive-ads-extractor",
+    "content-research-writer",
+    "developer-growth-analysis",
+    "domain-name-brainstormer",
+    "file-organizer",
+    "image-enhancer",
+    "internal-comms",
+    "invoice-organizer",
+    "langsmith-fetch",
+    "lead-research-assistant",
+    "mcp-builder",
+    "meeting-insights-analyzer",
+    "raffle-winner-picker",
+    "skill-share",
+    "slack-gif-creator",
+    "tailored-resume-generator",
+    "template-skill",
+    "theme-factory",
+    "twitter-algorithm-optimizer",
+    "video-downloader",
+    "webapp-testing",
 ]
 
 REPLACED_DEFAULTS = ["fullstack-web-app", "static-landing-page"]
@@ -80,10 +109,31 @@ MIN_LINES = {
     "webdev-periodic-updates": 270,   # user original: 275 (was trimmed to 144!)
     "webdev-llm-integration": 145,    # user original: 146
     "pptx": 483,                      # user original: 484
+    "docx": 196,                      # repo original: 197
+    "pdf": 294,                       # repo original: 295
+    "xlsx": 288,                      # repo original: 289
     "persistent-computing": 95,       # user original: 98
-    "skill-creator": 235,             # user original: 236
+    "skill-creator": 209,             # repo original: 210
     "tts-prompter": 245,              # user original: 247
     "typst-pdf-maker": 190,           # user original: 192
+    # -- awesome-claude-skills batch --
+    "artifacts-builder": 73,          # repo original: 74
+    "canvas-design": 129,             # repo original: 130
+    "content-research-writer": 538,   # repo original: 539
+    "developer-growth-analysis": 322, # repo original: 323
+    "file-organizer": 433,            # repo original: 434
+    "internal-comms": 32,             # repo original: 33
+    "invoice-organizer": 446,         # repo original: 447
+    "langsmith-fetch": 485,           # repo original: 486
+    "mcp-builder": 328,               # repo original: 329
+    "meeting-insights-analyzer": 327, # repo original: 328
+    "skill-share": 80,                # repo original: 81
+    "slack-gif-creator": 646,         # repo original: 647
+    "tailored-resume-generator": 345, # repo original: 346
+    "theme-factory": 59,              # repo original: 60
+    "twitter-algorithm-optimizer": 326, # repo original: 327
+    "video-downloader": 98,           # repo original: 99
+    "webapp-testing": 95,             # repo original: 96
 }
 
 
@@ -187,9 +237,18 @@ def test_skills_index_lists_tiers() -> None:
         "webdev-readme-static",
         "webdev-periodic-updates",
         "pptx",
+        "docx",
+        "pdf",
+        "xlsx",
+        "artifacts-builder",
+        "theme-factory",
+        "webapp-testing",
     ):
         assert skill in text, f"SKILLS.md missing: {skill}"
     assert "Feature skills" in text
+    assert "Document skills" in text
+    assert "Research & analysis skills" in text
+    assert "Platform & meta skills" in text
 
 
 @pytest.mark.parametrize("snippet", FORBIDDEN_SNIPPETS)

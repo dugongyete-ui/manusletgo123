@@ -146,3 +146,21 @@ def test_real_script_is_valid_python():
     files = collect_manual_files()
     script = build_scaffold_script("/home/runner", files)
     ast.parse(script)  # raises on syntax error
+
+
+def test_binary_assets_travel_base64():
+    """Small binary skill assets (tarballs, PDF showcases) must survive the
+    text scaffold: embedded as 'b64:' and decoded by the generated script."""
+    import ast
+    import base64
+
+    files = collect_manual_files()
+    blob = files.get("skills/artifacts-builder/scripts/shadcn-components.tar.gz")
+    assert blob and blob.startswith("b64:"), "shadcn tarball missing from scaffold"
+    raw = base64.b64decode(blob[4:])
+    assert raw[:2] == b"\x1f\x8b", "not a gzip payload (corrupt b64 embed)"
+    # the generated scaffold script must carry the decode branch
+    script = build_scaffold_script("/home/runner", files)
+    assert "b64decode" in script
+    assert "open(p, 'wb')" in script
+    ast.parse(script)

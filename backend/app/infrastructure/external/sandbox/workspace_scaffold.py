@@ -26,6 +26,7 @@ creation — the system prompt references it, the agent degrades gracefully
 ("file not found" reads as an honest limit, not a crash).
 """
 
+import base64
 import json
 import logging
 from pathlib import Path
@@ -43,10 +44,16 @@ _MANUAL_DIR = (
     / "manual"
 )
 
-MANUAL_VERSION = 7
+MANUAL_VERSION = 8
 _MARKER = f"manual-version: {MANUAL_VERSION}"
 _SCRIPT_PATH = "/tmp/dzeck_ws_manual_scaffold.py"
 _SESSION_ID = "ws-manual-scaffold"
+
+# Binary assets up to this size travel base64-embedded in the scaffold
+# script ("b64:" prefix). Anything larger (e.g. the canvas-design font
+# pack) is skipped — the text scaffold must stay cheap for every fresh
+# workspace.
+_MAX_BINARY_BYTES = 512 * 1024
 
 
 def collect_manual_files() -> Dict[str, str]:
@@ -64,6 +71,21 @@ def collect_manual_files() -> Dict[str, str]:
         rel = path.relative_to(_MANUAL_DIR).as_posix()
         try:
             files[rel] = path.read_text(encoding="utf-8")
+        except UnicodeDecodeError:
+            # binary asset (tarball, PDF showcase, …) — embed small ones
+            try:
+                raw = path.read_bytes()
+                if len(raw) > _MAX_BINARY_BYTES:
+                    logger.warning(
+                        "Workspace manual: skip large binary %s (%d bytes)",
+                        rel, len(raw),
+                    )
+                    continue
+                files[rel] = "b64:" + base64.b64encode(raw).decode("ascii")
+            except Exception as exc:
+                logger.warning(
+                    "Workspace manual: skip unreadable file %s: %s", rel, exc
+                )
         except Exception as exc:
             logger.warning("Workspace manual: skip unreadable file %s: %s", rel, exc)
     return files
@@ -97,7 +119,7 @@ def build_scaffold_script(user_home: str, files: Dict[str, str]) -> str:
     sandbox. Idempotent via the version marker inside AGENTS.md."""
     payload = json.dumps(files, ensure_ascii=False)
     return (
-        "import json, os\n"
+        "import base64, json, os\n"
         f"FILES = json.loads({payload!r})\n"
         f"TARGET = {user_home.rstrip('/') + '/project'!r}\n"
         f"MARKER = {_MARKER!r}\n"
@@ -116,8 +138,12 @@ def build_scaffold_script(user_home: str, files: Dict[str, str]) -> str:
         "        d = os.path.dirname(p)\n"
         "        if d:\n"
         "            os.makedirs(d, exist_ok=True)\n"
-        "        with open(p, 'w', encoding='utf-8') as f:\n"
-        "            f.write(content)\n"
+        "        if isinstance(content, str) and content.startswith('b64:'):\n"
+        "            with open(p, 'wb') as f:\n"
+        "                f.write(base64.b64decode(content[4:]))\n"
+        "        else:\n"
+        "            with open(p, 'w', encoding='utf-8') as f:\n"
+        "                f.write(content)\n"
         "        n += 1\n"
         "    print('MANUAL_WROTE', n)\n"
     )

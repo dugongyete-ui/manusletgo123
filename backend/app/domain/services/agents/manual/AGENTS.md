@@ -1,6 +1,6 @@
 # AGENTS.md — Operating Manual
 
-manual-version: 7
+manual-version: 8
 
 This folder is your operating manual. It was scaffolded automatically into your
 workspace — it is NOT user content, and it must never be edited, moved, zipped,
@@ -34,9 +34,10 @@ One topic per file — open only what the current task needs:
 ## Skills
 
 `skills/` contains focused playbooks (one folder per skill, each with a
-SKILL.md). The index with load tiers is in SKILLS.md — build skills before
-any matching build, feature skills only when that feature is requested,
-specialist skills on demand. When a task clearly matches a skill, read that
+SKILL.md). The index with load tiers is in SKILLS.md — document skills
+before any document task, build skills before any matching build, feature
+skills only when that feature is requested, and the rest on demand. When a
+task clearly matches a skill, read that
 SKILL.md BEFORE writing any code or file — it encodes the lessons that make
 the difference between "it ran once" and "it actually works".
 
