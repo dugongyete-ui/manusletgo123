@@ -210,12 +210,17 @@ class AgentTaskRunner(TaskRunner):
             logger.debug("rate-limit notice could not be emitted", exc_info=True)
 
     async def _propose_learnings(self, task, user_message: str) -> None:
-        """Post-task learning proposal (Manus KnowledgeEvent PENDING).
+        """Post-task learning distillation (Manus knowledge loop, auto-accept).
 
-        Distils durable learnings from the finished run into PENDING
-        knowledge items and emits ONE KnowledgeEvent so the chat shows
-        accept/reject cards. Strictly best-effort: no repo, a discuss turn,
-        an empty plan, or any failure simply means no proposal.
+        Distils durable learnings from the finished run and saves them
+        directly as ACTIVE knowledge items — accepted automatically, they
+        ride along in future sessions with ZERO user interaction. Nothing is
+        emitted into the chat: the pending accept/reject card read as
+        unprofessional to end users (product decision — same call as hiding
+        the validation gate card). A failed per-item save simply skips that
+        item (reject-on-error, also silent). Strictly best-effort overall:
+        no repo, a discuss turn, an empty plan, or any failure means no
+        learning is stored.
         """
         try:
             if self._knowledge_repository is None:
@@ -252,7 +257,6 @@ class AgentTaskRunner(TaskRunner):
             digest = "\n".join(lines)
 
             from app.domain.services.agents.knowledge_learner import propose_learnings
-            from app.domain.models.event import KnowledgeEvent
             from app.domain.models.knowledge import (
                 KnowledgeItem,
                 KnowledgeKind,
@@ -263,25 +267,32 @@ class AgentTaskRunner(TaskRunner):
             if not items:
                 return
 
-            item_ids: list[str] = []
+            # Auto-accept: lessons land ACTIVE and ride along silently. A
+            # save error skips just that item — reject-on-error, no chat.
+            saved = 0
             for text in items:
-                item = KnowledgeItem(
-                    user_id=self._user_id,
-                    content=text,
-                    kind=KnowledgeKind.LEARNING,
-                    status=KnowledgeStatus.PENDING,
-                    source_session_id=self._session_id,
-                )
-                await self._knowledge_repository.save(item)
-                item_ids.append(item.id)
+                try:
+                    item = KnowledgeItem(
+                        user_id=self._user_id,
+                        content=text,
+                        kind=KnowledgeKind.LEARNING,
+                        status=KnowledgeStatus.ACTIVE,
+                        source_session_id=self._session_id,
+                    )
+                    await self._knowledge_repository.save(item)
+                    saved += 1
+                except Exception:
+                    logger.debug(
+                        "auto-accepted learning could not be saved — skipped",
+                        exc_info=True,
+                    )
 
-            await self._put_and_add_event(
-                task, KnowledgeEvent(items=items, item_ids=item_ids, status="pending")
-            )
-            logger.info(
-                "Session %s: proposed %d learning(s) for user review",
-                self._session_id, len(items),
-            )
+            # Deliberately NO KnowledgeEvent: the chat must stay clean.
+            if saved:
+                logger.info(
+                    "Session %s: auto-accepted %d learning(s) for future sessions",
+                    self._session_id, saved,
+                )
         except Exception:
             logger.debug("learning proposal skipped", exc_info=True)
 
@@ -1089,11 +1100,11 @@ class AgentTaskRunner(TaskRunner):
                     if not await task.input_stream.is_empty():
                         break
 
-                # ── Post-task learning proposal (Manus Knowledge loop) ─────
-                # After a real run, distil durable learnings and store them
-                # PENDING — the user accepts/rejects, accepted knowledge rides
-                # along in future sessions. Best-effort: never blocks, never
-                # raises (see _propose_learnings).
+                # ── Post-task learning distillation (Manus knowledge loop) ─
+                # After a real run, distil durable learnings and auto-accept
+                # them into the user's knowledge store — silently, nothing in
+                # the chat. Best-effort: never blocks, never raises (see
+                # _propose_learnings).
                 await self._propose_learnings(task, message)
 
             await self._session_repository.update_status(self._session_id, SessionStatus.COMPLETED)

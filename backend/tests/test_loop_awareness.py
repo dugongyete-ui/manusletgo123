@@ -1,10 +1,11 @@
 """Unit tests for the adaptive-loop instrumentation ported from browser-use.
 
 Covers (see agents/loop_detector.py + BaseAgent.execute()):
-  1. ActionLoopDetector — hash stability, exempt tools, escalation 5/8/12,
+  1. ActionLoopDetector — hash stability, exempt tools, escalation 3/6/9,
      result-stagnation, window trimming.
-  2. execute() injections — repetition nudges, failure-budget annotations,
-     BUDGET WARNING at >=75%, LAST ROUNDS wrap-up, user-visible loop event.
+  2. execute() injections — repetition nudges, GOAL CHECK re-anchoring,
+     failure-budget annotations, BUDGET WARNING at >=75%, LAST ROUNDS
+     wrap-up, user-visible loop event.
 """
 
 import pytest
@@ -41,25 +42,32 @@ def test_exempt_tools_are_not_tracked():
     assert d.get_nudge_message() is None
 
 
-def test_nudge_escalation_5_8_12():
+def test_nudge_escalation_3_6_9():
     d = ActionLoopDetector()
-    for _ in range(5):
+    for _ in range(3):
         d.record_action("browser_click", {"index": 3})
     msg = d.get_nudge_message()
     assert msg and "similar action" in msg
 
-    for _ in range(3):  # total 8
+    for _ in range(3):  # total 6
         d.record_action("browser_click", {"index": 3})
     assert "LOOP WARNING" in d.get_nudge_message()
 
-    for _ in range(4):  # total 12
+    for _ in range(3):  # total 9
         d.record_action("browser_click", {"index": 3})
     assert "LOOP ALERT" in d.get_nudge_message()
 
 
+def test_nudge_silent_below_threshold():
+    d = ActionLoopDetector()
+    d.record_action("browser_click", {"index": 3})
+    d.record_action("browser_click", {"index": 3})
+    assert d.get_nudge_message() is None
+
+
 def test_result_stagnation_detection():
     d = ActionLoopDetector()
-    for i in range(4):
+    for i in range(3):
         d.record_action("browser_click", {"index": i})
         d.record_result("browser_click", "identical-result")
     msg = d.get_nudge_message()
@@ -130,10 +138,76 @@ def _click_msg(round_id: int) -> AIMessage:
 
 
 @pytest.mark.asyncio
+async def test_goal_check_injected_periodically():
+    """Goal-directedness: while a step runs, the model is re-anchored on the
+    step's goal every 3 rounds (from round 3) so the loop stays aimed at
+    the objective instead of drifting in circles."""
+    agent = _make_agent(max_iterations=10)
+    agent._current_step_description = "Deploy the API service to production"
+    agent.ask = AsyncMock(return_value=_click_msg(0))
+
+    captured: list = []
+
+    async def _fake_ask(messages, format=None):
+        captured.append(list(messages))
+        if len(captured) < 6:
+            return _click_msg(len(captured))
+        return AIMessage(content='{"success": true, "result": "done"}')
+
+    agent.ask_with_messages = AsyncMock(side_effect=_fake_ask)
+    agent.get_tool = lambda name: _FakeTool("browser_click", success=True)
+
+    [e async for e in agent.execute("do the thing")]
+
+    # Rounds 1-2: no GOAL CHECK yet (below the round-3 floor).
+    for early in (captured[0], captured[1]):
+        early_text = " ".join(str(getattr(m, "content", "")) for m in early)
+        assert "GOAL CHECK" not in early_text
+
+    # Round 3: the step goal is re-injected.
+    round3 = " ".join(str(getattr(m, "content", "")) for m in captured[2])
+    assert "GOAL CHECK" in round3
+    assert "Deploy the API service" in round3
+    assert "confirm it DIRECTLY advances this goal" in round3
+
+    # Round 6: injected again (every 3 rounds), not on rounds 4-5.
+    round6 = " ".join(str(getattr(m, "content", "")) for m in captured[5])
+    assert "GOAL CHECK" in round6
+
+
+@pytest.mark.asyncio
+async def test_goal_check_absent_without_step_goal():
+    """Outside execute_step (no current step description) the base agent's
+    _goal_reminder returns None — no GOAL CHECK advisory is ever injected."""
+    agent = _make_agent(max_iterations=10)
+    # NOTE: no _current_step_description set — same state as a planner or
+    # summarize round.
+    agent.ask = AsyncMock(return_value=_click_msg(0))
+
+    captured: list = []
+
+    async def _fake_ask(messages, format=None):
+        captured.append(list(messages))
+        if len(captured) < 6:
+            return _click_msg(len(captured))
+        return AIMessage(content='{"success": true, "result": "done"}')
+
+    agent.ask_with_messages = AsyncMock(side_effect=_fake_ask)
+    agent.get_tool = lambda name: _FakeTool("browser_click", success=True)
+
+    [e async for e in agent.execute("do the thing")]
+
+    all_text = " ".join(
+        str(getattr(m, "content", "")) for batch in captured for m in batch
+    )
+    assert "GOAL CHECK" not in all_text
+
+
+@pytest.mark.asyncio
 async def test_repetition_nudge_and_failure_annotation_injected():
     """Model retries the same failing click forever → the conversation must
     receive the loop nudge + failure-budget annotation; the user must see the
-    self-correction progress line once repetition hits 8."""
+    self-correction progress line once repetition hits 6."""
     agent = _make_agent(max_iterations=10)
     agent.ask = AsyncMock(return_value=_click_msg(0))
 
@@ -159,7 +233,8 @@ async def test_repetition_nudge_and_failure_annotation_injected():
     round4 = " ".join(str(getattr(m, "content", "")) for m in captured[4])
     assert "similar action" in round4
 
-    # Escalation: 8 identical calls by round 7 → LOOP WARNING + user-visible event.
+    # Escalation: 7 identical calls by round 7 → LOOP WARNING (fires at 6)
+    # + user-visible event.
     round7 = " ".join(str(getattr(m, "content", "")) for m in captured[7])
     assert "LOOP WARNING" in round7
     assert any(

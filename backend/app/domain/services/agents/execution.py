@@ -597,6 +597,10 @@ class ExecutionAgent(BaseAgent):
             "rounds_since_check": 0,
             "checks": 0,
         }
+        # Goal text for the periodic GOAL CHECK advisory (BaseAgent.execute
+        # re-anchors the model on this every 3 rounds so long tool loops
+        # stay aimed at the step's objective instead of drifting in circles).
+        self._current_step_description = step.description
 
         prompt = EXECUTION_PROMPT.format(
             step=step.description,
@@ -620,6 +624,16 @@ class ExecutionAgent(BaseAgent):
             # Always clear the progress context — a stale plan reference
             # must never leak into the next step or the summarize phase.
             self._step_progress = None
+            self._current_step_description = None
+
+    def _goal_reminder(self) -> Optional[str]:
+        """Current step goal for the GOAL CHECK advisory (see BaseAgent).
+
+        Returns None outside execute_step so planner/summarize rounds never
+        get a step-goal reminder injected.
+        """
+        desc = getattr(self, "_current_step_description", None)
+        return (desc or "").strip() or None
 
     # ── Live plan progress ─────────────────────────────────────────────────
     # Throttling for the mid-step progress check (see _on_tool_round_end):

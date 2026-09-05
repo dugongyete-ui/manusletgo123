@@ -120,9 +120,11 @@
                unprofessional to end users. Component kept at
                src/components/ValidationCard.vue for easy re-enable. -->
 
-          <!-- Post-task learning proposals (Manus knowledge loop): accept or
-               dismiss what the agent wants to remember for future tasks. -->
-          <KnowledgeCard :items="pendingLearnings" />
+          <!-- Post-task learning proposals (Manus knowledge loop): HIDDEN
+               per product decision — the accept/reject card read as
+               unprofessional to end users. Learnings are auto-accepted
+               silently in the backend now. Component kept at
+               src/components/KnowledgeCard.vue for easy re-enable. -->
 
           <!-- Loading indicator — hidden while streaming acknowledgment chunks -->
           <LoadingIndicator v-if="isLoading && !streamingMessageContent" :text="currentThinkingText || $t('Thinking')" />
@@ -158,7 +160,6 @@ import { useRouter, onBeforeRouteUpdate } from 'vue-router';
 import { useI18n } from 'vue-i18n';
 import ChatBox from '../components/ChatBox.vue';
 import ChatMessage from '../components/ChatMessage.vue';
-import KnowledgeCard, { type PendingLearning } from '../components/KnowledgeCard.vue';
 import ScheduleDialog from '../components/ScheduleDialog.vue';
 import StepTimeline from '../components/StepTimeline.vue';
 import * as agentApi from '../api/agent';
@@ -171,7 +172,6 @@ import {
   ErrorEventData,
   TitleEventData,
   PlanEventData,
-  KnowledgeEventData,
   AgentSSEEvent,
 } from '../types/event';
 import ToolPanel from '../components/ToolPanel.vue'
@@ -664,36 +664,10 @@ const handlePlanEvent = (planData: PlanEventData) => {
 }
 
 // ── Post-task learning proposals (Manus knowledge loop) ─────────────
-const pendingLearnings = ref<PendingLearning[]>([]);
-const handleKnowledgeEvent = (data: KnowledgeEventData) => {
-  const ids = data.item_ids || [];
-  const fresh: PendingLearning[] = (data.items || []).map((text, i) => ({
-    id: ids[i] || null,
-    text,
-    status: 'pending' as const,
-  }));
-  // Only show items that are still undecided on reload — accepted/dismissed
-  // ones already live in the user's knowledge store.
-  if (fresh.length) {
-    pendingLearnings.value = [...pendingLearnings.value, ...fresh];
-  }
-};
-const refreshLearningStates = async () => {
-  // On (re)load, mark proposals whose backend status already changed so the
-  // card never re-asks a question the user already answered.
-  try {
-    const { getKnowledge } = await import('../api/knowledge');
-    const { items } = await getKnowledge();
-    const byContent = new Map(items.map((k) => [k.content, k.status]));
-    for (const learning of pendingLearnings.value) {
-      const status = learning.text ? byContent.get(learning.text) : undefined;
-      if (status === 'active') learning.status = 'active';
-      else if (status === 'rejected') learning.status = 'rejected';
-    }
-  } catch {
-    // Offline / not logged in — cards simply stay interactive.
-  }
-};
+// Product decision: lessons are auto-accepted silently in the backend
+// (status ACTIVE, no KnowledgeEvent emitted) — the chat never renders an
+// accept/reject card. Incoming 'knowledge' events (only possible from
+// sessions recorded BEFORE this change) are ignored on purpose.
 
 // Main event handler function
 const handleEvent = (event: AgentSSEEvent) => {
@@ -734,9 +708,9 @@ const handleEvent = (event: AgentSSEEvent) => {
     handleTitleEvent(event.data as TitleEventData);
   } else if (event.event === 'plan') {
     handlePlanEvent(event.data as PlanEventData);
-  } else if (event.event === 'knowledge') {
-    handleKnowledgeEvent(event.data as KnowledgeEventData);
   }
+  // 'knowledge' events are intentionally ignored — lessons are
+  // auto-accepted in the backend and never shown in the chat.
   lastEventId.value = event.data.event_id;
 }
 
@@ -842,10 +816,6 @@ const restoreSession = async () => {
   realTime.value = false;
   for (const event of session.events) {
     handleEvent(event);
-  }
-  // Mark learning proposals the user already decided (reload must not re-ask).
-  if (pendingLearnings.value.length) {
-    await refreshLearningStates();
   }
   realTime.value = true;
   if (

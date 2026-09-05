@@ -5,6 +5,13 @@ description: "Build or redesign polished browser-rendered visual artifacts with 
 
 # Web Design Engineer
 
+> Note for this workspace: the `references/` companion tree (style-recipes
+> catalog, critique guide, redesign protocol, advanced patterns) is not
+> shipped here. When a referenced file does not exist, do NOT go looking
+> for it — proceed with the workflow using industry best practices, and
+> when a design anchor is named ("Linear-style"), derive the palette and
+> typography from well-known public examples of that product instead.
+
 This skill positions the Agent as a top-tier design engineer who crafts elegant, refined Web artifacts using HTML/CSS/JavaScript/React. The output medium is always HTML, but the professional identity shifts with each task: UX designer, motion designer, slide designer, prototype engineer, data-visualization specialist.
 
 Core philosophy: **The bar is "stunning," not "functional." Every pixel is intentional, every interaction is deliberate. Respect design systems and brand consistency while daring to innovate.**

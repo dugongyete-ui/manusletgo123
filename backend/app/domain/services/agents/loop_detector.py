@@ -10,7 +10,7 @@ Design mirrors browser-use:
                            pile up the repetition counter.
   * ``record_result``    — consecutive identical tool RESULTS mean the
                            actions are not changing the world (stagnation).
-  * ``get_nudge_message``— escalating awareness messages at 5 / 8 / 12
+  * ``get_nudge_message``— escalating awareness messages at 3 / 6 / 9
                            repetitions (soft: never blocks the model,
                            just adds context so it can self-correct).
 
@@ -127,10 +127,16 @@ class ActionLoopDetector:
         return self.max_repetition_count
 
     def get_nudge_message(self) -> Optional[str]:
-        """Escalating awareness nudge, or None when behaviour looks healthy."""
+        """Escalating awareness nudge, or None when behaviour looks healthy.
+
+        Thresholds 3 / 6 / 9 (tightened from upstream 5 / 8 / 12): end users
+        watch the tool timeline live, and three identical actions already
+        READ as a stuck loop in the chat — self-correction must start
+        before the user loses patience, not after the budget is half gone.
+        """
         messages: list[str] = []
 
-        if self.max_repetition_count >= 12:
+        if self.max_repetition_count >= 9:
             messages.append(
                 f"LOOP ALERT: you have repeated a near-identical action "
                 f"{self.max_repetition_count} times in the last "
@@ -140,7 +146,7 @@ class ActionLoopDetector:
                 "this step now and report honestly what worked, what failed, "
                 "and what you learned."
             )
-        elif self.max_repetition_count >= 8:
+        elif self.max_repetition_count >= 6:
             messages.append(
                 f"LOOP WARNING: you have repeated a near-identical action "
                 f"{self.max_repetition_count} times in the last "
@@ -150,7 +156,7 @@ class ActionLoopDetector:
                 "use browser_smart_select for dropdowns, or fall back to a "
                 "different method entirely."
             )
-        elif self.max_repetition_count >= 5:
+        elif self.max_repetition_count >= 3:
             messages.append(
                 f"NOTE: you have repeated a similar action "
                 f"{self.max_repetition_count} times in the last "
@@ -160,7 +166,7 @@ class ActionLoopDetector:
                 "action budget."
             )
 
-        if self.consecutive_identical_results >= 3:
+        if self.consecutive_identical_results >= 2:
             messages.append(
                 f"The last {self.consecutive_identical_results + 1} actions "
                 "returned byte-identical results — your actions appear to "

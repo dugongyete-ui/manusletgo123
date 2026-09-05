@@ -1,6 +1,6 @@
 # AGENTS.md — Operating Manual
 
-manual-version: 8
+manual-version: 9
 
 This folder is your operating manual. It was scaffolded automatically into your
 workspace — it is NOT user content, and it must never be edited, moved, zipped,

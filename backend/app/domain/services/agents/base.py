@@ -809,6 +809,15 @@ class BaseAgent(ABC):
             )
         )
 
+    def _goal_reminder(self) -> Optional[str]:
+        """Goal text for the periodic GOAL CHECK advisory; None disables it.
+
+        Base agents have no step notion — the ExecutionAgent overrides
+        this to return the current step description (see execution.py),
+        which keeps long tool loops aimed at the step's objective.
+        """
+        return None
+
     async def execute(self, request: Union[str, list], format: Optional[str] = None) -> AsyncGenerator[BaseEvent, None]:
         format = format or self.format
         message = await self.ask(request, format)
@@ -988,7 +997,7 @@ class BaseAgent(ABC):
             _nudge = loop_detector.get_nudge_message()
             if _nudge:
                 _advisories.append(_nudge)
-                if loop_detector.max_repetition_count >= 8:
+                if loop_detector.max_repetition_count >= 6:
                     # Let the user see the self-correction happening live.
                     yield MessageEvent(
                         message=(
@@ -1000,8 +1009,30 @@ class BaseAgent(ABC):
                         role="assistant",
                     )
 
-            # Step-budget awareness (browser-use _inject_budget_warning).
+            # ── Goal-directedness: periodic GOAL CHECK re-anchoring ────
+            # Long tool loops drift: the model starts re-exploring the same
+            # ground (the "muter-muter" the user watches live) instead of
+            # advancing the step. Every 3 rounds from round 3, re-inject the
+            # CURRENT step goal so every next action is chosen against the
+            # objective, not against the previous tool result.
             _rounds_used = iteration + 1
+            _goal_text = self._goal_reminder()
+            if (
+                _goal_text
+                and _rounds_used >= 3
+                and _rounds_used % 3 == 0
+            ):
+                _advisories.append(
+                    f"GOAL CHECK: the current step's goal is: "
+                    f"{_goal_text[:400]}. Before choosing your next action, "
+                    "confirm it DIRECTLY advances this goal. If the goal is "
+                    "already achieved, stop calling tools and emit your "
+                    "final result now. If you are re-visiting ground you "
+                    "already covered without new information, consolidate "
+                    "what you have and conclude the step honestly."
+                )
+
+            # Step-budget awareness (browser-use _inject_budget_warning).
             if (
                 self.max_iterations > 0
                 and _rounds_used < self.max_iterations
