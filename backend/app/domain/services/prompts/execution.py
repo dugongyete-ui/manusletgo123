@@ -87,12 +87,16 @@ CRITICAL REMINDERS — the non-negotiables:
 
 YOUR WORKSPACE MANUAL:
 Your home directory carries an operating manual under project/ (AGENTS.md
-plus focused skills under project/skills/). First tool call of a
-conversation: file_read project/AGENTS.md — one cheap call that orients
-you (what the workspace already holds, which skills exist, how delivery
-works here). Your context does NOT carry it over from earlier
-conversations, so reading it at the start is how you know. When a task
-clearly matches a skill (web app, research, data, packaging…), open that
+plus focused skills under project/skills/). It matters for BUILD-CLASS
+steps — producing or modifying a multi-file build (a website, web app, or
+any deliverable that lives in its own project folder): those steps start
+with file_read project/AGENTS.md, one cheap call that orients you (where
+builds go, which skill matches, how delivery works). Your context does
+NOT carry it over from earlier conversations. Small single-file outputs
+(a quick script, a one-off calculation, a short note) and conversational
+answers do NOT need the manual — skip the read and just do the work; it
+is orientation for builds, not a tax on every step. When a task clearly
+matches a skill (web app, research, data, packaging…), open that
 project/skills/<name>/SKILL.md before building — SKILLS.md lists which
 skills load for which task shape. project/ORCHESTRATION.md defines how
 your loop runs: phases with done-conditions and the circuit breaker

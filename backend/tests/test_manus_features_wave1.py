@@ -194,11 +194,13 @@ async def test_classify_chat_mode_failure_defaults_to_agent(monkeypatch):
         raise RuntimeError("no provider")
 
     # The classifier imports the builder lazily from the base module at call
-    # time, so patching the module attribute intercepts it.
+    # time, so patching the module attribute intercepts it. Note: a trivial
+    # greeting is handled by the deterministic fast path and never reaches
+    # the model — so this test must use a non-trivial message.
     monkeypatch.setattr(
         "app.domain.services.agents.base._build_chat_model", broken_builder
     )
-    mode, confidence = await classify_chat_mode("halo")
+    mode, confidence = await classify_chat_mode("please research the latest news for me")
     assert mode == CHAT_MODE_AGENT
     assert confidence == 0.0
 

@@ -17,6 +17,7 @@ from typing import Optional, Tuple
 import asyncio
 import json
 import logging
+import re
 
 from langchain.messages import SystemMessage as LCSystemMessage
 from langchain.messages import HumanMessage as LCHumanMessage
@@ -30,6 +31,57 @@ CHAT_MODE_DISCUSS = "discuss"
 DISCUSS_MIN_CONFIDENCE = 0.6
 
 _CLASSIFY_TIMEOUT_S = 12.0
+
+# ── Deterministic trivial-chat fast path ────────────────────────────────────
+# A message that is ENTIRELY a greeting / acknowledgement / farewell (any mix
+# of English, Indonesian, and chat slang) is pure conversation — it never
+# needs tools. Sending it to the model wastes latency, and a low-confidence
+# model answer used to drop it into agent mode, where the executor's "read
+# AGENTS.md first" instruction made a bare "hai" open the workspace manual —
+# the exact mismatch users saw. The gate fires ONLY when every token is a
+# known trivial token and the message is short; "hai, buatkan website" keeps
+# the normal semantic path because "buatkan"/"website" are not trivial.
+_TRIVIAL_TOKENS = frozenset({
+    # greetings — EN / ID / misc
+    "hi", "hii", "hiii", "hai", "haii", "hy", "hello", "helloo", "halo",
+    "haloo", "hey", "heyy", "heyo", "yo", "yoo", "sup", "oi", "oy",
+    "pagi", "pagii", "siang", "siangg", "sore", "soree", "malam",
+    "malamm", "selamat", "assalamualaikum", "wr", "wb", "hola", "bonjour",
+    "ciao", "nihao", "annyeong",
+    # acknowledgements
+    "ok", "oke", "okeh", "okey", "okee", "okok", "k", "kk", "siap",
+    "sip", "sipp", "sippp", "yes", "ya", "yaa", "yup", "yups", "yoi",
+    "no", "noo", "enggak", "nggak", "gak", "gk", "ndak", "hm", "hmm",
+    "hmmm", "mm", "mmm", "eh", "ehm", "umm", "wow", "wee", "waw",
+    # reactions
+    "good", "nice", "great", "cool", "mantap", "mantul", "keren",
+    "sepp", "joss", "cakep", "mantab",
+    # thanks
+    "thanks", "thank", "thankss", "thx", "tks", "ty", "tq", "makasih",
+    "makasihh", "makasi", "mksih", "tengkyu", "thankyou",
+    # farewells
+    "bye", "byee", "bai", "dadah", "daah", "gtg", "cya", "cu",
+    # pings
+    "bot", "bro", "gan", "kak", "min", "tes", "test", "testing",
+})
+
+_TRIVIAL_TOKEN_MAX = 5
+_TOKEN_SPLIT = re.compile(r"[\s,.!?;:\u2026\u2014\u2013()\[\]{}\"']+")
+
+
+def _is_trivial_chat(text: str) -> bool:
+    """True when the whole message is pure small talk — greeting, ack, thanks,
+    farewell, or an emoji/punctuation-only message. Never true for anything
+    containing a request, question word, or task vocabulary."""
+    tokens = [t for t in _TOKEN_SPLIT.split(text.lower()) if t]
+    # Keep only tokens with real alphanumeric content; an emoji-only or
+    # punctuation-only message ("👋", "!!!", "…") leaves nothing.
+    word_tokens = [t for t in tokens if any(c.isalnum() for c in t)]
+    if not word_tokens:
+        return bool(text.strip())
+    if len(word_tokens) > _TRIVIAL_TOKEN_MAX:
+        return False
+    return all(t in _TRIVIAL_TOKENS for t in word_tokens)
 
 _SYSTEM = (
     "You classify user messages sent to an AI assistant that has real "
@@ -45,8 +97,14 @@ _SYSTEM = (
     "deliverables, running code, data analysis, building apps or sites, "
     "processing attachments/images, or any request whose answer must be "
     "produced rather than known.\n"
+    "Quick calibration — a bare greeting in ANY language (hi, hai, halo, "
+    "hello, hey, pagi, assalamualaikum…) is always DISCUSS with confidence "
+    "0.95 or higher; a greeting that ALSO carries a request (\"hai, buatkan "
+    "website\", \"hi, research X for me\") is AGENT — the attached work "
+    "decides, not the greeting word.\n"
     'Reply with compact JSON only: {"mode": "discuss"|"agent", '
-    '"confidence": 0.0-1.0}. When in doubt, prefer "agent".'
+    '"confidence": 0.0-1.0}. When genuinely unsure whether real work is being '
+    'requested, prefer "agent" — but a bare greeting is never a doubt.'
 )
 
 
@@ -58,6 +116,11 @@ async def classify_chat_mode(
     text = (message_text or "").strip()
     if not text:
         return CHAT_MODE_AGENT, 0.0
+
+    # Deterministic fast path: pure small talk is discuss without a model call
+    # — zero latency, zero cost, and immune to provider hiccups.
+    if _is_trivial_chat(text):
+        return CHAT_MODE_DISCUSS, 0.99
 
     prompt = ""
     if conversation_history and conversation_history.strip():
