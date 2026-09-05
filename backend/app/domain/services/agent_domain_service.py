@@ -5,7 +5,18 @@ from datetime import datetime, timezone
 from app.domain.models.session import Session, SessionStatus
 from app.domain.external.sandbox import Sandbox
 from app.domain.external.search import SearchEngine
-from app.domain.models.event import BaseEvent, ErrorEvent, DoneEvent, MessageEvent, WaitEvent, AgentEvent
+from app.domain.models.event import (
+    BaseEvent,
+    ErrorEvent,
+    DoneEvent,
+    MessageEvent,
+    WaitEvent,
+    AgentEvent,
+    TitleEvent,
+    PlanEvent,
+    StepEvent,
+    ToolEvent,
+)
 from pydantic import TypeAdapter
 from app.domain.repositories.agent_repository import AgentRepository
 from app.domain.repositories.session_repository import SessionRepository
@@ -42,6 +53,71 @@ class AgentDomainService:
         if session_id not in self._session_locks:
             self._session_locks[session_id] = asyncio.Lock()
         return self._session_locks[session_id]
+
+    # ── Recovery provenance scan ────────────────────────────────────────
+    # FEEDBACK-LOOP ROOT CAUSE (fixed 2026-09-05): the recovery path used to
+    # re-queue session.latest_message as a user message — but the runner also
+    # updates latest_message for AGENT output (narrations, acks, replies).
+    # After a backend restart (task registry is in-memory) every SSE reconnect
+    # re-fed the agent's OWN text as user input; the agent answered itself,
+    # that answer became the new latest_message, and the loop repeated on
+    # every reload. The scan below resolves input from PERSISTED EVENTS, so a
+    # user message can only be recovered when it was genuinely never
+    # processed — agent text can never be re-injected as user input.
+    _PROCESSED_EVIDENCE_TYPES = (
+        TitleEvent, PlanEvent, StepEvent, ToolEvent,
+        DoneEvent, ErrorEvent, WaitEvent,
+    )
+
+    @classmethod
+    def _last_unprocessed_user_message(cls, session: "Session") -> Optional[str]:
+        """The last genuine USER message that was never processed, or None.
+
+        Scans the persisted event log backward. The newest user message is
+        recoverable only when NO substantive agent activity follows it (any
+        assistant message, title/plan/step/tool event, or terminal event all
+        count as "the run already acted on this input"). Fallback to the
+        provenance-safe latest_user_message pointer for sessions whose event
+        log is empty (the pointer is only ever written by chat() for real
+        user input, never for agent output)."""
+        events = session.events or []
+        for event in reversed(events):
+            if isinstance(event, MessageEvent):
+                if event.role == "user":
+                    # First user message found scanning backward. Everything
+                    # after it (already scanned) was non-substantive, else we
+                    # would have returned None below.
+                    message = (event.message or "").strip()
+                    return message or None
+                # An assistant message AFTER the last user message — the turn
+                # was answered (progress narration, ack, or final summary).
+                return None
+            if isinstance(event, cls._PROCESSED_EVIDENCE_TYPES):
+                # The run already started/finished acting on the last user
+                # input (title generated, plan created, tool fired, terminal
+                # event delivered) — nothing left to recover.
+                return None
+            # MessageChunkEvent / KnowledgeEvent / unknown runtime noise —
+            # keep scanning; they are not evidence of processing.
+        # Event log exhausted with no user message and no activity: fall
+        # back to the provenance-safe pointer (covers early-persist messages
+        # whose event write raced, e.g. legacy sessions).
+        return (session.latest_user_message or "").strip() or None
+
+    @classmethod
+    def _last_assistant_was_final(cls, session: "Session") -> bool:
+        """True when the newest assistant message is a FINAL summary.
+
+        Used to resolve a stale RUNNING/IN_QUEUE status honestly after a
+        restart: final summary present → the turn finished (COMPLETED);
+        otherwise the run was interrupted (FAILED)."""
+        for event in reversed(session.events or []):
+            if isinstance(event, MessageEvent):
+                if event.role == "assistant":
+                    return bool(event.is_final)
+                return False
+        return False
+
 
     def __init__(
         self,
@@ -306,7 +382,15 @@ class AgentDomainService:
                     return dt
 
                 incoming_ts = _to_utc_naive(timestamp) if timestamp else None
-                stored_ts   = _to_utc_naive(session.latest_message_at) if session.latest_message_at else None
+                # Provenance-safe: compare against the last GENUINE user
+                # message, not latest_message_at (which agent narrations also
+                # update — a real user follow-up sent within 10 s of a
+                # narration was wrongly deduplicated and silently dropped).
+                stored_ts = (
+                    _to_utc_naive(session.latest_user_message_at)
+                    if session.latest_user_message_at
+                    else None
+                )
 
                 is_reconnect = (
                     session.status == SessionStatus.RUNNING
@@ -338,6 +422,13 @@ class AgentDomainService:
                     await self._session_repository.update_latest_message(
                         session_id, message, timestamp or datetime.now()
                     )
+                    # Provenance-safe pointer: ONLY real user input lands here
+                    # (the runner never writes these fields for agent output).
+                    # Recovery and reconnect-dedup read this pointer — see
+                    # _last_unprocessed_user_message for the loop this prevents.
+                    await self._session_repository.update_latest_user_message(
+                        session_id, message, timestamp or datetime.now()
+                    )
                     message_event = MessageEvent(
                         message=message,
                         role="user",
@@ -358,7 +449,15 @@ class AgentDomainService:
                     # the flow flips it to RUNNING the moment it starts (the
                     # frontend can show a distinct "queued" state during the
                     # 1-7 min first boot instead of a misleading "running").
-                    if session.status != SessionStatus.RUNNING:
+                    # WAITING is EXEMPT: the flow resumes an ask_user answer
+                    # from the WAITING state (WAITING → EXECUTING), and the
+                    # discuss gate keeps WAITING in agent mode — flipping it
+                    # to IN_QUEUE here broke both (the resume branch was dead
+                    # code and answers could be misrouted to discuss mode).
+                    if session.status not in (
+                        SessionStatus.RUNNING,
+                        SessionStatus.WAITING,
+                    ):
                         await self._session_repository.update_status(
                             session_id, SessionStatus.IN_QUEUE
                         )
@@ -419,17 +518,27 @@ class AgentDomainService:
                     self._inflight_setups[session_id] = setup_task
                     await asyncio.shield(setup_task)
                     logger.debug(f"Put message into Session {session_id}'s event queue: {message[:50]}...")
-            elif task is None and session.latest_message and session.status not in (SessionStatus.COMPLETED, SessionStatus.WAITING):
-                # Re-subscribe with no new message. Two sub-cases:
+            elif task is None and session.status not in (SessionStatus.COMPLETED, SessionStatus.WAITING):
+                # Re-subscribe with no new message. Three sub-cases:
                 #  1. The first-message setup is STILL RUNNING in the background
                 #     (page reload during the 1–7 min sandbox first boot; the
                 #     shielded setup survived the disconnect). Wait for it and
                 #     subscribe to the task it publishes — the queued message
                 #     is already owned by that setup, re-queueing would
                 #     duplicate the work (two replies, two titles).
-                #  2. No live setup (old build lost it, or the process
-                #     restarted): rebuild the task and re-queue the last user
-                #     message so the work is not lost.
+                #  2. A genuine unprocessed USER message exists (persisted but
+                #     the task never acted on it — process restarted before the
+                #     run started). Rebuild the task and re-queue THAT message.
+                #     The source is the persisted event log (provenance-safe),
+                #     never session.latest_message: that preview field is also
+                #     written by agent output, and re-feeding it created the
+                #     self-answering feedback loop (agent narration re-injected
+                #     as a user message on every reconnect after a restart).
+                #  3. Nothing recoverable, but the status is stuck in
+                #     RUNNING/IN_QUEUE (task registry is in-memory and died
+                #     with the restart). Resolve it honestly instead of leaving
+                #     an eternal spinner: final summary present → COMPLETED,
+                #     otherwise → FAILED with a persisted explanation.
                 inflight = self._inflight_setups.get(session_id)
                 if inflight is not None and not inflight.done():
                     logger.info(
@@ -446,24 +555,64 @@ class AgentDomainService:
                             "First-message setup completed but published no task"
                         )
                 else:
-                    logger.warning(
-                        "[Recovery] Session %s: no live task but unprocessed user "
-                        "message found — rebuilding task and re-queuing", session_id,
-                    )
-                    last_message = session.latest_message
+                    last_user_message = self._last_unprocessed_user_message(session)
+                    if last_user_message:
+                        logger.warning(
+                            "[Recovery] Session %s: no live task but unprocessed "
+                            "USER message found — rebuilding task and re-queuing "
+                            "(source: event log, not latest_message)", session_id,
+                        )
 
-                    async def _recover() -> None:
-                        nonlocal task
-                        task = await self._create_task(session)
-                        if not task:
-                            raise RuntimeError("Failed to create task during recovery")
-                        message_event = MessageEvent(message=last_message, role="user")
-                        event_id = await task.input_stream.put(message_event.model_dump_json())
-                        message_event.id = event_id
-                        await self._session_repository.add_event(session_id, message_event)
-                        await task.run()
+                        async def _recover() -> None:
+                            nonlocal task
+                            task = await self._create_task(session)
+                            if not task:
+                                raise RuntimeError("Failed to create task during recovery")
+                            message_event = MessageEvent(message=last_user_message, role="user")
+                            event_id = await task.input_stream.put(message_event.model_dump_json())
+                            message_event.id = event_id
+                            # NOTE: deliberately NOT add_event here — the user
+                            # message is already persisted (chat() fast path);
+                            # re-persisting duplicated the bubble on reload.
+                            await task.run()
 
-                    await asyncio.shield(_recover())
+                        # Register in the in-flight registry so CONCURRENT
+                        # reconnects (mobile fetchEventSource retries every few
+                        # seconds) share ONE recovery instead of spawning N
+                        # duplicate re-feeds — the registry is empty after a
+                        # restart, which is what allowed the triple re-feed.
+                        recover_task = asyncio.ensure_future(_recover())
+                        self._inflight_setups[session_id] = recover_task
+                        try:
+                            await asyncio.shield(recover_task)
+                        finally:
+                            if self._inflight_setups.get(session_id) is recover_task:
+                                self._inflight_setups.pop(session_id, None)
+                    elif session.status in (SessionStatus.RUNNING, SessionStatus.IN_QUEUE):
+                        # Stuck non-terminal status with no live task and
+                        # nothing recoverable — the run died with the process.
+                        was_final = self._last_assistant_was_final(session)
+                        resolved = (
+                            SessionStatus.COMPLETED if was_final else SessionStatus.FAILED
+                        )
+                        await self._session_repository.update_status(session_id, resolved)
+                        logger.warning(
+                            "[StaleStatus] Session %s: stuck in %s with no live task "
+                            "after restart — resolved to %s (final summary: %s)",
+                            session_id, session.status.value, resolved.value, was_final,
+                        )
+                        if was_final:
+                            yield DoneEvent()
+                        else:
+                            event = ErrorEvent(
+                                error=(
+                                    "The previous run was interrupted by a server "
+                                    "restart. Send your message again to continue."
+                                )
+                            )
+                            await self._session_repository.add_event(session_id, event)
+                            yield event
+                        return
             
             logger.info(f"Session {session_id} started")
             logger.debug(f"Session {session_id} task: {task}")

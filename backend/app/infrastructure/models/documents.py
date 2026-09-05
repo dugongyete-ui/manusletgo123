@@ -95,6 +95,8 @@ class SessionDocument(BaseDocument[Session], id_field="session_id", domain_model
     unread_message_count: int = 0
     latest_message: Optional[str] = None
     latest_message_at: Optional[datetime] = None
+    latest_user_message: Optional[str] = None
+    latest_user_message_at: Optional[datetime] = None
     created_at: datetime = datetime.now(timezone.utc)
     updated_at: datetime = datetime.now(timezone.utc)
     events: List[AgentEvent]

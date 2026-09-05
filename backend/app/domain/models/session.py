@@ -46,6 +46,13 @@ class Session(BaseModel):
     unread_message_count: int = 0
     latest_message: Optional[str] = None
     latest_message_at: Optional[datetime] = Field(default_factory=lambda: datetime.now(UTC))
+    # Provenance-safe pointer to the last GENUINE user message. `latest_message`
+    # is a preview field and is also updated by AGENT messages (narrations,
+    # replies) — using it as an input source caused the re-feed feedback loop
+    # (agent narration re-injected as a user message after backend restarts).
+    # Only chat() writes these two fields, only for real user input.
+    latest_user_message: Optional[str] = None
+    latest_user_message_at: Optional[datetime] = None
     created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
     updated_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
     events: List[AgentEvent] = []

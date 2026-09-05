@@ -148,6 +148,20 @@ class MongoSessionRepository(SessionRepository):
         if not result:
             raise ValueError(f"Session {session_id} not found")
 
+    async def update_latest_user_message(self, session_id: str, message: str, timestamp: datetime) -> None:
+        """Atomically update the provenance-safe last-USER-message pointer.
+
+        Written ONLY by chat() for genuine user input. Recovery re-queues and
+        reconnect dedup must read this, never latest_message (which agent
+        output also updates — the re-feed feedback loop root cause)."""
+        result = await SessionDocument.find_one(
+            SessionDocument.session_id == session_id
+        ).update(
+            {"$set": {"latest_user_message": message, "latest_user_message_at": timestamp, "updated_at": datetime.now(UTC)}}
+        )
+        if not result:
+            raise ValueError(f"Session {session_id} not found")
+
     async def update_sandbox_id(self, session_id: str, sandbox_id: Optional[str]) -> None:
         """Atomically update the sandbox pointer of a session (never touches events)"""
         result = await SessionDocument.find_one(

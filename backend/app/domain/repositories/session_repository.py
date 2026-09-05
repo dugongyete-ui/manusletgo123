@@ -36,7 +36,15 @@ class SessionRepository(Protocol):
         ...
 
     async def update_latest_message(self, session_id: str, message: str, timestamp: datetime) -> None:
-        """Update the latest message of a session"""
+        """Update the latest message of a session (preview — any role)"""
+        ...
+
+    async def update_latest_user_message(self, session_id: str, message: str, timestamp: datetime) -> None:
+        """Update the last GENUINE user message pointer (provenance-safe).
+
+        Only written by chat() for real user input — never by agent
+        narrations/replies. Recovery and reconnect-dedup read this instead
+        of latest_message, which is also updated by agent output."""
         ...
 
     async def update_sandbox_id(self, session_id: str, sandbox_id: Optional[str]) -> None:
