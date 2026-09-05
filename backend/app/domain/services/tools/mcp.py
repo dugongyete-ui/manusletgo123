@@ -6,7 +6,13 @@ from contextlib import AsyncExitStack
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
 from mcp.client.sse import sse_client
-from mcp.client.streamable_http import streamablehttp_client
+
+# mcp renamed streamablehttp_client → streamable_http_client across versions;
+# support both so a dependency refresh never breaks the import.
+try:
+    from mcp.client.streamable_http import streamablehttp_client  # mcp < 1.26
+except ImportError:  # pragma: no cover — depends on installed mcp version
+    from mcp.client.streamable_http import streamable_http_client as streamablehttp_client
 from mcp.types import Tool as MCPToolkit
 
 from app.domain.services.tools.base import BaseToolkit
