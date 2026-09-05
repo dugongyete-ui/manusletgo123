@@ -327,14 +327,22 @@ def _scheme_rejection(url: str) -> Optional[ToolResult]:
     candidate = (url or "").strip().lower()
     for scheme in _BLOCKED_URL_SCHEMES:
         if candidate.startswith(scheme):
-            return ToolResult(
-                success=False,
-                message=(
-                    f"Cannot open {url}: '{scheme[:-1]}' URLs are not "
-                    f"supported by the browser tools. Use a normal "
-                    f"http(s):// page URL instead."
-                ),
+            message = (
+                f"Cannot open {url}: '{scheme[:-1]}' URLs are not "
+                f"supported by the browser tools. Use a normal "
+                f"http(s):// page URL instead."
             )
+            if scheme == "file:":
+                # Local-file viewing has a one-step recovery the model can
+                # run itself — tell it how instead of leaving it stuck.
+                message += (
+                    " To view or test a local file, serve its directory over "
+                    "HTTP and browse that: run "
+                    "`python3 -m http.server 8000 --directory <dir> &` in "
+                    "shell_exec, then browser_navigate to "
+                    "http://localhost:8000/<filename>."
+                )
+            return ToolResult(success=False, message=message)
     return None
 
 
@@ -3111,7 +3119,18 @@ class BrowserUseBrowser:
                 # multiple statements are allowed AND the completion value
                 # (last expression) is returned.
                 js = f"(async () => (0, eval)({_json.dumps(js)}))"
-            result = await self._call_with_deadline(page.evaluate(js), timeout=60.0)
+            try:
+                result = await self._call_with_deadline(page.evaluate(js), timeout=60.0)
+            except Exception as eval_exc:
+                # A top-level `return` (e.g. "return document.title;") is a
+                # SyntaxError under eval — console habits die hard. Retry
+                # once with the code as an async function BODY, where return
+                # is legal and its value becomes the result.
+                if "Illegal return statement" not in str(eval_exc):
+                    raise
+                body = f"(async function () {{\n{javascript.strip()}\n}})()"
+                js = f"(async () => (0, eval)({_json.dumps(body)}))"
+                result = await self._call_with_deadline(page.evaluate(js), timeout=60.0)
 
             # Collect the NEW console lines produced by this execution.
             new_logs = []

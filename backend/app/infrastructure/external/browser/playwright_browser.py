@@ -1430,7 +1430,17 @@ class PlaywrightBrowser:
         await self._ensure_page()
         # Capture console output produced by the user's code.
         await self._ensure_console_capture()
-        result = await self.page.evaluate(javascript)
+        try:
+            result = await self.page.evaluate(javascript)
+        except Exception as eval_exc:
+            # A top-level `return` (e.g. "return document.title;") is a
+            # SyntaxError as a bare expression. Retry once with the code as
+            # an async function body, where return is legal and its value
+            # becomes the result.
+            if "Illegal return statement" not in str(eval_exc):
+                raise
+            body = f"async () => {{\n{javascript.strip()}\n}}"
+            result = await self.page.evaluate(body)
         return ToolResult(success=True, data={"result": result})
 
     async def console_view(self, max_lines: Optional[int] = None) -> ToolResult:

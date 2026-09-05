@@ -15,6 +15,7 @@ from typing import Callable, List, Optional
 import logging
 import uuid
 
+from app.domain.models.memory import Memory
 from app.domain.services.tools.base import BaseToolkit
 from app.domain.models.tool_result import ToolResult
 from app.domain.external.sandbox import Sandbox
@@ -31,6 +32,37 @@ logger = logging.getLogger(__name__)
 _NESTED_MAX_ITERATIONS = 25
 # Keep the report digestible for the parent's context (chars).
 _REPORT_MAX_CHARS = 8_000
+
+
+class _TransientAgentRepository:
+    """In-memory AgentRepository stand-in for NESTED agents.
+
+    A sub-agent lives exactly as long as one task_delegate call: its memory
+    is consumed in-process (the final report is read from the live object),
+    so it must never touch MongoDB. Pointing it at the real repository made
+    the very first save_memory fail with "Agent <nested-id> not found" —
+    the nested id is deliberately never persisted — and persistence would
+    also leak one garbage document per delegation. This wrapper keeps the
+    AgentRepository protocol shape while storing everything locally.
+    """
+
+    def __init__(self) -> None:
+        self._memories = {}
+
+    async def save(self, agent) -> None:  # pragma: no cover — protocol shape
+        return None
+
+    async def find_by_id(self, agent_id: str):  # pragma: no cover
+        return None
+
+    async def add_memory(self, agent_id: str, name: str, memory: Memory) -> None:
+        self._memories[name] = memory
+
+    async def get_memory(self, agent_id: str, name: str) -> Memory:
+        return self._memories.get(name, Memory(messages=[]))
+
+    async def save_memory(self, agent_id: str, name: str, memory: Memory) -> None:
+        self._memories[name] = memory
 
 
 class DelegateToolkit(BaseToolkit):
@@ -105,7 +137,7 @@ class DelegateToolkit(BaseToolkit):
             nested_id = f"{self._agent_id}-nested-{uuid.uuid4().hex[:8]}"
             nested = ExecutionAgent(
                 agent_id=nested_id,
-                agent_repository=self._agent_repository,
+                agent_repository=_TransientAgentRepository(),
                 tools=self._build_nested_tools(),
             )
             nested.max_iterations = _NESTED_MAX_ITERATIONS
