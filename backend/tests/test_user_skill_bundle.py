@@ -39,7 +39,7 @@ USER_SKILLS = [
     "webdev-maps-integration",
     "webdev-owner-notifications",
     "webdev-periodic-updates",
-    "dzeck-pptx",
+    "pptx",
     "persistent-computing",
     "skill-creator",
     "tts-prompter",
@@ -47,8 +47,10 @@ USER_SKILLS = [
 ]
 
 REPLACED_DEFAULTS = ["fullstack-web-app", "static-landing-page"]
-# folder names the previous (over-adapted) install used — must be gone now
-OLD_FOLDERS = ["webdev-fullstack", "webdev-static", "slides-pptx"]
+# folder names that must be gone: webdev-fullstack / webdev-static /
+# slides-pptx came from the previous (over-adapted) install; dzeck-pptx is
+# superseded by the user's 2026-09 pptx skill update
+OLD_FOLDERS = ["webdev-fullstack", "webdev-static", "slides-pptx", "dzeck-pptx"]
 
 # References that MUST NOT survive anywhere in the manual: they describe a
 # platform this sandbox is not (mismatch = agent calls tools that don't
@@ -77,7 +79,7 @@ MIN_LINES = {
     "webdev-readme-static": 683,      # user original: 693
     "webdev-periodic-updates": 270,   # user original: 275 (was trimmed to 144!)
     "webdev-llm-integration": 145,    # user original: 146
-    "dzeck-pptx": 275,                # user original: 279
+    "pptx": 483,                      # user original: 484
     "persistent-computing": 95,       # user original: 98
     "skill-creator": 235,             # user original: 236
     "tts-prompter": 245,              # user original: 247
@@ -184,7 +186,7 @@ def test_skills_index_lists_tiers() -> None:
         "webdev-readme-fullstack",
         "webdev-readme-static",
         "webdev-periodic-updates",
-        "dzeck-pptx",
+        "pptx",
     ):
         assert skill in text, f"SKILLS.md missing: {skill}"
     assert "Feature skills" in text

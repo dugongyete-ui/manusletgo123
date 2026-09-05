@@ -86,7 +86,7 @@ def test_script_contains_every_file_and_marker_logic():
     for rel in (
         "AGENTS.md",
         "skills/webdev-readme-fullstack/SKILL.md",
-        "skills/dzeck-pptx/SKILL.md",
+        "skills/pptx/SKILL.md",
         "Rancangan_Notifikasi_User_melalui_Chat.md",
         "RULES.md",
     ):

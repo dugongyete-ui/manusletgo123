@@ -30,7 +30,7 @@ the difference between "ran once" and "actually works".
 
 | Skill | Use when |
 |---|---|
-| dzeck-pptx | writing slides in the PPTX XML syntax (read it when you are ready to start editing, not during research) |
+| pptx | creating, editing, or analyzing .pptx presentations — html2pptx workflow for new decks, OOXML editing for existing files, template-based creation via rearrange/inventory/replace scripts |
 | typst-pdf-maker | polished PDF documents that Markdown-to-PDF cannot produce (typography, math, precise layouts) |
 | tts-prompter | crafting TTS prompts before entering generate mode for speech tasks |
 | document-writing | long-form documents, structured reports |
