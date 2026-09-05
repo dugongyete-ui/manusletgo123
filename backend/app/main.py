@@ -14,7 +14,7 @@ from app.interfaces.dependencies import get_agent_service
 from app.interfaces.api.routes import router
 from app.infrastructure.logging import setup_logging
 from app.interfaces.errors.exception_handlers import register_exception_handlers
-from app.infrastructure.models.documents import AgentDocument, SessionDocument, UserDocument, ProjectDocument, FileFavoriteDocument
+from app.infrastructure.models.documents import AgentDocument, SessionDocument, UserDocument, ProjectDocument, FileFavoriteDocument, KnowledgeDocument, ScheduledTaskDocument, AgentProfileDocument
 from app.infrastructure.build_guard import ensure_fresh_frontend
 from beanie import init_beanie
 
@@ -47,7 +47,7 @@ async def _init_databases() -> None:
             await get_mongodb().initialize()
             await init_beanie(
                 database=get_mongodb().client[settings.mongodb_database],
-                document_models=[AgentDocument, SessionDocument, UserDocument, ProjectDocument, FileFavoriteDocument],
+                document_models=[AgentDocument, SessionDocument, UserDocument, ProjectDocument, FileFavoriteDocument, KnowledgeDocument, ScheduledTaskDocument, AgentProfileDocument],
             )
             logger.info("Successfully initialized Beanie")
             break
@@ -72,6 +72,15 @@ async def _init_databases() -> None:
     _app_ready = True
     logger.info("Application fully ready — all services initialized")
 
+    # ── Recurring agent runs (scheduleTask) ──────────────────────────────
+    # The scheduler only starts once the database is ready; it feeds due
+    # prompts into their sessions through the normal chat pathway.
+    try:
+        from app.interfaces.dependencies import get_scheduler_service
+        get_scheduler_service().start()
+    except Exception as exc:
+        logger.error(f"Scheduler service failed to start: {exc}")
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -91,6 +100,12 @@ async def lifespan(app: FastAPI):
         yield
     finally:
         logger.info("Application shutdown - Dzeck AI Agent terminating")
+        # Stop the recurring-run scheduler before tearing down services.
+        try:
+            from app.interfaces.dependencies import get_scheduler_service
+            await get_scheduler_service().stop()
+        except Exception:
+            pass
         await get_mongodb().shutdown()
         await get_redis().shutdown()
 

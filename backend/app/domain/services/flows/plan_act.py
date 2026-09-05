@@ -169,6 +169,8 @@ class PlanActFlow(BaseFlow):
         mcp_tool: MCPToolkit,
         search_engine: Optional[SearchEngine] = None,
         project_instruction: Optional[str] = None,
+        knowledge: Optional[list] = None,
+        agent_persona: Optional[str] = None,
     ):
         self._agent_id = agent_id
         self._repository = agent_repository
@@ -176,6 +178,27 @@ class PlanActFlow(BaseFlow):
         self._session_repository = session_repository
         self.status = AgentStatus.IDLE
         self.plan = None
+
+        # Late-binding digest of the executor's recent memory — feeds the
+        # sub-agent delegation tool so nested work starts informed.
+        def _parent_context_digest() -> str:
+            try:
+                memory = getattr(self.executor, "memory", None)
+                if memory is None:
+                    return ""
+                lines: list[str] = []
+                for msg in memory.get_messages()[-24:]:
+                    content = msg.content
+                    if isinstance(content, list):
+                        content = "".join(
+                            b.get("text", "") for b in content if isinstance(b, dict)
+                        )
+                    text = (content or "").strip()
+                    if text:
+                        lines.append(f"{msg.type}: {text[:400]}")
+                return "\n".join(lines)
+            except Exception:
+                return ""
 
         tools = [
             ShellToolkit(sandbox),
@@ -208,7 +231,24 @@ class PlanActFlow(BaseFlow):
             user_home=user_home, upload_dir=upload_dir, environment=environment,
             project_instruction=project_instruction,
             protected_workspace=_protected,
+            knowledge=knowledge,
+            agent_persona=agent_persona,
         )
+
+        # Sub-agent delegation (Manus NestedExecutor): registered AFTER
+        # base_prompt exists so the nested executor inherits the exact same
+        # sandbox/security contract. One level deep by construction.
+        from app.domain.services.tools.delegate import DelegateToolkit
+        tools.append(DelegateToolkit(
+            sandbox=sandbox,
+            browser=browser,
+            mcp_tool=mcp_tool,
+            search_engine=search_engine,
+            agent_id=agent_id,
+            agent_repository=agent_repository,
+            base_prompt=base_prompt,
+            parent_context_provider=_parent_context_digest,
+        ))
 
         # Create planner and execution agents
         self.planner = PlannerAgent(
@@ -274,6 +314,93 @@ class PlanActFlow(BaseFlow):
         )
         return stripped
 
+    # ── CHAT_MODE_DISCUSS (Manus discuss mode) ───────────────────
+    # Semantic classifier decides whether this message is pure conversation
+    # (answer directly, no plan, no tools, no sandbox wait) or agent work.
+    # Shared by BOTH engines so parity holds.
+
+    async def _is_discuss(self, entry_status, message: Message, conversation_history: Optional[str]) -> bool:
+        """Decide whether this turn runs in discuss mode.
+
+        Only fresh or finished conversations qualify — a message queued while
+        a task runs, or an answer to the agent's question, ALWAYS continues
+        the agent flow. (IN_QUEUE counts as fresh: it is the pre-run state of
+        a first/follow-up message while the task boots.) Attachments/images/
+        pre-extracted files force agent mode (they need the executor).
+        Failure of the classifier itself degrades to agent mode — never
+        crashes, never traps a real task.
+        """
+        if entry_status not in (SessionStatus.PENDING, SessionStatus.IN_QUEUE, SessionStatus.COMPLETED):
+            return False
+        if message.attachments or message.vision_images:
+            return False
+        if "<file name=" in (message.message or ""):
+            return False
+        from app.domain.services.agents.intent import (
+            CHAT_MODE_DISCUSS,
+            classify_chat_mode,
+        )
+        mode, confidence = await classify_chat_mode(message.message, conversation_history)
+        logger.info(
+            "Agent %s chat-mode: %s (confidence %.2f)",
+            self._agent_id, mode, confidence,
+        )
+        return mode == CHAT_MODE_DISCUSS
+
+    async def _run_discuss(
+        self,
+        message: Message,
+        conversation_history: Optional[str],
+        session_title: Optional[str],
+    ) -> AsyncGenerator[BaseEvent, None]:
+        """Answer directly, streamed — no plan, no executor, no tools.
+
+        The acknowledgement model already answers conversational messages
+        completely (warm, direct, grounded in the session transcript), so
+        discuss mode simply makes that reply the FINAL answer of the turn
+        instead of a preamble to a plan.
+        """
+        delivered = False
+        async for event in self.planner.acknowledge_stream(message, conversation_history):
+            if isinstance(event, MessageEvent) and (event.message or "").strip():
+                # The authoritative final message of this discuss turn —
+                # persisted, replayable, and final (files never attach here).
+                yield MessageEvent(
+                    role="assistant", message=event.message, is_final=True
+                )
+                delivered = True
+            else:
+                yield event
+        if not delivered:
+            yield MessageEvent(
+                role="assistant",
+                message=self._fallback_ack_text(None, message.message),
+                is_final=True,
+            )
+
+        # Sessions still without a title get one (discuss turns can be the
+        # first turn of a session — the UI needs a title immediately).
+        if not (session_title or "").strip():
+            try:
+                title = await self.planner.generate_title(message.message)
+                if title:
+                    yield TitleEvent(title=title)
+            except Exception:
+                logger.debug("discuss-mode title generation failed", exc_info=True)
+
+    # ── Effort budget scaling (AgentTaskMode standard vs HIGH_EFFORT) ──
+
+    def _effective_step_budget(self, base_steps: int, base_failures: int):
+        """Scale the execution budget when the planner judged high effort.
+
+        High-effort tasks (substantial builds, deep research) legitimately
+        need more phases and tolerate more failed experiments before
+        giving up — the limits stay calibrated for standard tasks.
+        """
+        if self.plan is not None and getattr(self.plan, "task_mode", None) == "high_effort":
+            return base_steps * 2, max(base_failures * 2, base_failures)
+        return base_steps, base_failures
+
     async def run(self, message: Message) -> AsyncGenerator[BaseEvent, None]:
 
         # Real wall-clock start of THIS run — feeds the execution summary in
@@ -289,7 +416,12 @@ class PlanActFlow(BaseFlow):
         session = await self._session_repository.find_by_id(self._session_id)
         if not session:
             raise ValueError(f"Session {self._session_id} not found")
-        
+
+        # Entry status BEFORE any transition — the discuss-mode classifier
+        # must know whether this turn starts fresh / after completion (can
+        # discuss) or interrupts ongoing work (always agent mode).
+        entry_status = session.status
+
         if session.status != SessionStatus.PENDING:
             logger.debug(f"Session {self._session_id} is not in PENDING status, rolling back")
             await self.executor.roll_back(message)
@@ -315,6 +447,33 @@ class PlanActFlow(BaseFlow):
         # streamed first reply so conversational follow-ups ("what did we discuss
         # before?") are answered WITH context instead of "I have no history".
         conversation_history = self._build_conversation_digest(session, message)
+
+        # ── CHAT_MODE_DISCUSS fast path (Manus discuss mode) ───────────
+        # Pure conversation gets a direct streamed answer and the turn ends
+        # here: no plan, no executor, no sandbox dependency. Awaiting the
+        # sandbox would otherwise add 1-7 min of latency to a greeting.
+        try:
+            if await self._is_discuss(entry_status, message, conversation_history):
+                logger.info(
+                    "Agent %s discuss mode — answering directly without tools",
+                    self._agent_id,
+                )
+                async for event in self._run_discuss(
+                    message, conversation_history, session.title
+                ):
+                    yield event
+                yield DoneEvent()
+                logger.info(f"Agent {self._agent_id} discuss turn completed")
+                return
+        except Exception:
+            # Classifier problems must never trap a real task — fall through
+            # to the normal agent flow.
+            logger.warning(
+                "Agent %s discuss-mode classification failed — continuing "
+                "as agent mode",
+                self._agent_id,
+                exc_info=True,
+            )
 
         settings = get_settings()
         _max_steps = settings.max_steps
@@ -515,16 +674,21 @@ class PlanActFlow(BaseFlow):
                     self.status = AgentStatus.SUMMARIZING
                     continue
 
-                # Guard: max total steps executed
-                if _steps_executed >= _max_steps:
+                # Guard: max total steps executed — budget scales up when the
+                # planner judged this a high-effort task (AgentTaskMode).
+                _eff_steps, _eff_failures = self._effective_step_budget(
+                    _max_steps, _max_consecutive_failures
+                )
+                if _steps_executed >= _eff_steps:
                     logger.warning(
-                        f"Agent {self._agent_id} reached max_steps={_max_steps}, "
+                        f"Agent {self._agent_id} reached max_steps={_eff_steps} "
+                        f"(mode={getattr(self.plan, 'task_mode', 'standard')}), "
                         "force-moving to SUMMARIZING"
                     )
                     yield MessageEvent(
                         role="assistant",
                         message=(
-                            f"Reached the maximum step limit ({_max_steps}). "
+                            f"Reached the maximum step limit ({_eff_steps}). "
                             "Summarising with the data collected so far."
                         ),
                         is_progress=True,
@@ -532,8 +696,8 @@ class PlanActFlow(BaseFlow):
                     self.status = AgentStatus.SUMMARIZING
                     continue
 
-                # Guard: consecutive failures
-                if _consecutive_failures >= _max_consecutive_failures:
+                # Guard: consecutive failures (scaled with effort budget)
+                if _consecutive_failures >= _eff_failures:
                     logger.warning(
                         f"Agent {self._agent_id} reached {_consecutive_failures} consecutive "
                         f"failures (limit={_max_consecutive_failures}), force-moving to SUMMARIZING"

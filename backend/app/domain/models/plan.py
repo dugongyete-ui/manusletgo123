@@ -39,6 +39,14 @@ class Plan(BaseModel):
     status: ExecutionStatus = ExecutionStatus.PENDING
     result: Optional[Dict[str, Any]] = None
     error: Optional[str] = None
+    # Effort tier the planner judged this task needs
+    # ("standard" | "high_effort"). High-effort tasks get a larger execution
+    # budget (max steps / tolerated failures) so complex builds are not
+    # cut short by limits calibrated for simple tasks.
+    task_mode: Optional[str] = "standard"
+    # Planning depth the planner chose ("simple" | "complex"). Simple tasks
+    # stay at a handful of coarse steps; complex ones may decompose more.
+    planner_mode: Optional[str] = "simple"
 
     def is_done(self) -> bool:
         return (

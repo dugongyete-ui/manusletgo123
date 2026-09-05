@@ -37,11 +37,12 @@
                             </div>
                         </div>
                     </div>
-                    <!-- List for non-image files -->
-                    <div v-if="nonImageFiles.length > 0">
-                        <p v-if="imageFiles.length > 0" class="text-xs text-[var(--text-tertiary)] font-medium px-2 mb-2">Files</p>
+                    <!-- Non-image files grouped by semantic category
+                         (Manus getSessionFilesV2: slides/tables/docs/code/archives). -->
+                    <div v-for="group in groupedFiles" :key="group.category" class="mb-4">
+                        <p class="text-xs text-[var(--text-tertiary)] font-medium px-2 mb-2">{{ group.label }}</p>
                         <div class="flex flex-col gap-1">
-                            <div v-for="file in nonImageFiles" :key="file.file_id"
+                            <div v-for="file in group.files" :key="file.file_id"
                                 class="flex items-center gap-3 px-3 py-2.5 hover:bg-[var(--fill-tsp-gray-main)] transition-colors rounded-lg clickable">
                                 <div class="relative flex items-center justify-center">
                                     <component :is="getFileType(file.filename).icon" />
@@ -88,6 +89,9 @@ import { getFileType } from '../utils/fileType';
 import { useSessionFileList } from '../composables/useSessionFileList';
 import { useFilePanel } from '../composables/useFilePanel';
 import SessionImageThumbnail from './SessionImageThumbnail.vue';
+import { useI18n } from 'vue-i18n';
+
+const { t } = useI18n();
 
 const route = useRoute();
 const files = ref<FileInfo[]>([]);
@@ -106,6 +110,51 @@ function isImageFile(filename: string): boolean {
 
 const imageFiles = computed(() => files.value.filter(f => isImageFile(f.filename ?? '')));
 const nonImageFiles = computed(() => files.value.filter(f => !isImageFile(f.filename ?? '')));
+
+// ── Semantic categories (Manus getSessionFilesV2 equivalent) ─────────────
+// The backend sends `category`; a local fallback keeps old payloads grouped
+// too, so the panel never shows one flat undifferentiated list.
+const CATEGORY_ORDER = ['slides', 'tables', 'docs', 'code', 'archives', 'other'] as const;
+const CATEGORY_LABELS: Record<string, () => string> = {
+    slides: () => t('Slides'),
+    tables: () => t('Data'),
+    docs: () => t('Documents'),
+    code: () => t('Code'),
+    archives: () => t('Archives'),
+    other: () => t('Files'),
+};
+
+const LOCAL_CATEGORY_BY_EXT: Record<string, string> = {
+    ppt: 'slides', pptx: 'slides', odp: 'slides',
+    csv: 'tables', tsv: 'tables', xlsx: 'tables', xls: 'tables', ods: 'tables',
+    md: 'docs', txt: 'docs', pdf: 'docs', doc: 'docs', docx: 'docs', rtf: 'docs',
+    js: 'code', ts: 'code', tsx: 'code', jsx: 'code', py: 'code', html: 'code',
+    css: 'code', vue: 'code', json: 'code', yaml: 'code', yml: 'code', sql: 'code', sh: 'code',
+    zip: 'archives', tar: 'archives', gz: 'archives', tgz: 'archives', rar: 'archives', '7z': 'archives',
+};
+
+function fileCategory(file: FileInfo): string {
+    const fromApi = (file as any).category as string | undefined;
+    if (fromApi && CATEGORY_ORDER.includes(fromApi as any)) return fromApi;
+    const ext = (file.filename ?? '').split('.').pop()?.toLowerCase() ?? '';
+    return LOCAL_CATEGORY_BY_EXT[ext] ?? 'other';
+}
+
+const groupedFiles = computed(() => {
+    const buckets = new Map<string, FileInfo[]>();
+    for (const file of nonImageFiles.value) {
+        const category = fileCategory(file);
+        if (!buckets.has(category)) buckets.set(category, []);
+        buckets.get(category)!.push(file);
+    }
+    return [...buckets.entries()]
+        .sort((a, b) => CATEGORY_ORDER.indexOf(a[0] as any) - CATEGORY_ORDER.indexOf(b[0] as any))
+        .map(([category, groupFiles]) => ({
+            category,
+            label: (CATEGORY_LABELS[category] ?? CATEGORY_LABELS.other)(),
+            files: groupFiles,
+        }));
+});
 
 const fetchFiles = async (sessionId: string) => {
     if (!sessionId) return;

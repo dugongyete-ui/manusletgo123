@@ -485,12 +485,49 @@ def format_project_instructions(instruction: Optional[str] = None) -> str:
     )
 
 
+def format_knowledge_section(knowledge) -> str:
+    """Render the user's durable knowledge items for the system prompt.
+
+    Manus equivalent: KNOWLEDGE_KIND_USER entries injected during context
+    assembly. The wording frames them as the assistant's own long-term
+    memory so the model treats them as standing context, not as quotes.
+    """
+    items = [str(k).strip() for k in (knowledge or []) if str(k or "").strip()]
+    if not items:
+        return ""
+    lines = "\n".join(f"- {item}" for item in items)
+    return (
+        "<user_knowledge>\n"
+        "Durable notes about this user, carried over from your earlier "
+        "sessions together. Treat them as your own long-term memory — apply "
+        "them without being reminded:\n\n"
+        f"{lines}\n"
+        "</user_knowledge>"
+    )
+
+
+def format_agent_persona(instruction: Optional[str] = None) -> str:
+    """Render the chosen agent profile's persona for the system prompt."""
+    text = (instruction or "").strip()
+    if not text:
+        return ""
+    return (
+        "<agent_profile>\n"
+        "The user picked a specific profile for this session — honour it in "
+        "how you work, prioritise and communicate:\n\n"
+        f"{text}\n"
+        "</agent_profile>"
+    )
+
+
 def get_system_prompt(
     user_home: str = _DEFAULT_USER_HOME,
     upload_dir: str = _DEFAULT_UPLOAD_DIR,
     environment: str = "replit",
     project_instruction: Optional[str] = None,
     protected_workspace: Optional[str] = None,
+    knowledge: Optional[list] = None,
+    agent_persona: Optional[str] = None,
 ) -> str:
     """Return the system prompt for one sandbox provider + working directories.
 
@@ -536,4 +573,26 @@ def get_system_prompt(
         upload_dir=upload_dir,
         security_rules=security_rules,
         sandbox_environment=sandbox_environment,
-    ) + ("\n\n" + format_project_instructions(project_instruction) if format_project_instructions(project_instruction) else "")
+    ) + (
+        # Project instructions, durable user knowledge, and the session's
+        # agent persona are appended as stable tail sections (Manus context
+        # assembly). Kept at the END of the prompt so the provider's
+        # prefix-caching can reuse the static head across calls.
+        "\n\n" + "\n\n".join(
+            section
+            for section in (
+                format_project_instructions(project_instruction),
+                format_knowledge_section(knowledge),
+                format_agent_persona(agent_persona),
+            )
+            if section
+        )
+        if any(
+            (
+                format_project_instructions(project_instruction),
+                format_knowledge_section(knowledge),
+                format_agent_persona(agent_persona),
+            )
+        )
+        else ""
+    )

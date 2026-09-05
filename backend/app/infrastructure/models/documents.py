@@ -9,6 +9,9 @@ from app.domain.models.session import Session, SessionStatus
 from app.domain.models.file import FileInfo
 from app.domain.models.user import User, UserRole
 from app.domain.models.project import Project
+from app.domain.models.knowledge import KnowledgeItem
+from app.domain.models.scheduled_task import ScheduledTask
+from app.domain.models.agent_profile import AgentProfile
 from pymongo import IndexModel, ASCENDING, DESCENDING
 
 T = TypeVar('T', bound=BaseModel)
@@ -99,6 +102,7 @@ class SessionDocument(BaseDocument[Session], id_field="session_id", domain_model
     files: List[FileInfo] = []
     is_shared: Optional[bool] = False
     project_id: Optional[str] = None
+    agent_profile_id: Optional[str] = None
     class Settings:
         name = "sessions"
         indexes = [
@@ -149,6 +153,74 @@ class FileFavoriteDocument(Document):
                 unique=True,
                 name="user_id_file_id",
             ),
+        ]
+
+
+class KnowledgeDocument(BaseDocument[KnowledgeItem], id_field="knowledge_id", domain_model_class=KnowledgeItem):
+    """Per-user durable knowledge items (user-added + agent learnings)."""
+    knowledge_id: str
+    user_id: str
+    content: str
+    kind: str = "user"
+    status: str = "active"
+    source_session_id: Optional[str] = None
+    created_at: datetime = datetime.now(timezone.utc)
+    updated_at: datetime = datetime.now(timezone.utc)
+
+    class Settings:
+        name = "knowledge"
+        indexes = [
+            "knowledge_id",
+            IndexModel(
+                [("user_id", ASCENDING), ("status", ASCENDING), ("updated_at", DESCENDING)],
+                name="user_id_status_updated",
+            ),
+        ]
+
+
+class ScheduledTaskDocument(BaseDocument[ScheduledTask], id_field="task_id", domain_model_class=ScheduledTask):
+    """Recurring agent runs (scheduleTask)."""
+    task_id: str
+    user_id: str
+    prompt: str
+    session_id: str
+    interval_minutes: int = 1440
+    next_run_at: datetime = datetime.now(timezone.utc)
+    last_run_at: Optional[datetime] = None
+    run_count: int = 0
+    is_active: bool = True
+    created_at: datetime = datetime.now(timezone.utc)
+    updated_at: datetime = datetime.now(timezone.utc)
+
+    class Settings:
+        name = "scheduled_tasks"
+        indexes = [
+            "task_id",
+            "user_id",
+            IndexModel(
+                [("is_active", ASCENDING), ("next_run_at", ASCENDING)],
+                name="active_next_run",
+            ),
+        ]
+
+
+class AgentProfileDocument(BaseDocument[AgentProfile], id_field="profile_id", domain_model_class=AgentProfile):
+    """User-customisable agent presets."""
+    profile_id: str
+    user_id: str
+    name: str
+    description: Optional[str] = None
+    emoji: Optional[str] = None
+    instruction: str = ""
+    is_builtin: bool = False
+    created_at: datetime = datetime.now(timezone.utc)
+    updated_at: datetime = datetime.now(timezone.utc)
+
+    class Settings:
+        name = "agent_profiles"
+        indexes = [
+            "profile_id",
+            "user_id",
         ]
 
 

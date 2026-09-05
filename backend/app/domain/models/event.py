@@ -10,6 +10,7 @@ import json
 from app.domain.models.search import SearchResultItem
 from app.domain.models.image import ImageSearchResultItem
 from app.domain.models.validation import ValidationResult
+from typing import List as _List
 
 
 class PlanStatus(str, Enum):
@@ -168,6 +169,20 @@ class ValidationEvent(BaseEvent):
     type: Literal["validation"] = "validation"
     result: ValidationResult
 
+class KnowledgeEvent(BaseEvent):
+    """Post-task learning proposal (Manus KnowledgeEvent PENDING).
+
+    Emitted after the final summary when the agent distilled durable
+    learnings from the run. The items are stored PENDING; the user accepts
+    or rejects them (API), and accepted items ride along in every future
+    session's context for this user. ``item_ids`` aligns with ``items`` by
+    index so the UI can address each proposal directly.
+    """
+    type: Literal["knowledge"] = "knowledge"
+    items: _List[str] = []
+    item_ids: _List[str] = []
+    status: Literal["pending"] = "pending"
+
 AgentEvent = Union[
     ErrorEvent,
     PlanEvent, 
@@ -176,6 +191,7 @@ AgentEvent = Union[
     MessageEvent,
     MessageChunkEvent,
     ValidationEvent,
+    KnowledgeEvent,
     DoneEvent,
     TitleEvent,
     WaitEvent,

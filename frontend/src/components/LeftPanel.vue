@@ -60,6 +60,19 @@
           </div>
         </div>
 
+        <!-- Community: publicly shared tasks to explore and fork -->
+        <div
+          @click="router.push('/community')"
+          class="flex items-center rounded-[10px] cursor-pointer transition-colors w-full gap-[12px] h-[36px] ps-[9px] pe-[2px]"
+          :class="route.path === '/community' ? 'bg-[var(--fill-tsp-white-main)]' : 'hover:bg-[var(--fill-tsp-white-light)]'">
+          <div class="shrink-0 size-[18px] flex items-center justify-center">
+            <Globe :size="18" class="text-[var(--text-primary)]" />
+          </div>
+          <div class="flex-1 min-w-0 flex gap-[4px] items-center text-[14px] text-[var(--text-primary)]">
+            <span class="truncate">{{ t('Community') }}</span>
+          </div>
+        </div>
+
         <!-- Container scroll -->
         <div class="flex flex-col flex-1 min-h-0 -mx-[8px] mt-[4px] overflow-hidden" style="padding-bottom: 48px;">
           <div class="w-full border-t border-[var(--border-main)] transition-opacity duration-200" :class="isListScrolled ? 'opacity-100' : 'opacity-0'"></div>
@@ -256,7 +269,7 @@
 </template>
 
 <script setup lang="ts">
-import { PanelLeft, SquarePen, Command, MessageSquareDashed, ChevronUp, Sun, Moon, Trash2, LibraryBig, Folder, Pin, Plus, Ellipsis, Pencil } from 'lucide-vue-next';
+import { PanelLeft, SquarePen, Command, MessageSquareDashed, ChevronUp, Sun, Moon, Trash2, LibraryBig, Folder, Pin, Plus, Ellipsis, Pencil, Globe } from 'lucide-vue-next';
 import { useTheme } from '../composables/useTheme';
 import SessionItem from './SessionItem.vue';
 import { useLeftPanel } from '../composables/useLeftPanel';

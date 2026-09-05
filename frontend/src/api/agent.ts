@@ -8,10 +8,14 @@ import type { FileInfo } from './file';
 
 /**
  * Create Session
+ * @param agentProfileId Optional agent profile (built-in preset or custom) —
+ *        its persona is appended to every run in this session.
  * @returns Session
  */
-export async function createSession(): Promise<CreateSessionResponse> {
-  const response = await apiClient.put<ApiResponse<CreateSessionResponse>>('/sessions');
+export async function createSession(agentProfileId?: string | null): Promise<CreateSessionResponse> {
+  const response = await apiClient.put<ApiResponse<CreateSessionResponse>>('/sessions', {
+    agent_profile_id: agentProfileId || null,
+  });
   return response.data.data;
 }
 

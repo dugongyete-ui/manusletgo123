@@ -128,6 +128,16 @@ class _FakeModel:
         return _FakeChain(self)
 
     async def ainvoke(self, context):
+        # Map-reduce compaction summaries (base._summarize_digest) are
+        # internal housekeeping calls, not task asks — answer them with a
+        # canned summary WITHOUT consuming a scripted outcome, so the call
+        # counts below still assert exactly the ask/recovery sequence.
+        first = context[0] if context else None
+        if (
+            getattr(first, "type", None) == "system"
+            and "precise summariser" in str(getattr(first, "content", ""))
+        ):
+            return AIMessage(content="summary of earlier work")
         self.seen_contexts.append(list(context))
         self.seen_sizes.append(BaseAgent._estimate_context_chars(context))
         outcome = self.outcomes.pop(0)

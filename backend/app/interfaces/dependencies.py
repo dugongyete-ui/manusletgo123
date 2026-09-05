@@ -25,6 +25,9 @@ from app.infrastructure.repositories.mongo_agent_repository import MongoAgentRep
 from app.infrastructure.repositories.mongo_session_repository import MongoSessionRepository
 from app.infrastructure.repositories.mongo_project_repository import MongoProjectRepository
 from app.infrastructure.repositories.mongo_file_favorite_repository import MongoFileFavoriteRepository
+from app.infrastructure.repositories.mongo_knowledge_repository import MongoKnowledgeRepository
+from app.infrastructure.repositories.mongo_scheduled_task_repository import MongoScheduledTaskRepository
+from app.infrastructure.repositories.mongo_agent_profile_repository import MongoAgentProfileRepository
 from app.infrastructure.repositories.file_mcp_repository import FileMCPRepository
 from app.infrastructure.repositories.user_repository import MongoUserRepository
 from app.application.services.project_service import ProjectService
@@ -57,6 +60,8 @@ def get_agent_service() -> AgentService:
     mcp_repository = FileMCPRepository()
     file_favorite_repository = MongoFileFavoriteRepository()
     project_repository = MongoProjectRepository()
+    knowledge_repository = MongoKnowledgeRepository()
+    agent_profile_repository = MongoAgentProfileRepository()
     
     # Create AgentService instance
     return AgentService(
@@ -69,7 +74,38 @@ def get_agent_service() -> AgentService:
         mcp_repository=mcp_repository,
         file_favorite_repository=file_favorite_repository,
         project_repository=project_repository,
+        knowledge_repository=knowledge_repository,
+        agent_profile_repository=agent_profile_repository,
     )
+
+
+@lru_cache()
+def get_knowledge_repository() -> MongoKnowledgeRepository:
+    """Knowledge repository (durable user knowledge + learning proposals)."""
+    return MongoKnowledgeRepository()
+
+
+@lru_cache()
+def get_scheduled_task_repository() -> MongoScheduledTaskRepository:
+    """Scheduled-task repository (recurring agent runs)."""
+    return MongoScheduledTaskRepository()
+
+
+@lru_cache()
+def get_agent_profile_repository() -> MongoAgentProfileRepository:
+    """Agent-profile repository (user-custom agent presets)."""
+    return MongoAgentProfileRepository()
+
+
+@lru_cache()
+def get_scheduler_service():
+    """Background scheduler for recurring agent runs (scheduleTask).
+
+    Started by the app lifespan once the database is ready; safe to request
+    here for tests (start() is idempotent).
+    """
+    from app.application.services.scheduler_service import SchedulerService
+    return SchedulerService(get_agent_service(), get_scheduled_task_repository())
 
 
 @lru_cache()

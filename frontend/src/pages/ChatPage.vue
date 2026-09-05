@@ -20,6 +20,9 @@
               </span>
             </div>
             <div class="flex items-center gap-2 flex-shrink-0">
+              <!-- Recurring runs (Manus scheduleTask): let the agent run this
+                   chat's work automatically on a schedule. -->
+              <ScheduleDialog :sessionId="sessionId" />
               <span class="relative flex-shrink-0" aria-expanded="false" aria-haspopup="dialog">
                 <Popover>
                   <PopoverTrigger>
@@ -117,6 +120,10 @@
                unprofessional to end users. Component kept at
                src/components/ValidationCard.vue for easy re-enable. -->
 
+          <!-- Post-task learning proposals (Manus knowledge loop): accept or
+               dismiss what the agent wants to remember for future tasks. -->
+          <KnowledgeCard :items="pendingLearnings" />
+
           <!-- Loading indicator — hidden while streaming acknowledgment chunks -->
           <LoadingIndicator v-if="isLoading && !streamingMessageContent" :text="currentThinkingText || $t('Thinking')" />
           <!-- Wait indicator — agent is expecting user input -->
@@ -151,6 +158,8 @@ import { useRouter, onBeforeRouteUpdate } from 'vue-router';
 import { useI18n } from 'vue-i18n';
 import ChatBox from '../components/ChatBox.vue';
 import ChatMessage from '../components/ChatMessage.vue';
+import KnowledgeCard, { type PendingLearning } from '../components/KnowledgeCard.vue';
+import ScheduleDialog from '../components/ScheduleDialog.vue';
 import StepTimeline from '../components/StepTimeline.vue';
 import * as agentApi from '../api/agent';
 import { Message, MessageContent, ToolContent, StepContent, AttachmentsContent } from '../types/message';
@@ -162,6 +171,7 @@ import {
   ErrorEventData,
   TitleEventData,
   PlanEventData,
+  KnowledgeEventData,
   AgentSSEEvent,
 } from '../types/event';
 import ToolPanel from '../components/ToolPanel.vue'
@@ -653,6 +663,38 @@ const handlePlanEvent = (planData: PlanEventData) => {
   plan.value = planData;
 }
 
+// ── Post-task learning proposals (Manus knowledge loop) ─────────────
+const pendingLearnings = ref<PendingLearning[]>([]);
+const handleKnowledgeEvent = (data: KnowledgeEventData) => {
+  const ids = data.item_ids || [];
+  const fresh: PendingLearning[] = (data.items || []).map((text, i) => ({
+    id: ids[i] || null,
+    text,
+    status: 'pending' as const,
+  }));
+  // Only show items that are still undecided on reload — accepted/dismissed
+  // ones already live in the user's knowledge store.
+  if (fresh.length) {
+    pendingLearnings.value = [...pendingLearnings.value, ...fresh];
+  }
+};
+const refreshLearningStates = async () => {
+  // On (re)load, mark proposals whose backend status already changed so the
+  // card never re-asks a question the user already answered.
+  try {
+    const { getKnowledge } = await import('../api/knowledge');
+    const { items } = await getKnowledge();
+    const byContent = new Map(items.map((k) => [k.content, k.status]));
+    for (const learning of pendingLearnings.value) {
+      const status = learning.text ? byContent.get(learning.text) : undefined;
+      if (status === 'active') learning.status = 'active';
+      else if (status === 'rejected') learning.status = 'rejected';
+    }
+  } catch {
+    // Offline / not logged in — cards simply stay interactive.
+  }
+};
+
 // Main event handler function
 const handleEvent = (event: AgentSSEEvent) => {
   if (event.event === 'message') {
@@ -692,6 +734,8 @@ const handleEvent = (event: AgentSSEEvent) => {
     handleTitleEvent(event.data as TitleEventData);
   } else if (event.event === 'plan') {
     handlePlanEvent(event.data as PlanEventData);
+  } else if (event.event === 'knowledge') {
+    handleKnowledgeEvent(event.data as KnowledgeEventData);
   }
   lastEventId.value = event.data.event_id;
 }
@@ -799,8 +843,16 @@ const restoreSession = async () => {
   for (const event of session.events) {
     handleEvent(event);
   }
+  // Mark learning proposals the user already decided (reload must not re-ask).
+  if (pendingLearnings.value.length) {
+    await refreshLearningStates();
+  }
   realTime.value = true;
-  if (session.status === SessionStatus.RUNNING || session.status === SessionStatus.PENDING) {
+  if (
+    session.status === SessionStatus.RUNNING ||
+    session.status === SessionStatus.PENDING ||
+    session.status === SessionStatus.IN_QUEUE
+  ) {
     await chat();
   }
   agentApi.clearUnreadMessageCount(sessionId.value);

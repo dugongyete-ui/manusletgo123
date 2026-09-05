@@ -128,6 +128,9 @@ class AgentTaskRunner(TaskRunner):
         mcp_repository: MCPRepository,
         search_engine: Optional[SearchEngine] = None,
         project_instruction: Optional[str] = None,
+        knowledge: Optional[list] = None,
+        agent_persona: Optional[str] = None,
+        knowledge_repository=None,
     ):
         self._session_id = session_id
         self._agent_id = agent_id
@@ -139,6 +142,7 @@ class AgentTaskRunner(TaskRunner):
         self._session_repository = session_repository
         self._file_storage = file_storage
         self._mcp_repository = mcp_repository
+        self._knowledge_repository = knowledge_repository
         self._mcp_tool = MCPToolkit()
         # Pre-edit snapshots per tool_call_id so the UI can show the Diff /
         # Original / Modified tabs (official Manus text_editor behaviour):
@@ -174,6 +178,8 @@ class AgentTaskRunner(TaskRunner):
             self._mcp_tool,
             self._search_engine,
             project_instruction=project_instruction,
+            knowledge=knowledge,
+            agent_persona=agent_persona,
         )
         # The Task currently being pumped by run(). The rate-limit notice
         # callback (fired from inside the agents' retry loops) needs it to
@@ -202,6 +208,82 @@ class AgentTaskRunner(TaskRunner):
             )
         except Exception:
             logger.debug("rate-limit notice could not be emitted", exc_info=True)
+
+    async def _propose_learnings(self, task, user_message: str) -> None:
+        """Post-task learning proposal (Manus KnowledgeEvent PENDING).
+
+        Distils durable learnings from the finished run into PENDING
+        knowledge items and emits ONE KnowledgeEvent so the chat shows
+        accept/reject cards. Strictly best-effort: no repo, a discuss turn,
+        an empty plan, or any failure simply means no proposal.
+        """
+        try:
+            if self._knowledge_repository is None:
+                return
+            # Only real work teaches anything: require a plan with steps and
+            # an executor that actually ran (memory beyond its system prompt).
+            plan = getattr(self._flow, "plan", None)
+            if plan is None or not plan.steps:
+                return
+            executor_memory = getattr(self._flow.executor, "memory", None)
+            if executor_memory is None or len(executor_memory.get_messages()) < 3:
+                return
+
+            # Compact run digest: user request + step outcomes + final summary.
+            lines: list[str] = [f"User request: {user_message[:800]}"]
+            for step in plan.steps:
+                outcome = step.result or step.error or ""
+                lines.append(
+                    f"Step '{step.description[:200]}': {step.status.value}"
+                    + (f" — {outcome[:300]}" if outcome else "")
+                )
+            try:
+                for msg in executor_memory.get_messages()[-6:]:
+                    content = msg.content
+                    if isinstance(content, list):
+                        content = "".join(
+                            b.get("text", "") for b in content if isinstance(b, dict)
+                        )
+                    text = (content or "").strip()
+                    if text and msg.type in ("ai", "human"):
+                        lines.append(f"{msg.type}: {text[:500]}")
+            except Exception:
+                pass
+            digest = "\n".join(lines)
+
+            from app.domain.services.agents.knowledge_learner import propose_learnings
+            from app.domain.models.event import KnowledgeEvent
+            from app.domain.models.knowledge import (
+                KnowledgeItem,
+                KnowledgeKind,
+                KnowledgeStatus,
+            )
+
+            items = await propose_learnings(digest, user_message)
+            if not items:
+                return
+
+            item_ids: list[str] = []
+            for text in items:
+                item = KnowledgeItem(
+                    user_id=self._user_id,
+                    content=text,
+                    kind=KnowledgeKind.LEARNING,
+                    status=KnowledgeStatus.PENDING,
+                    source_session_id=self._session_id,
+                )
+                await self._knowledge_repository.save(item)
+                item_ids.append(item.id)
+
+            await self._put_and_add_event(
+                task, KnowledgeEvent(items=items, item_ids=item_ids, status="pending")
+            )
+            logger.info(
+                "Session %s: proposed %d learning(s) for user review",
+                self._session_id, len(items),
+            )
+        except Exception:
+            logger.debug("learning proposal skipped", exc_info=True)
 
     async def _put_and_add_event(self, task: Task, event: AgentEvent) -> None:
         event_id = await task.output_stream.put(event.model_dump_json())
@@ -1007,6 +1089,13 @@ class AgentTaskRunner(TaskRunner):
                     if not await task.input_stream.is_empty():
                         break
 
+                # ── Post-task learning proposal (Manus Knowledge loop) ─────
+                # After a real run, distil durable learnings and store them
+                # PENDING — the user accepts/rejects, accepted knowledge rides
+                # along in future sessions. Best-effort: never blocks, never
+                # raises (see _propose_learnings).
+                await self._propose_learnings(task, message)
+
             await self._session_repository.update_status(self._session_id, SessionStatus.COMPLETED)
         except asyncio.CancelledError:
             logger.info(f"Agent {self._agent_id} task cancelled")
@@ -1024,7 +1113,10 @@ class AgentTaskRunner(TaskRunner):
                 debugpy.breakpoint()
             
             await self._put_and_add_event(task, ErrorEvent(error=_friendly_task_error(e)))
-            await self._session_repository.update_status(self._session_id, SessionStatus.COMPLETED)
+            # Honest terminal state: this run DIED on an unrecoverable error —
+            # it did not complete. The user sees a clear failed status instead
+            # of a "completed" that quietly hides the crash.
+            await self._session_repository.update_status(self._session_id, SessionStatus.FAILED)
         finally:
             # ── E2B quota saver ────────────────────────────────────────────
             # The run has fully finished: the final summary was delivered and

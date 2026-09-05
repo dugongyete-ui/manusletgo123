@@ -23,6 +23,10 @@ class SessionRepository(Protocol):
         """Find lightweight session summaries for a user (excludes events/files)"""
         ...
     
+    async def find_shared_summaries(self, limit: int = 50) -> List[SessionSummary]:
+        """Public gallery: lightweight summaries of shared sessions"""
+        ...
+    
     async def find_by_id_and_user_id(self, session_id: str, user_id: str) -> Optional[Session]:
         """Find a session by ID and user ID (for authorization)"""
         ...

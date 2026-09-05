@@ -361,6 +361,31 @@ class PlannerAgent(BaseAgent):
         except Exception as e:
             logger.warning(f"Acknowledge streaming failed, skipping: {e}")
 
+    async def generate_title(self, message_text: str) -> str:
+        """Ultra-short session title for a message (discuss-mode turns).
+
+        Plain text, 2-6 words, user's language, best-effort ('' on failure).
+        Uses the streaming path with provider fallback so a flaky primary
+        provider never breaks the discuss fast path.
+        """
+        text = (message_text or "").strip()
+        if not text:
+            return ""
+        try:
+            raw = await self.astream_text_with_fallback([
+                LCSystemMessage(content=(
+                    "You write ultra-short chat titles. Reply with ONLY the "
+                    "title: 2-6 words, no quotes, no trailing period, same "
+                    "language as the message."
+                )),
+                LCHumanMessage(content=text[:600]),
+            ])
+            title = (raw or "").strip().strip('"').strip('“”').splitlines()[0][:80]
+            return title
+        except Exception as e:
+            logger.debug(f"Title generation failed: {e}")
+            return ""
+
     def _fallback_plan(self, message: Message) -> Plan:
         """Single-step fallback plan when the planner LLM returns unparseable JSON.
 

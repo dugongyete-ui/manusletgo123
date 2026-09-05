@@ -17,7 +17,16 @@
           <div
             class="text-lg font-medium text-[var(--text-primary)] flex-1 min-w-0 text-center hidden sm:block overflow-hidden text-ellipsis whitespace-nowrap">
             {{ title }}</div>
-          <div class="flex items-center sm:gap-3"><button @click="handleCopyLink" :aria-label="t('Copy Link')"
+          <div class="flex items-center sm:gap-3">
+            <!-- Fork (Manus fork): copy this shared session into your account
+                 and continue it in your own sandbox. Requires login. -->
+            <button v-if="isAuthenticated" @click="handleFork" :aria-label="t('Fork this task')"
+              :title="t('Fork this task')" :disabled="forking"
+              class="p-2 flex items-center justify-center hover:bg-[var(--fill-tsp-white-dark)] rounded-lg cursor-pointer disabled:opacity-50">
+              <LoaderCircle v-if="forking" class="animate-spin text-[var(--icon-secondary)]" :size="20" />
+              <GitFork v-else class="text-[var(--icon-secondary)]" :size="20" />
+            </button>
+            <button @click="handleCopyLink" :aria-label="t('Copy Link')"
               :title="t('Copy Link')"
               class="p-2 flex items-center justify-center hover:bg-[var(--fill-tsp-white-dark)] rounded-lg cursor-pointer">
               <Link class="text-[var(--icon-secondary)]" :size="20" />
@@ -201,10 +210,12 @@ import {
 } from '../types/event';
 import ToolPanel from '../components/ToolPanel.vue'
 import PlanPanel from '../components/PlanPanel.vue';
-import { ArrowDown, FileSearch, Link, AlertCircle, Inbox, Play, Pause, RotateCcw, LoaderCircle } from 'lucide-vue-next';
+import { ArrowDown, FileSearch, Link, AlertCircle, Inbox, Play, Pause, RotateCcw, LoaderCircle, GitFork } from 'lucide-vue-next';
 import DzeckLogoTextIcon from '../components/icons/DzeckLogoTextIcon.vue';
 import DzeckLogoMark from '../components/icons/DzeckLogoMark.vue';
 import { showErrorToast, showSuccessToast } from '../utils/toast';
+import { getStoredToken } from '../api/auth';
+import { forkSession } from '../api/profiles';
 import type { FileInfo } from '../api/file';
 import { useSessionFileList } from '../composables/useSessionFileList'
 import { useFilePanel } from '../composables/useFilePanel'
@@ -214,6 +225,25 @@ const router = useRouter()
 const { t } = useI18n()
 const { showSessionFileList } = useSessionFileList()
 const { hideFilePanel } = useFilePanel()
+
+// ── Fork (Manus fork) ───────────────────────────────────────────────
+// Copy this shared session into the logged-in user's account; the fork
+// opens as their own chat and can be continued in their own sandbox.
+const isAuthenticated = !!getStoredToken();
+const forking = ref(false);
+const handleFork = async () => {
+  if (forking.value || !state.sessionId) return;
+  forking.value = true;
+  try {
+    const forked = await forkSession(state.sessionId);
+    showSuccessToast(t('Task forked to your account'));
+    router.push(`/chat/${forked.session_id}`);
+  } catch (error) {
+    console.error('[share-page] fork failed:', error);
+    showErrorToast(t('Could not fork this task, please try again'));
+    forking.value = false;
+  }
+};
 
 // Create initial state factory
 const createInitialState = () => ({

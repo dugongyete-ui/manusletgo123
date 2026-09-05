@@ -11,9 +11,15 @@ from app.domain.models.file import FileInfo
 class SessionStatus(str, Enum):
     """Session status enum"""
     PENDING = "pending"
+    # Message accepted, sandbox/task bootstrap still running — the run has
+    # not started producing events yet (queue-like state, Manus IN_QUEUE).
+    IN_QUEUE = "in_queue"
     RUNNING = "running"
     WAITING = "waiting"
     COMPLETED = "completed"
+    # The run terminated through an unrecoverable error instead of a normal
+    # summary — surfaced honestly instead of masquerading as COMPLETED.
+    FAILED = "failed"
 
 
 class SessionSummary(BaseModel):
@@ -47,6 +53,9 @@ class Session(BaseModel):
     status: SessionStatus = SessionStatus.PENDING
     is_shared: bool = False  # Whether this session is shared publicly
     project_id: Optional[str] = None  # Project this session belongs to
+    # Agent profile (custom preset) this session was created with — its
+    # instruction is appended to the system prompt of every run.
+    agent_profile_id: Optional[str] = None
 
     def get_last_plan(self) -> Optional[Plan]:
         """Get the last plan from the events"""

@@ -89,6 +89,36 @@ class MongoSessionRepository(SessionRepository):
                 project_id=doc.get("project_id"),
             ))
         return summaries
+
+    async def find_shared_summaries(self, limit: int = 50) -> List[SessionSummary]:
+        """Public gallery: lightweight summaries of shared sessions.
+
+        Newest activity first; only sessions the owner explicitly shared.
+        Used by the community listing (Manus community/discovery).
+        """
+        collection = SessionDocument.get_pymongo_collection()
+        cursor = (
+            collection.find(
+                {"is_shared": True, "title": {"$ne": None}},
+                SESSION_LIST_PROJECTION,
+            )
+            .sort("latest_message_at", -1)
+            .limit(limit)
+        )
+        summaries = []
+        async for doc in cursor:
+            summaries.append(SessionSummary(
+                id=doc["session_id"],
+                user_id=doc["user_id"],
+                title=doc.get("title"),
+                unread_message_count=doc.get("unread_message_count", 0),
+                latest_message=doc.get("latest_message"),
+                latest_message_at=doc.get("latest_message_at"),
+                status=doc.get("status", SessionStatus.PENDING),
+                is_shared=True,
+                project_id=doc.get("project_id"),
+            ))
+        return summaries
     
     async def find_by_id_and_user_id(self, session_id: str, user_id: str) -> Optional[Session]:
         """Find a session by ID and user ID (for authorization)"""

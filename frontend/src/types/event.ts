@@ -1,8 +1,8 @@
 import type { FileInfo } from '../api/file';
 
 export type AgentSSEEvent = {
-  event: 'tool' | 'step' | 'message' | 'message_chunk' | 'error' | 'done' | 'title' | 'wait' | 'plan' | 'attachments' | 'validation';
-  data: ToolEventData | StepEventData | MessageEventData | MessageChunkEventData | ErrorEventData | DoneEventData | TitleEventData | WaitEventData | PlanEventData | ValidationEventData;
+  event: 'tool' | 'step' | 'message' | 'message_chunk' | 'error' | 'done' | 'title' | 'wait' | 'plan' | 'attachments' | 'validation' | 'knowledge';
+  data: ToolEventData | StepEventData | MessageEventData | MessageChunkEventData | ErrorEventData | DoneEventData | TitleEventData | WaitEventData | PlanEventData | ValidationEventData | KnowledgeEventData;
 }
 
 export interface BaseEventData {
@@ -116,4 +116,11 @@ export interface ValidationResultData {
 
 export interface ValidationEventData extends BaseEventData {
   result: ValidationResultData;
+}
+export interface KnowledgeEventData extends BaseEventData {
+  /** Proposed learnings (display text). */
+  items: string[];
+  /** Knowledge item ids aligned with items by index (accept/reject API). */
+  item_ids?: string[];
+  status: 'pending';
 }

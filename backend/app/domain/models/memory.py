@@ -1,8 +1,8 @@
 import logging
 from pydantic import BaseModel
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, ClassVar
 from app.domain.models.tool_result import ToolResult
-from langchain.messages import AnyMessage, HumanMessage
+from langchain.messages import AnyMessage, HumanMessage, SystemMessage
 
 logger = logging.getLogger(__name__)
 
@@ -349,9 +349,147 @@ class Memory(BaseModel):
     _BULKY_TOOL_ARGS = BULKY_TOOL_ARGS
     _KEEP_RECENT_ARG_CALLS = KEEP_RECENT_ARG_CALLS
 
+    # ── Map-reduce context summary (Manus-style compaction) ────────────────
+    # Marker prefix of the rolling SystemMessage that carries the distilled
+    # summary of older, already-compacted work. Kept right after the leading
+    # system prompt so the model always starts with the distilled context.
+    SUMMARY_MARKER: ClassVar[str] = "[Earlier work summary]"
+
     def compact(self, aggressive: bool = False) -> None:
         """Compact memory — see :func:`compact_messages` for the passes."""
         compact_messages(self.messages, aggressive=aggressive)
+
+    def find_summary_message(self) -> Optional[int]:
+        """Index of the rolling summary SystemMessage, if present."""
+        for idx, message in enumerate(self.messages[:4]):
+            if (
+                message.type == "system"
+                and isinstance(message.content, str)
+                and message.content.startswith(self.SUMMARY_MARKER)
+            ):
+                return idx
+        return None
+
+    def get_context_summary(self) -> str:
+        """Current rolling summary text ('' when none exists yet)."""
+        idx = self.find_summary_message()
+        if idx is None:
+            return ""
+        content = self.messages[idx].content
+        return content[len(self.SUMMARY_MARKER):].strip() if isinstance(content, str) else ""
+
+    def set_context_summary(self, text: str) -> None:
+        """Insert or refresh the rolling summary SystemMessage.
+
+        Placed immediately after the leading system prompt (or at the head
+        when there is none) so it behaves as stable distilled context.
+        """
+        cleaned = (text or "").strip()
+        if not cleaned:
+            return
+        payload = f"{self.SUMMARY_MARKER} {cleaned}"
+        idx = self.find_summary_message()
+        if idx is not None:
+            self.messages[idx].content = payload
+            return
+        insert_at = 1 if (self.messages and self.messages[0].type == "system") else 0
+        self.messages.insert(insert_at, SystemMessage(content=payload))
+
+    def collect_compaction_digest(self, max_chars: int = 24_000) -> str:
+        """Snapshot of the context a normal compaction is ABOUT to lose.
+
+        Mirrors the pass logic of :func:`compact_messages`: old bulky tool
+        results (all but the most recent per tool) and old bulky tool-call
+        arguments (all but the most recent calls). The result feeds the
+        map step of the map-reduce summary; the physical compaction then
+        runs as usual.
+        """
+        lines: List[str] = []
+        budget = max_chars
+
+        def _emit(label: str, text: Any) -> None:
+            nonlocal budget
+            if budget <= 0:
+                return
+            clean = text if isinstance(text, str) else ""
+            if not clean.strip():
+                return
+            snippet = clean[:1500]
+            lines.append(f"{label}: {snippet}")
+            budget -= len(snippet)
+
+        last_tool_index: Dict[str, int] = {}
+        for i, message in enumerate(self.messages):
+            if message.type == "tool" and getattr(message, "name", None) in TOOLS_TO_COMPACT:
+                last_tool_index[message.name] = i
+        for i, message in enumerate(self.messages):
+            if (
+                message.type == "tool"
+                and getattr(message, "name", None) in TOOLS_TO_COMPACT
+                and last_tool_index.get(message.name) != i
+            ):
+                _emit(f"[older {message.name} result]", message.content)
+
+        recent_calls: Dict[str, List[int]] = {}
+        for i, message in enumerate(self.messages):
+            if message.type != "ai":
+                continue
+            for call in getattr(message, "tool_calls", None) or []:
+                name = call.get("name")
+                if name in BULKY_TOOL_ARGS:
+                    recent_calls.setdefault(name, []).append(i)
+        for i, message in enumerate(self.messages):
+            if message.type != "ai":
+                continue
+            for call in getattr(message, "tool_calls", None) or []:
+                name = call.get("name")
+                if name not in BULKY_TOOL_ARGS:
+                    continue
+                call_rows = recent_calls.get(name) or []
+                if i in call_rows[-KEEP_RECENT_ARG_CALLS:]:
+                    continue
+                args = call.get("args") or {}
+                bulky = args.get(BULKY_TOOL_ARGS[name])
+                if bulky:
+                    _emit(f"[older {name} argument]", bulky)
+
+        return "\n".join(lines)
+
+    async def compact_with_summary(self, summarize) -> bool:
+        """Map-reduce compaction: distil the about-to-be-lost context with
+        an LLM (map step), run the physical compaction, then store the
+        rolling summary (reduce step) as a SystemMessage.
+
+        ``summarize`` is an async callable digest→summary-text. Returns
+        True when a summary was stored. On ANY summarizer failure the
+        physical compaction still ran — plain truncation remains the
+        fallback, exactly like before.
+        """
+        digest = self.collect_compaction_digest()
+        previous_summary = self.get_context_summary()
+        compact_messages(self.messages, aggressive=False)
+        if not digest or summarize is None:
+            return False
+        try:
+            merged = digest
+            if previous_summary:
+                merged = (
+                    f"[Previous distilled summary]\n{previous_summary}\n\n"
+                    f"[Newly compacted material]\n{digest}"
+                )
+            summary = await summarize(merged)
+        except Exception:
+            logger.debug("map-reduce summary failed — plain compaction kept", exc_info=True)
+            return False
+        if not (summary or "").strip():
+            return False
+        self.set_context_summary(summary)
+        logger.info(
+            "Map-reduce compaction: %d chars of digest distilled into a "
+            "%d-char rolling summary",
+            len(digest), len(summary),
+        )
+        return True
 
     def drop_older_rounds(self, keep_last_messages: int = 10) -> None:
         """Drop the oldest conversation rounds — see :func:`drop_older_rounds`."""

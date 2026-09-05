@@ -97,6 +97,9 @@ class PlanActGraphFlow(PlanActFlow):
         if not session:
             raise ValueError(f"Session {self._session_id} not found")
 
+        # Entry status BEFORE any transition (discuss-mode classifier input).
+        entry_status = session.status
+
         if session.status != SessionStatus.PENDING:
             logger.debug(f"Session {self._session_id} is not in PENDING status, rolling back")
             await self.executor.roll_back(message)
@@ -120,6 +123,30 @@ class PlanActGraphFlow(PlanActFlow):
         # (builder inherited from PlanActFlow — identical behaviour required
         # for engine parity).
         conversation_history = self._build_conversation_digest(session, message)
+
+        # ── CHAT_MODE_DISCUSS fast path (Manus discuss mode) ───────────
+        # Identical to PlanActFlow's branch (engine parity): pure conversation
+        # answers directly — no plan, no executor, no sandbox dependency.
+        try:
+            if await self._is_discuss(entry_status, message, conversation_history):
+                logger.info(
+                    "Agent %s discuss mode — answering directly without tools",
+                    self._agent_id,
+                )
+                async for event in self._run_discuss(
+                    message, conversation_history, session.title
+                ):
+                    yield event
+                yield DoneEvent()
+                logger.info(f"Agent {self._agent_id} discuss turn completed")
+                return
+        except Exception:
+            logger.warning(
+                "Agent %s discuss-mode classification failed — continuing "
+                "as agent mode",
+                self._agent_id,
+                exc_info=True,
+            )
 
         settings = get_settings()
         _max_steps = settings.max_steps
@@ -318,16 +345,21 @@ class PlanActGraphFlow(PlanActFlow):
                 self.status = AgentStatus.SUMMARIZING
                 return {"status": "summarize"}
 
-            # Guard: max total steps executed
-            if state["steps_executed"] >= _max_steps:
+            # Guard: max total steps executed — budget scales with the
+            # planner's effort tier (AgentTaskMode standard vs high_effort).
+            _eff_steps, _eff_failures = self._effective_step_budget(
+                _max_steps, _max_consecutive_failures
+            )
+            if state["steps_executed"] >= _eff_steps:
                 logger.warning(
-                    f"Agent {self._agent_id} reached max_steps={_max_steps}, "
+                    f"Agent {self._agent_id} reached max_steps={_eff_steps} "
+                    f"(mode={getattr(self.plan, 'task_mode', 'standard')}), "
                     "force-moving to SUMMARIZING"
                 )
                 writer(MessageEvent(
                     role="assistant",
                     message=(
-                        f"Reached the maximum step limit ({_max_steps}). "
+                        f"Reached the maximum step limit ({_eff_steps}). "
                         "Summarising with the data collected so far."
                     ),
                     is_progress=True,
@@ -335,8 +367,8 @@ class PlanActGraphFlow(PlanActFlow):
                 self.status = AgentStatus.SUMMARIZING
                 return {"status": "summarize"}
 
-            # Guard: consecutive failures
-            if state["consecutive_failures"] >= _max_consecutive_failures:
+            # Guard: consecutive failures (scaled with effort budget)
+            if state["consecutive_failures"] >= _eff_failures:
                 logger.warning(
                     f"Agent {self._agent_id} reached {state['consecutive_failures']} consecutive "
                     f"failures (limit={_max_consecutive_failures}), force-moving to SUMMARIZING"

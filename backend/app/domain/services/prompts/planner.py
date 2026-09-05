@@ -20,7 +20,15 @@ Each step is a PHASE of work with a complete, verifiable outcome — never a sin
 - A step description states the OUTCOME (what must be true when the step ends), not the mechanics.
 - Ask yourself: "would a human write this as ONE checkbox on a checklist?" If your step reads like a single click, one field, or one command — it is too small; merge it into its surrounding phase.
 - Simple tasks (answerable in 1-3 tool calls) → a single step. Never inflate them.
-- Complex tasks → typically 3-6 phases. Hard ceiling: 8 steps. If you need more, your phases are too fine-grained.
+- Complex tasks → typically 3-6 phases. Hard ceiling: 8 steps for standard tasks, 12 steps for high_effort tasks. If you need more, your phases are too fine-grained.
+
+EFFORT CALIBRATION (task_mode + planner_mode):
+Judge how much genuine work this task needs before choosing:
+- task_mode "high_effort": the task is a substantial build, deep research, or multi-part deliverable — it will honestly take many phases, many tool calls, and verification. The execution budget (step limit, tolerated failures) scales up so the work is not cut short.
+- task_mode "standard": anything that fits the normal budget. Do NOT inflate effort to feel thorough — most tasks are standard.
+- planner_mode "complex": decompose carefully — ordered phases, each with a distinct verifiable outcome, including a verification/review phase near the end.
+- planner_mode "simple": coarse phases, minimal decomposition.
+- The two fields are independent — a deep research task can be high_effort yet need only simple phases; a fiddly build can be complex yet standard effort. Choose each honestly.
 
 Workflow:
 1. Analyze the user's message and decide: does completing this require tools?
@@ -74,6 +82,12 @@ interface CreatePlanResponse {{
   goal: string;
   /** Plan title generated based on the context */
   title: string;
+  /** Effort tier: "high_effort" for substantial builds / deep research that
+   honestly need many phases and tool calls; "standard" otherwise */
+  task_mode?: "standard" | "high_effort";
+  /** Planning depth: "complex" when careful ordered decomposition + a
+   verification phase is warranted; "simple" for coarse phases */
+  planner_mode?: "simple" | "complex";
 }}
 ```
 
@@ -83,6 +97,8 @@ EXAMPLE JSON OUTPUT:
     "goal": "Goal description",
     "title": "Plan title",
     "language": "en",
+    "task_mode": "standard",
+    "planner_mode": "simple",
     "steps": [
         {{
             "id": "1",

@@ -2,9 +2,13 @@ import { AgentSSEEvent } from "./event";
 
 export enum SessionStatus {
     PENDING = "pending",
+    /** Message accepted, sandbox/task bootstrap still running. */
+    IN_QUEUE = "in_queue",
     RUNNING = "running",
     WAITING = "waiting",
-    COMPLETED = "completed"
+    COMPLETED = "completed",
+    /** The run ended with an unrecoverable error — shown honestly. */
+    FAILED = "failed"
 }
 
 export interface CreateSessionResponse {

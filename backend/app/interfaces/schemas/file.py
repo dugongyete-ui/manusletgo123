@@ -33,6 +33,9 @@ class FileInfoResponse(BaseModel):
     upload_date: Optional[datetime] = None
     metadata: Optional[Dict[str, Any]]
     file_url: Optional[str]
+    # Semantic group for UI listing (slides/tables/docs/media/code/archives/
+    # other) — set by the files endpoints, absent on older payloads.
+    category: Optional[str] = None
 
     @staticmethod
     async def from_file_info(file_info: FileInfo) -> "FileInfoResponse":

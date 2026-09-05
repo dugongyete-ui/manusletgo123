@@ -16,9 +16,9 @@ from app.application.errors.exceptions import NotFoundError, UnauthorizedError
 from app.interfaces.dependencies import get_agent_service, get_current_user, get_optional_current_user, get_token_service, verify_signature_websocket
 from app.interfaces.schemas.base import APIResponse
 from app.interfaces.schemas.session import (
-    ChatRequest, ShellViewRequest, CreateSessionResponse, GetSessionResponse,
+    ChatRequest, ShellViewRequest, CreateSessionRequest, CreateSessionResponse, GetSessionResponse,
     ListSessionItem, ListSessionResponse, ShellViewResponse,
-    ShareSessionResponse, SharedSessionResponse,
+    ShareSessionResponse, SharedSessionResponse, ForkSessionResponse,
     MoveSessionProjectRequest, MoveSessionProjectResponse
 )
 from app.interfaces.schemas.file import FileViewRequest, FileViewResponse
@@ -34,15 +34,43 @@ router = APIRouter(prefix="/sessions", tags=["sessions"])
 
 @router.put("", response_model=APIResponse[CreateSessionResponse])
 async def create_session(
+    request: Optional[CreateSessionRequest] = None,
     current_user: User = Depends(get_current_user),
     agent_service: AgentService = Depends(get_agent_service)
 ) -> APIResponse[CreateSessionResponse]:
-    session = await agent_service.create_session(current_user.id)
+    # Optional agent profile (built-in preset or the user's custom one) —
+    # its persona is appended to every run's system prompt in this session.
+    profile_id = (request.agent_profile_id if request else None)
+    if profile_id:
+        # Validate: built-in ids pass through; custom ids must exist + belong.
+        from app.domain.models.agent_profile import BUILTIN_PROFILE_IDS
+        if profile_id not in BUILTIN_PROFILE_IDS:
+            profile = await agent_service.get_agent_profile(profile_id, current_user.id)
+            if not profile:
+                raise NotFoundError("Agent profile not found")
+    session = await agent_service.create_session(current_user.id, profile_id)
     return APIResponse.success(
         CreateSessionResponse(
             session_id=session.id,
         )
     )
+
+@router.post("/{session_id}/fork", response_model=APIResponse[ForkSessionResponse])
+async def fork_session(
+    session_id: str,
+    current_user: User = Depends(get_current_user),
+    agent_service: AgentService = Depends(get_agent_service)
+) -> APIResponse[ForkSessionResponse]:
+    """Fork a session (own or shared) into the current user's account.
+
+    Manus fork: the readable storyline is copied into a fresh session the
+    user owns and can continue in their own sandbox.
+    """
+    forked = await agent_service.fork_session(session_id, current_user.id)
+    return APIResponse.success(ForkSessionResponse(
+        session_id=forked.id,
+        title=forked.title,
+    ))
 
 @router.get("/{session_id}", response_model=APIResponse[GetSessionResponse])
 async def get_session(
@@ -336,7 +364,29 @@ async def get_session_files(
     if not current_user and not await agent_service.is_session_shared(session_id):
         raise UnauthorizedError()
     files = await agent_service.get_session_files(session_id, current_user.id if current_user else None)
-    return APIResponse.success(files)
+    # Semantic category (slides/tables/docs/media/code/archives/other) so the
+    # frontend can group deliverables like official Manus getSessionFilesV2.
+    from app.domain.services.file_categorize import categorize_file
+    from app.interfaces.schemas.file import FileInfoResponse
+    responses = []
+    for file_info in files or []:
+        try:
+            responses.append(await FileInfoResponse.from_file_info(file_info))
+        except Exception:
+            responses.append(FileInfoResponse(
+                file_id=file_info.file_id or "",
+                filename=file_info.filename or "",
+                content_type=file_info.content_type,
+                size=file_info.size,
+                upload_date=file_info.upload_date,
+                metadata=file_info.metadata,
+                file_url=file_info.file_url,
+            ))
+        if responses:
+            responses[-1].category = categorize_file(
+                file_info.filename, file_info.content_type
+            )
+    return APIResponse.success(responses)
 
 
 @router.post("/{session_id}/vnc/signed-url", response_model=APIResponse[SignedUrlResponse])

@@ -53,6 +53,19 @@
       </div>
       <!-- Composer — docked at the bottom of the screen. -->
       <div class="w-full max-w-full sm:max-w-[768px] sm:min-w-[390px] mx-auto w-full pb-2">
+        <!-- Agent profile picker (Manus InitAgentAgent equivalent): choose a
+             persona for this new chat — built-in presets or your own. -->
+        <div v-if="profiles.length" class="flex items-center gap-1.5 flex-wrap mb-2 px-1">
+          <button v-for="profile in profiles" :key="profile.profile_id" @click="selectedProfileId = profile.profile_id"
+            :class="selectedProfileId === profile.profile_id
+              ? 'bg-[var(--Button-primary-black)] text-[var(--text-onblack)] border-transparent'
+              : 'bg-[var(--fill-tsp-white-main)] text-[var(--text-secondary)] border-[var(--border-btn-main)] hover:bg-[var(--fill-tsp-white-light)]'"
+            class="h-7 px-3 rounded-full text-xs font-medium border inline-flex items-center gap-1.5 transition-colors"
+            :title="profile.description || profile.instruction">
+            <span v-if="profile.emoji">{{ profile.emoji }}</span>
+            <span>{{ profile.name }}</span>
+          </button>
+        </div>
         <ChatBox :rows="2" v-model="message" @submit="handleSubmit" :isRunning="false" :attachments="attachments" />
       </div>
     </div>
@@ -66,6 +79,7 @@ import { useRouter } from 'vue-router';
 import { useI18n } from 'vue-i18n';
 import ChatBox from '../components/ChatBox.vue';
 import { createSession } from '../api/agent';
+import { getAgentProfiles, type AgentProfile } from '../api/profiles';
 import { showErrorToast } from '../utils/toast';
 import { PanelLeft } from 'lucide-vue-next';
 import DzeckLogoTextIcon from '../components/icons/DzeckLogoTextIcon.vue';
@@ -112,8 +126,25 @@ const handleUserMenuLeave = () => {
 
 const PENDING_KEY = 'dzeck_pending_prompt'
 
+// ── Agent profiles (Manus InitAgentAgent) ─────────────────────────
+const profiles = ref<AgentProfile[]>([]);
+const selectedProfileId = ref<string | null>(null);
+const loadProfiles = async () => {
+  try {
+    const list = await getAgentProfiles();
+    profiles.value = list;
+    // Default = the built-in general profile (or none when list is empty).
+    const general = list.find((p) => p.profile_id === 'builtin-general');
+    selectedProfileId.value = general ? general.profile_id : (list[0]?.profile_id ?? null);
+  } catch {
+    // Profiles unavailable — default behaviour, no picker shown.
+    profiles.value = [];
+  }
+};
+
 onMounted(() => {
   hideFilePanel();
+  loadProfiles();
   const pending = localStorage.getItem(PENDING_KEY)
   if (pending) {
     message.value = pending
@@ -129,8 +160,8 @@ const handleSubmit = async () => {
     isSubmitting.value = true;
 
     try {
-      // Create new Agent
-      const session = await createSession();
+      // Create new Agent — with the selected profile persona when present.
+      const session = await createSession(selectedProfileId.value);
       const sessionId = session.session_id;
 
       // Navigate to new route with session_id, passing initial message via state

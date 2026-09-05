@@ -9,6 +9,11 @@
       <template v-if="session.status === SessionStatus.RUNNING || session.status === SessionStatus.PENDING">
         <div class="border rounded-full animate-spin" style="width: 18px; height: 18px; border-width: 2px; border-color: var(--fill-blue); border-top-color: var(--icon-brand);"></div>
       </template>
+      <!-- Queued: task/sandbox still booting — softer pulse so the user sees
+           "waiting to start" instead of an ambiguous full spinner. -->
+      <template v-else-if="session.status === SessionStatus.IN_QUEUE">
+        <div class="border rounded-full animate-pulse" style="width: 18px; height: 18px; border-width: 2px; border-color: var(--fill-blue); border-top-color: var(--fill-blue);"></div>
+      </template>
       <template v-else-if="session.status === SessionStatus.WAITING">
         <svg height="18" width="18" fill="none" viewBox="0 0 16 16" xmlns="http://www.w3.org/2000/svg">
           <g clip-path="url(#waiting-clip)">
@@ -17,10 +22,15 @@
           <defs><clipPath id="waiting-clip"><rect height="16" width="16" fill="white"></rect></clipPath></defs>
         </svg>
       </template>
+      <!-- Failed: honest terminal state — clear warning icon, never hidden
+           behind the normal "finished chat" bubble. -->
+      <template v-else-if="session.status === SessionStatus.FAILED">
+        <AlertCircle class="size-[18px] text-[var(--function-warning)]" />
+      </template>
       <template v-else>
         <MessageCircle class="size-[18px] text-[var(--icon-tertiary)]" />
       </template>
-    
+
     </div>
 
     <!-- Judul -->
@@ -44,7 +54,7 @@
 </template>
 
 <script setup lang="ts">
-import { Ellipsis, MessageCircle, FolderInput, Trash } from 'lucide-vue-next';
+import { Ellipsis, MessageCircle, FolderInput, Trash, AlertCircle } from 'lucide-vue-next';
 import { computed, ref } from 'vue';
 import { useI18n } from 'vue-i18n';
 import { useRoute, useRouter } from 'vue-router';

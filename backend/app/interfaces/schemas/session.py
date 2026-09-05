@@ -12,6 +12,26 @@ class ChatRequest(BaseModel):
     event_id: Optional[str] = None
 
 
+class CreateSessionRequest(BaseModel):
+    """Optional body when creating a session.
+
+    agent_profile_id: built-in preset id ("builtin-general", ...) or one of
+    the user's custom agent profile ids. Omitted → default Dzeck behaviour.
+    """
+    agent_profile_id: Optional[str] = None
+
+
+class CreateSessionResponse(BaseModel):
+    """Create session response schema"""
+    session_id: str
+
+
+class ForkSessionResponse(BaseModel):
+    """Fork session response schema — the new session the user now owns."""
+    session_id: str
+    title: Optional[str] = None
+
+
 class ShellViewRequest(BaseModel):
     """Shell view request schema"""
     session_id: str

@@ -53,6 +53,8 @@ class AgentDomainService:
         mcp_repository: MCPRepository,
         search_engine: Optional[SearchEngine] = None,
         project_repository=None,
+        knowledge_repository=None,
+        agent_profile_repository=None,
     ):
         self._repository = agent_repository
         self._session_repository = session_repository
@@ -62,6 +64,8 @@ class AgentDomainService:
         self._file_storage = file_storage
         self._mcp_repository = mcp_repository
         self._project_repository = project_repository
+        self._knowledge_repository = knowledge_repository
+        self._agent_profile_repository = agent_profile_repository
         logger.info("AgentDomainService initialization completed")
             
     async def shutdown(self) -> None:
@@ -182,6 +186,45 @@ class AgentDomainService:
                         session.project_id, session.id, exc,
                     )
 
+            # ── Durable user knowledge (Manus KNOWLEDGE_KIND_USER) ─────────
+            # Accepted knowledge items ride along in EVERY future session for
+            # this user — context assembly phase, injected into the prompt.
+            knowledge_items: list[str] = []
+            if self._knowledge_repository is not None:
+                try:
+                    active = await self._knowledge_repository.find_active_by_user_id(
+                        session.user_id
+                    )
+                    knowledge_items = [item.content for item in active]
+                except Exception as exc:
+                    logger.warning(
+                        "Failed to load knowledge for user %s: %s",
+                        session.user_id, exc,
+                    )
+
+            # ── Agent profile persona (Manus InitManusAgent) ─────────────
+            # The profile the session was created with (built-in or custom)
+            # shapes tone/focus through an appended persona section.
+            agent_persona: Optional[str] = None
+            profile_id = getattr(session, "agent_profile_id", None)
+            if profile_id:
+                from app.domain.models.agent_profile import resolve_builtin_profile
+                try:
+                    profile = None
+                    if self._agent_profile_repository is not None:
+                        profile = await self._agent_profile_repository.find_by_id_and_user_id(
+                            profile_id, session.user_id
+                        )
+                    if profile is None:
+                        profile = resolve_builtin_profile(profile_id)
+                    if profile is not None and (profile.instruction or "").strip():
+                        agent_persona = profile.instruction
+                except Exception as exc:
+                    logger.warning(
+                        "Failed to load agent profile %s for session %s: %s",
+                        profile_id, session.id, exc,
+                    )
+
             task_runner = AgentTaskRunner(
                 session_id=session.id,
                 agent_id=session.agent_id,
@@ -194,6 +237,9 @@ class AgentDomainService:
                 agent_repository=self._repository,
                 mcp_repository=self._mcp_repository,
                 project_instruction=project_instruction,
+                knowledge=knowledge_items,
+                agent_persona=agent_persona,
+                knowledge_repository=self._knowledge_repository,
             )
 
             task = self._task_cls.create(task_runner)
@@ -307,6 +353,15 @@ class AgentDomainService:
                     )
                     message_event.id = f"{int(_time.time() * 1000)}-0"
                     await self._session_repository.add_event(session_id, message_event)
+
+                    # Mark the turn as queued while the task/sandbox boots —
+                    # the flow flips it to RUNNING the moment it starts (the
+                    # frontend can show a distinct "queued" state during the
+                    # 1-7 min first boot instead of a misleading "running").
+                    if session.status != SessionStatus.RUNNING:
+                        await self._session_repository.update_status(
+                            session_id, SessionStatus.IN_QUEUE
+                        )
 
                     # If a previous first-message setup is STILL in flight
                     # (user reloaded and sent another message during sandbox

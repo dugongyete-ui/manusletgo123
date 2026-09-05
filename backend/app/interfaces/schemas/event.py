@@ -15,6 +15,7 @@ from app.domain.models.event import (
     ToolEvent,
     StepEvent,
     ValidationEvent,
+    KnowledgeEvent,
 )
 from app.domain.models.validation import ValidationResult as ValidationResultModel
 
@@ -249,6 +250,27 @@ class ValidationSSEEvent(BaseSSEEvent):
             )
         )
 
+class KnowledgeEventData(BaseEventData):
+    """SSE payload of a post-task learning proposal (PENDING items)."""
+    items: List[str] = []
+    item_ids: List[str] = []
+    status: str = "pending"
+
+class KnowledgeSSEEvent(BaseSSEEvent):
+    event: Literal["knowledge"] = "knowledge"
+    data: KnowledgeEventData
+
+    @classmethod
+    def from_event(cls, event: KnowledgeEvent) -> Self:
+        return cls(
+            data=KnowledgeEventData(
+                **BaseEventData.base_event_data(event),
+                items=event.items,
+                item_ids=event.item_ids,
+                status=event.status,
+            )
+        )
+
 class CommonSSEEvent(BaseSSEEvent):
     event: str
     data: CommonEventData
@@ -262,6 +284,7 @@ AgentSSEEvent = Union[
     ToolSSEEvent,
     StepSSEEvent,
     ValidationSSEEvent,
+    KnowledgeSSEEvent,
     DoneSSEEvent,
     ErrorSSEEvent,
     WaitSSEEvent,

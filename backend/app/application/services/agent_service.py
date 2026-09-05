@@ -38,12 +38,16 @@ class AgentService:
         search_engine: Optional[SearchEngine] = None,
         file_favorite_repository: Optional[FileFavoriteRepository] = None,
         project_repository=None,
+        knowledge_repository=None,
+        agent_profile_repository=None,
     ):
         logger.info("Initializing AgentService")
         self._agent_repository = agent_repository
         self._session_repository = session_repository
         self._file_storage = file_storage
         self._file_favorite_repository = file_favorite_repository
+        self._knowledge_repository = knowledge_repository
+        self._agent_profile_repository = agent_profile_repository
         self._agent_domain_service = AgentDomainService(
             self._agent_repository,
             self._session_repository,
@@ -53,14 +57,20 @@ class AgentService:
             mcp_repository,
             search_engine,
             project_repository=project_repository,
+            knowledge_repository=knowledge_repository,
+            agent_profile_repository=agent_profile_repository,
         )
         self._search_engine = search_engine
         self._sandbox_cls = sandbox_cls
     
-    async def create_session(self, user_id: str) -> Session:
+    async def create_session(self, user_id: str, agent_profile_id: Optional[str] = None) -> Session:
         logger.info(f"Creating new session for user: {user_id}")
         agent = await self._create_agent()
         session = Session(agent_id=agent.id, user_id=user_id)
+        # Agent profile (custom preset or built-in): its persona is appended
+        # to the system prompt of every run in this session.
+        if agent_profile_id:
+            session.agent_profile_id = agent_profile_id
         logger.info(f"Created new Session with ID: {session.id} for user: {user_id}")
         await self._session_repository.save(session)
         # Warm up Replit sandbox in background so the first chat message is not
@@ -350,6 +360,87 @@ class AgentService:
             logger.error(f"Shared session {session_id} not found or not shared")
             return None
         return session
+
+    async def fork_session(self, source_session_id: str, user_id: str) -> Session:
+        """Fork a session into the current user's account (Manus fork).
+
+        Works on the user's OWN sessions and on SHARED sessions (community).
+        The fork keeps the readable storyline — user/assistant messages,
+        plans, step events, title, deliverable file entries — but strips
+        tool payloads (browser screenshots etc.) whose GridFS blobs stay
+        owned by the source user. The fork starts PENDING: the user can
+        continue it like any session, in their own sandbox.
+        """
+        source = await self._session_repository.find_by_id(source_session_id)
+        if not source:
+            raise RuntimeError("Session not found")
+        if source.user_id != user_id and not source.is_shared:
+            raise RuntimeError("Session not found")
+
+        agent = await self._create_agent()
+        forked = Session(
+            agent_id=agent.id,
+            user_id=user_id,
+            title=source.title,
+            latest_message=source.latest_message,
+            latest_message_at=source.latest_message_at,
+            is_shared=False,
+            status=SessionStatus.PENDING,
+        )
+
+        # Copy the readable storyline. Deep-copy events then strip payloads
+        # that reference another user's GridFS blobs (screenshots/previews);
+        # MessageEvent attachments keep their FileInfo entries so the file
+        # panel still lists deliverables.
+        from copy import deepcopy
+        from app.domain.models.event import (
+            MessageEvent as _MessageEvent,
+            PlanEvent as _PlanEvent,
+            StepEvent as _StepEvent,
+            TitleEvent as _TitleEvent,
+            ToolEvent as _ToolEvent,
+            ValidationEvent as _ValidationEvent,
+        )
+
+        copied: list = []
+        for event in source.events or []:
+            if isinstance(event, _ToolEvent):
+                stripped = deepcopy(event)
+                stripped.tool_content = None
+                stripped.function_result = None
+                copied.append(stripped)
+            elif isinstance(event, (_MessageEvent, _PlanEvent, _StepEvent, _TitleEvent, _ValidationEvent)):
+                copied.append(deepcopy(event))
+            # Error / Done / Wait / chunk events are runtime noise — skip.
+        forked.events = copied
+
+        # Deliverable file entries survive as metadata (filename, size); the
+        # blobs remain owned by the source — downloads fall back gracefully.
+        forked.files = deepcopy(source.files or [])
+
+        await self._session_repository.save(forked)
+        logger.info(
+            "Forked session %s → %s for user %s (%d events, %d files)",
+            source_session_id, forked.id, user_id, len(copied), len(forked.files),
+        )
+        return forked
+
+    async def get_community_sessions(self, limit: int = 50) -> List[SessionSummary]:
+        """Public gallery of shared sessions (Manus community).
+
+        Returns lightweight summaries of publicly shared sessions, newest
+        activity first. No auth — discovery only; opening one goes through
+        the existing share-page routes.
+        """
+        return await self._session_repository.find_shared_summaries(limit=limit)
+
+    async def get_agent_profile(self, profile_id: str, user_id: str):
+        """Fetch an agent profile the user may attach to a session."""
+        if self._agent_profile_repository is None:
+            return None
+        return await self._agent_profile_repository.find_by_id_and_user_id(
+            profile_id, user_id
+        )
 
     # ─────────────────────────────────────────────────────────────────
     # Library (files aggregated across sessions)

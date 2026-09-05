@@ -22,6 +22,7 @@ import LandingPage from './pages/LandingPage.vue'
 // initial bundle (same strategy as the reference implementation).
 const LibraryPage = () => import('./pages/LibraryPage.vue')
 const ProjectPage = () => import('./pages/ProjectPage.vue')
+const CommunityPage = () => import('./pages/CommunityPage.vue')
 
 // Create router
 export const router = createRouter({
@@ -69,6 +70,18 @@ export const router = createRouter({
         {
           path: '',
           component: ProjectPage,
+          meta: { requiresAuth: true }
+        }
+      ]
+    },
+    {
+      path: '/community',
+      component: MainLayout,
+      meta: { requiresAuth: true },
+      children: [
+        {
+          path: '',
+          component: CommunityPage,
           meta: { requiresAuth: true }
         }
       ]

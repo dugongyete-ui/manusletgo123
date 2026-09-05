@@ -662,10 +662,11 @@ class BaseAgent(ABC):
         provider's limit (browser-use's ``maybe_compact_messages`` idea,
         but deterministic — no summarisation LLM call on the hot path).
 
-        Ladder: estimate → normal compact → aggressive compact → drop
-        old rounds. Every rung is in-place and persisted; the agent can
-        always re-read files / re-run commands if it truly needs dropped
-        detail back.
+        Ladder: estimate → map-reduce compact (LLM-distilled summary of the
+        about-to-be-lost context, falling back to plain truncation) →
+        aggressive compact → drop old rounds. Every rung is in-place and
+        persisted; the agent can always re-read files / re-run commands if
+        it truly needs dropped detail back.
         """
         limit = self._context_soft_limit()
         if limit <= 0:
@@ -676,7 +677,17 @@ class BaseAgent(ABC):
 
         before_msgs = len(self.memory.messages)
         before_chars = self._estimate_context_chars(self.memory.get_messages())
-        self.memory.compact()
+        # Map-reduce first (natural distillation); its internals degrade to
+        # the plain compact when the summarizer is unavailable/fails.
+        try:
+            summarized = await self.memory.compact_with_summary(self._summarize_digest)
+        except Exception:
+            summarized = False
+            self.memory.compact()
+        # The ladder ALWAYS continues: a distilled summary preserves the
+        # knowledge of dropped content but does NOT guarantee the size fell
+        # below the budget — aggressive compaction and round-dropping stay
+        # armed exactly like before.
         if self._estimate_context_chars(self.memory.get_messages()) > limit:
             self.memory.compact(aggressive=True)
         if self._estimate_context_chars(self.memory.get_messages()) > limit:
@@ -684,14 +695,49 @@ class BaseAgent(ABC):
         after_chars = self._estimate_context_chars(self.memory.get_messages())
         logger.info(
             "Proactive context compaction for agent '%s': %d → %d chars, "
-            "%d → %d messages (soft limit %d)",
+            "%d → %d messages (soft limit %d, distilled=%s)",
             self.name, before_chars, after_chars, before_msgs,
-            len(self.memory.messages), limit,
+            len(self.memory.messages), limit, summarized,
         )
         try:
             await self._repository.save_memory(self._agent_id, self.name, self.memory)
         except Exception:
             logger.debug("save after proactive compaction failed", exc_info=True)
+
+    async def _summarize_digest(self, digest: str) -> str:
+        """LLM map-reduce step: distil a compaction digest into a compact
+        rolling summary (facts, decisions, paths, open threads).
+
+        Best-effort by contract: raises on failure so the caller keeps the
+        plain-truncation fallback. Uses the agent's current model (primary
+        or already-rotated fallback) with a short timeout.
+        """
+        import asyncio as _asyncio
+        from langchain.messages import HumanMessage as _HumanMessage
+        from langchain.messages import SystemMessage as _SystemMessage
+
+        prompt = (
+            "Distil this completed portion of an agent task into a compact "
+            "summary a continuation agent needs: key facts, numbers, "
+            "decisions made, file paths touched, errors fixed, and open "
+            "threads. At most 200 words. Plain text, no preamble.\n\n"
+            f"{digest}"
+        )
+        response = await _asyncio.wait_for(
+            self._model.ainvoke(
+                [
+                    _SystemMessage(content="You are a precise summariser."),
+                    _HumanMessage(content=prompt),
+                ]
+            ),
+            timeout=30.0,
+        )
+        content = response.content if hasattr(response, "content") else ""
+        if isinstance(content, list):
+            content = "".join(
+                b.get("text", "") for b in content if isinstance(b, dict)
+            )
+        return (content or "").strip()
 
     async def _emergency_context_reduction(self, escalate: bool) -> None:
         """In-flight recovery after the provider rejected an oversized
