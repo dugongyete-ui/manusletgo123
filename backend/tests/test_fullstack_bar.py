@@ -83,6 +83,33 @@ def test_execution_prompt_has_skill_compliance():
     assert "the step is not done while the skill is violated" in p
     # the pptx example the user called out is spelled out
     assert "outside the pptx skill's pipeline" in p
+    # conflict rule: the skill wins over contradicting step text
+    assert "CONFLICT RULE" in p
+    assert "the SKILL wins" in p
+    assert "do not blindly execute a plan step that violates" in p
+
+
+def test_execution_prompt_forbids_server_databases():
+    """No PostgreSQL/MySQL daemon exists in the sandbox — prisma-style
+    server-DB migrations must be forbidden up front."""
+    from app.domain.services.prompts.execution import EXECUTION_SYSTEM_PROMPT
+
+    p = _flat(EXECUTION_SYSTEM_PROMPT)
+    assert "NO database server" in p
+    assert "will fail forever" in p
+    assert "file-based SQLite (drizzle) is the required" in p
+
+
+def test_execution_prompt_counts_command_variants_as_same_failure():
+    """Circuit breaker hardening: output errors count as failures even
+    when the tool call 'succeeded'; flag/path variants of one failing
+    command are the SAME problem."""
+    from app.domain.services.prompts.execution import EXECUTION_PROMPT
+
+    p = _flat(EXECUTION_PROMPT)
+    assert "VARIANTS of the same failing command" in p
+    assert "are the SAME problem" in p
+    assert "After two or three failing variants, stop retrying" in p
 
 
 def test_execution_prompt_has_v0_design_bar():
@@ -119,6 +146,22 @@ def test_planner_scales_the_build_to_the_request():
     assert "verifies the deliverable against each loaded skill's requirements" in p
 
 
+def test_planner_must_mirror_the_skills_stack():
+    """Session 1303b902a2d54516: the plan read the fullstack skill, then
+    invented Next.js+Prisma+PostgreSQL — a stack with no DB server that
+    burned the whole budget in a prisma-migrate retry spiral. The plan
+    must use the named skill's stack verbatim and never plan a DB
+    server that does not exist in the sandbox."""
+    from app.domain.services.prompts.planner import CREATE_PLAN_PROMPT
+
+    p = _flat(CREATE_PLAN_PROMPT)
+    assert "prescribed stack VERBATIM" in p
+    assert "Next.js/Prisma/PostgreSQL are NOT this workspace's template" in p
+    assert "NO database server" in p
+    assert "server-DB migrations will fail forever" in p
+    assert "file-based SQLite unless the user provides a real DATABASE_URL" in p
+
+
 # ── system prompt: product expectation + compliance ─────────────────────────
 
 
@@ -146,6 +189,8 @@ def test_fullstack_skill_carries_scoped_build_bar():
     )
     assert "Build bar for app-like requests" in text
     assert "webdev-readme-static" in text  # content sites routed away
+    assert "NO database server" in text  # no PostgreSQL/MySQL daemon here
+    assert "Prisma + PostgreSQL is NOT this template" in text
     for probe in ("localStorage", "in-memory", "placeholder"):
         assert probe in text, probe
     for probe in REQUIRED_BARS:
@@ -165,6 +210,7 @@ def test_coding_and_design_manuals_carry_the_doctrine():
     assert "never localStorage" in coding
     assert "canned responses" in coding
     assert "webdev-readme-static" in coding
+    assert "NO database server" in coding
     design = _flat((MANUAL / "DESIGN.md").read_text(encoding="utf-8"))
     assert "Web design bar (v0 doctrine)" in design
     assert "3-5 colors" in design
@@ -174,6 +220,8 @@ def test_coding_and_design_manuals_carry_the_doctrine():
 def test_agents_md_states_scope_and_compliance():
     text = _flat((MANUAL / "AGENTS.md").read_text(encoding="utf-8"))
     assert "the work must then FOLLOW the skill" in text
+    assert "no database server" in text
+    assert "the skill wins" in text
     assert "webdev-readme-static" in text
     assert "webdev-readme-fullstack" in text
     assert "never canned responses" in text

@@ -41,6 +41,11 @@ code file is written — and the work must then FOLLOW the skill: its
 workflow, structure, and acceptance criteria define what "done" means
 (a pptx produced outside the pptx skill's pipeline is not a finished
 pptx; a build that read its playbook and ignored it gained nothing).
+This sandbox has no database server — the skill's file-based SQLite
+(drizzle) is the database; never scaffold PostgreSQL/MySQL or Prisma
+server-DB migrations here. When a step's text prescribes an
+architecture that conflicts with the loaded skill's blueprint, the
+skill wins — build per the skill and note the deviation.
 Every website build loads a structure skill chosen by the request —
 webdev-readme-fullstack for app-like products (accounts, persistent
 data, chat, dashboards: real database, real auth, the named feature

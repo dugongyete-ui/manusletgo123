@@ -19,6 +19,7 @@ from app.domain.services.agents.execution import ExecutionAgent
 from app.domain.services.agents.loop_detector import (
     ActionLoopDetector,
     compute_action_hash,
+    leading_binary,
 )
 
 # ───────────────────────── 1. ActionLoopDetector ─────────────────────────
@@ -87,6 +88,92 @@ def test_window_trims_to_size():
     for i in range(20):
         d.record_action("shell_exec", {"cmd": f"x{i % 3}"})
     assert len(d.recent_action_hashes) == 5
+    assert len(d.recent_command_keys) == 5
+
+
+# ─────────── 1b. coarse command-family focus (prisma spiral) ───────────
+
+
+def test_leading_binary_collapses_wrapper_and_path_variants():
+    """Session 1303b902a2d54516: 30+ syntactic variants of the same
+    failing prisma command, each string distinct — the leading binary
+    must collapse them to one family."""
+    assert leading_binary("npx prisma migrate dev --name init") == "prisma"
+    assert leading_binary(
+        "cd /home/x/project && npx prisma migrate dev --name init 2>&1"
+    ) == "prisma"
+    assert leading_binary("./node_modules/.bin/prisma migrate dev") == "prisma"
+    assert leading_binary("node_modules/.bin/prisma migrate dev") == "prisma"
+    assert leading_binary("npx prisma migration dev --name init 2>&1") == "prisma"
+    assert leading_binary("sudo systemctl restart nginx") == "systemctl"
+    assert leading_binary("ls -la prisma/") == "ls"
+    assert leading_binary("") == ""
+
+
+def test_command_variant_spiral_triggers_focus_warning():
+    """Every command string is DIFFERENT (so exact-hash detection stays
+    quiet) yet all revolve around the same failing binary — the coarse
+    key must still escalate: WARNING at 6, ALERT at 10."""
+    d = ActionLoopDetector()
+    variants = [
+        "npx prisma migrate dev --name init",
+        "npx prisma migration dev --name init",
+        "./node_modules/.bin/prisma migrate dev",
+        "cd /x/orca-ai && npx prisma migrate dev --name init 2>&1",
+        "npx prisma --help",
+        "npx prisma migration new init",
+    ]
+    for v in variants:
+        d.record_action("shell_exec", {"command": v})
+    # exact hashes are all distinct → no LOOP nudge from the old detector
+    assert d.max_repetition_count == 1
+    msg = d.get_nudge_message()
+    assert msg and "COMMAND-FOCUS WARNING" in msg
+    assert "prisma" in msg
+
+    for i, v in enumerate(
+        ["npx prisma migrate dev --create-only", "npx prisma generate",
+         "npx prisma -v", "npx prisma --version"]
+    ):
+        d.record_action("shell_exec", {"command": v})
+    msg = d.get_nudge_message()
+    assert "COMMAND-FOCUS ALERT" in msg
+    assert "stop retrying" in msg
+
+
+def test_distinct_binaries_do_not_trigger_focus_nudge():
+    """A healthy build round runs many DIFFERENT commands (npm, ls, cat,
+    node, curl) — no command-family nudge may fire."""
+    d = ActionLoopDetector()
+    for cmd in (
+        "npm install react",
+        "ls -la",
+        "cat package.json",
+        "node -v",
+        "curl localhost:3000",
+        "mkdir -p src",
+    ):
+        d.record_action("shell_exec", {"command": cmd})
+    assert d.max_command_focus == 1
+    assert d.get_nudge_message() is None
+
+
+def test_non_shell_tools_do_not_record_command_keys():
+    d = ActionLoopDetector()
+    for i in range(12):
+        d.record_action("browser_click", {"index": i})
+    assert d.recent_command_keys == []
+    assert d.max_command_focus == 0
+
+
+def test_exempt_tools_never_hash_or_key():
+    d = ActionLoopDetector()
+    for _ in range(12):
+        d.record_action("shell_exec", {"command": "ls"})
+        d.record_action("message_notify_user", {"text": "update"})
+    assert d.max_command_focus == 12  # shell side still tracked
+    # notify side invisible to BOTH detectors
+    assert "message_notify_user" not in str(d.recent_action_hashes)
 
 
 # ───────────────────────── 2. execute() injections ───────────────────────

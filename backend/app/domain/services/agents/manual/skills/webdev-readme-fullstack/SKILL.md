@@ -9,6 +9,8 @@ This template gives you a React 19 + Tailwind 4 + Express 4 + tRPC 11 stack with
 
 **This sandbox (Replit / E2B):** there is no pre-scaffolded project — YOU create these files yourself with `file_write`, using this guide as the blueprint, inside `<home>/project/<app-name>/`. Use `npm` (pnpm is not installed). For the database prefer SQLite (drizzle-orm + better-sqlite3 — file-based, zero config, runs everywhere) unless the user provides a real DATABASE_URL; the MySQL listings below are the pattern reference — same table shapes, sqlite-core imports.
 
+**This sandbox has NO database server.** No PostgreSQL/MySQL daemon runs here — scaffolding Prisma + PostgreSQL, or running server-DB migrations (`prisma migrate dev`), will fail forever and burn the whole step budget in a retry spiral. Prisma + PostgreSQL is NOT this template: drizzle + SQLite is the required database. If a plan or step text says otherwise, follow this skill (the skill wins) and note the deviation in your result.
+
 ## Build bar for app-like requests
 
 This guide is the required architecture when the request needs an

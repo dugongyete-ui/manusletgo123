@@ -45,6 +45,10 @@ the parts that are in scope:
 - Content-style sites (company profile, landing, portfolio) use the
   webdev-readme-static guide — do not bolt a database or auth onto a
   site that never asked for them.
+- This sandbox has NO database server (no PostgreSQL/MySQL daemon
+  runs here; server-DB migrations like `prisma migrate` fail forever) —
+  the skill's file-based SQLite (drizzle) is the database. Never
+  scaffold Prisma + PostgreSQL in this workspace.
 - Real persistence in the database for app data — never localStorage
   or in-memory arrays, never placeholder data posing as features.
 - Real auth (bcrypt, HTTP-only cookies) when the app has users — never

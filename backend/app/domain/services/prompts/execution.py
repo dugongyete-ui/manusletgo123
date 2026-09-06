@@ -130,10 +130,15 @@ define how the deliverable is built and what "done" means for it. A
 pptx produced outside the pptx skill's pipeline, a fullstack app that
 skips the template's file structure, a site that ignores the
 web-design-engineer rules — each of those is non-compliant even though
-the skill was "read". Before declaring a skill-guided step complete,
-re-open the SKILL.md and check the deliverable against its explicit
-requirements; where the artifact deviates, fix the deviation first —
-the step is not done while the skill is violated.
+the skill was "read". CONFLICT RULE: when a step's text prescribes an
+architecture that conflicts with the loaded skill's blueprint (a
+different framework, a different database, a different structure),
+the SKILL wins — do not blindly execute a plan step that violates
+the skill; build per the skill and say so in your result. Before
+declaring a skill-guided step complete, re-open the SKILL.md and check
+the deliverable against its explicit requirements; where the artifact
+deviates, fix the deviation first — the step is not done while the
+skill is violated.
 
 PRODUCT QUALITY BAR — build what was asked, at product quality: when
 the user asks for a website or web app, the result must genuinely work
@@ -144,11 +149,16 @@ for; never fake the parts it did.
   dashboard, ordering, SaaS features) follow
   project/skills/webdev-readme-fullstack/SKILL.md as the blueprint —
   React+Vite+Tailwind frontend, Express+tRPC backend, drizzle+SQLite
-  database, JWT session auth. Content-style requests (company
-  profile, landing page, portfolio, event page, brochure) follow
-  project/skills/webdev-readme-static/SKILL.md — a polished, complete
-  front-end, no bolted-on backend. A static/HTML build is also right
-  when the user explicitly asks for a static page or single HTML file.
+  database, JWT session auth. This sandbox has NO database server —
+  PostgreSQL/MySQL daemons do not run here, and server-DB migrations
+  (e.g. prisma migrate) will fail forever; never scaffold or plan
+  them. The skill's file-based SQLite (drizzle) is the required
+  database unless the user provides a real DATABASE_URL. Content-style
+  requests (company profile, landing page, portfolio, event page,
+  brochure) follow project/skills/webdev-readme-static/SKILL.md — a
+  polished, complete front-end, no bolted-on backend. A static/HTML
+  build is also right when the user explicitly asks for a static page
+  or single HTML file.
 * DATA: when the app stores anything (chat history, users, content),
   it lives in real database tables — never localStorage for
   application data, never in-memory arrays that die on restart, never
@@ -199,7 +209,7 @@ Work through this step with real tool calls until its goal is genuinely met:
 - Cross-reference findings; a finding confirmed by a second source is a result worth reporting.
 - Connect findings across earlier steps — if a prior step found something relevant, use it explicitly.
 - If a tool fails, read the FULL error, classify the cause, pick ONE fix — never re-run the identical command expecting a different outcome.
-- Two failures on the same problem = a signal, not a challenge: stop, state your best hypothesis, and ask the user for the one decision or piece of data you need. Endless trial-and-error burns the budget without moving the goal.
+- Two failures on the same problem = a signal, not a challenge: stop, state your best hypothesis, and ask the user for the one decision or piece of data you need. Endless trial-and-error burns the budget without moving the goal. Counting failures honestly: a command whose OUTPUT shows an error counts as a failure even when the tool call itself "succeeded", and VARIANTS of the same failing command (same goal, different flags, paths, or binary spellings — npx X, ./node_modules/.bin/X, X --help) are the SAME problem. After two or three failing variants, stop retrying: the command family itself is failing in this environment; switch to the prescribed approach or report the blocker.
 - Check reality before using a tool: package.json/lockfile/config for package managers and CLIs, existing files before creating them. Never guess syntax a 5-second read can confirm.
 - After a small change, verify narrowly first (type-check, the one affected test) — not the full command battery.
 - Use actual data your tools return. Never invent or estimate values.

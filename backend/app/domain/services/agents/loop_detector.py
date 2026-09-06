@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 from typing import Any, Dict, Optional
 
 # Tools that naturally repeat without signalling a stuck loop:
@@ -41,6 +42,44 @@ EXEMPT_TOOLS: frozenset = frozenset({
     "message_notify_user",
     "message_ask_user",
 })
+
+# Shell tools whose commands get coarse-keyed (leading binary).
+_SHELL_TOOLS: frozenset = frozenset({"shell_exec", "shell_command"})
+
+# Leading tokens that only wrap the real command.
+_WRAPPER_BINARIES: frozenset = frozenset({
+    "sudo", "npx", "nohup", "timeout", "exec", "command",
+})
+
+_CD_CHAIN = re.compile(r"^(?:cd\s+[\"\']?[^&\s]+[\"\']?\s*&&\s*)+", re.IGNORECASE)
+
+
+def leading_binary(command: str) -> str:
+    """First real binary of a shell command — cd-chains and wrappers stripped.
+
+    Collapses the trial-and-error spiral where the model retries the same
+    failing tool with syntactic variations (session 1303b902a2d54516: 30+
+    variants of prisma commands, each string distinct so exact-hash loop
+    detection never fired):
+
+        'cd /a/b && npx prisma migrate dev --name init'  -> 'prisma'
+        './node_modules/.bin/prisma migrate dev'          -> 'prisma'
+        'sudo systemctl restart nginx'                    -> 'systemctl'
+        'ls -la prisma/'                                  -> 'ls'
+    """
+    if not command:
+        return ""
+    cmd = _CD_CHAIN.sub("", " ".join(str(command).split()))
+    for tok in cmd.split():
+        base = tok.removeprefix("./").rsplit("/", 1)[-1]
+        for suffix in (".js", ".cjs", ".mjs"):
+            base = base.removesuffix(suffix)
+        if not base or base in ("&&", "||", ";", "|", ">>", ">"):
+            continue
+        if base in _WRAPPER_BINARIES:
+            continue
+        return base
+    return ""
 
 
 def _normalize_params(params: Dict[str, Any]) -> Dict[str, Any]:
@@ -76,6 +115,7 @@ class ActionLoopDetector:
     def __init__(self, window_size: int = 20):
         self.window_size = window_size
         self.recent_action_hashes: list[str] = []
+        self.recent_command_keys: list[str] = []
         self.consecutive_identical_results: int = 0
         self._last_result_hash: Optional[str] = None
         # Cache of counts so get_nudge_message() is pure.
@@ -90,6 +130,16 @@ class ActionLoopDetector:
         self.recent_action_hashes.append(compute_action_hash(tool_name, params))
         if len(self.recent_action_hashes) > self.window_size:
             self.recent_action_hashes = self.recent_action_hashes[-self.window_size:]
+        # Coarse key for shell commands: variants of the same leading
+        # binary (npx X / ./node_modules/.bin/X / X --other-flags) collapse
+        # to one family so a syntactic-variation retry spiral is still seen.
+        if tool_name in _SHELL_TOOLS:
+            raw = str((params or {}).get("command") or (params or {}).get("cmd") or "")
+            key = leading_binary(raw)
+            if key:
+                self.recent_command_keys.append(key)
+                if len(self.recent_command_keys) > self.window_size:
+                    self.recent_command_keys = self.recent_command_keys[-self.window_size:]
         self._recompute()
 
     def record_result(self, tool_name: str, result_content: Any) -> None:
@@ -119,6 +169,15 @@ class ActionLoopDetector:
         else:
             self.most_repeated_hash = None
             self.max_repetition_count = 0
+        key_counts: Dict[str, int] = {}
+        for k in self.recent_command_keys:
+            key_counts[k] = key_counts.get(k, 0) + 1
+        if key_counts:
+            self.focus_binary = max(key_counts, key=lambda k: key_counts[k])
+            self.max_command_focus = key_counts[self.focus_binary]
+        else:
+            self.focus_binary = None
+            self.max_command_focus = 0
 
     # ── nudges ─────────────────────────────────────────────────────────
 
@@ -152,9 +211,9 @@ class ActionLoopDetector:
                 f"{self.max_repetition_count} times in the last "
                 f"{len(self.recent_action_hashes)} actions. Retrying the same "
                 "arguments rarely fixes anything. Change strategy: re-observe "
-                "the page (browser_view), pick a different element or tool, "
-                "use browser_smart_select for dropdowns, or fall back to a "
-                "different method entirely."
+                "the current state (browser_view for pages, shell_view for "
+                "command output), pick a different element, tool, or method "
+                "entirely."
             )
         elif self.max_repetition_count >= 3:
             messages.append(
@@ -174,6 +233,30 @@ class ActionLoopDetector:
                 "is probably not the right one (stale index, wrong frame, or "
                 "a widget that needs different events). Re-observe and "
                 "choose differently."
+            )
+
+        # Coarse command-family focus: syntactic variants of the same
+        # failing binary (the prisma-style spiral) never trip the exact
+        # hash counter — this catches them anyway.
+        if self.max_command_focus >= 10:
+            messages.append(
+                f"COMMAND-FOCUS ALERT: {self.max_command_focus} of your "
+                f"last {len(self.recent_command_keys)} shell commands are "
+                f"variations around '{self.focus_binary}'. The command "
+                "family itself is failing in this environment — more flag "
+                "or path variants will NOT fix it. Circuit breaker: stop "
+                "retrying; re-read the skill's prescribed approach, switch "
+                "method, or conclude and report the blocker honestly."
+            )
+        elif self.max_command_focus >= 6:
+            messages.append(
+                f"COMMAND-FOCUS WARNING: {self.max_command_focus} of your "
+                f"last {len(self.recent_command_keys)} shell commands are "
+                f"variations around '{self.focus_binary}' with the step "
+                "goal still unmet. If the tool itself is failing here (no "
+                "server, missing daemon, wrong stack for this sandbox), no "
+                "variant of the command will fix it — check the skill's "
+                "prescribed approach or report the blocker."
             )
 
         if messages:
