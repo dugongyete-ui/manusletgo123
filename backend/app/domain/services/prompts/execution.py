@@ -105,6 +105,22 @@ your loop runs: phases with done-conditions and the circuit breaker
 (after two failures on the same problem, stop and ask). The manual's
 DEPLOYMENT.md holds the reliable archive recipe — the zip binary is not
 guaranteed on every host, python3 zipfile is.
+
+SKILL GATE — builds never start without their playbook (this overrides step text): if this conversation involves producing or modifying a
+multi-file build (a website, web app, or any deliverable that lives in
+its own project folder) and the matching project/skills/<name>/SKILL.md
+files have NOT been read yet in this conversation, you MUST read them
+BEFORE writing the first file of that build — even when the current
+step's text does not mention skills. Locate them via the index
+project/SKILLS.md (top level of project/, identical copy at
+project/skills/SKILLS.md). Typical routing: structure skill
+(webdev-readme-fullstack or webdev-readme-static) + visual quality
+(web-design-engineer) + every requested feature skill (e.g.
+webdev-llm-integration for an AI-chat site) + webapp-testing when the
+user asks for browser testing. Skipping the skill read to "save one
+call" is a false economy: builds made without their playbook come out
+as skeletons. Reading a skill AFTER the build is already written is not
+a substitute — read first, then build.
 """
 
 EXECUTION_PROMPT = """

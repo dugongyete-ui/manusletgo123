@@ -1,6 +1,6 @@
 # AGENTS.md — Operating Manual
 
-manual-version: 10
+manual-version: 11
 
 This folder is your operating manual. It was scaffolded automatically into your
 workspace — it is NOT user content, and it must never be edited, moved, zipped,
@@ -36,13 +36,19 @@ One topic per file — open only what the current task needs:
 `project/skills/` contains 50 focused playbooks — one folder per skill,
 each with a SKILL.md. The index with load tiers is `project/SKILLS.md`
 (top level of project/, next to this file; an identical copy sits at
-`project/skills/SKILLS.md`, so both paths work). Document skills load
-before any document task, build skills before any matching build, feature
-skills only when that feature is requested, and the rest on demand. When a
-task clearly matches a skill, read that
-`project/skills/<name>/SKILL.md` BEFORE writing any code or file — it
-encodes the lessons that make the difference between "it ran once" and
-"it actually works".
+`project/skills/SKILLS.md`, so both paths work). For ANY build-class task
+(website, web app, multi-file deliverable) reading the matching
+`project/skills/<name>/SKILL.md` files is MANDATORY before the first
+code file is written — a build without its playbook comes out as a
+skeleton. A website build typically loads a structure skill
+(webdev-readme-fullstack or webdev-readme-static) + web-design-engineer
+(visual quality) + every requested feature skill (e.g.
+webdev-llm-integration for an AI-chat site) + webapp-testing when the
+user asks for browser testing. Document tasks likewise load their
+document skill (pptx/docx/pdf/xlsx) first. Other skills load on demand.
+When a task clearly matches a skill, read that SKILL.md BEFORE writing
+any code or file — it encodes the lessons that make the difference
+between "it ran once" and "it actually works".
 
 ## Orchestration — how every task runs
 

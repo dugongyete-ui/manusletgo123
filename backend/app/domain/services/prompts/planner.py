@@ -1,4 +1,38 @@
 # Planner prompt
+from pathlib import Path
+
+# prompts/planner.py -> ../agents/manual/SKILLS.md (single source of
+# truth for the skill index — the planner names skills from THIS list, so
+# it can never reference a skill that does not exist on disk)
+_SKILLS_INDEX_PATH = (
+    Path(__file__).resolve().parents[1] / "agents" / "manual" / "SKILLS.md"
+)
+
+
+def _load_skill_routes() -> str:
+    """Compact 'name: use-when' routing lines from the manual SKILLS.md."""
+    try:
+        text = _SKILLS_INDEX_PATH.read_text(encoding="utf-8")
+    except Exception:
+        return "(skill index unavailable — rely on the executor's SKILL GATE)"
+    rows: list = []
+    section = ""
+    for raw in text.splitlines():
+        line = raw.strip()
+        if line.startswith("## "):
+            section = line[3:].strip()
+            continue
+        if not line.startswith("|") or "---" in line:
+            continue
+        cells = [c.strip() for c in line.strip("|").split("|")]
+        if len(cells) < 2 or cells[0] in ("", "Skill"):
+            continue
+        rows.append(f"- {cells[0]} [{section}]: {cells[1].rstrip('.')}")
+    body = "\n".join(rows)
+    # braces would break the runtime .format() of this prompt — sanitize
+    return body.replace("{", "(").replace("}", ")")
+
+
 PLANNER_SYSTEM_PROMPT = """
 You are a task planner agent. Your job is to decide whether a user message requires actual tool-based execution, and if so, break it into steps.
 
@@ -42,7 +76,7 @@ Workflow:
 6. If no tools are needed: return empty steps and answer the user in the message field.
 """
 
-CREATE_PLAN_PROMPT = """
+_CREATE_PLAN_TEMPLATE = """
 You are now creating a plan based on the user's message:
 {message}
 
@@ -54,10 +88,13 @@ Note:
   * A task doable in 1-3 tool calls → ONE step only.
   * A normal multi-step task → 3-6 phases. NEVER exceed 8 steps.
   * An unclear or unfamiliar objective → keep the early steps exploratory (observe, locate, understand); later steps will be shaped by what execution actually finds — the plan is updated between steps for exactly that.
-  * Build-class tasks (a website, web app, or any multi-file deliverable that lives in its own project folder): the first step begins by orienting in the workspace — read project/AGENTS.md (the operating manual: where builds go, which skill matches, delivery rules), a quick look at what already exists — then build. One read, not a research phase. Simple single-file outputs (a quick script, a one-off document) skip the manual read — plan one step that just does the work.
+  * Build-class tasks (a website, web app, or any multi-file deliverable that lives in its own project folder): the first step MUST orient AND load the playbook — its description explicitly names the skill files to read, e.g. "Baca project/AGENTS.md, lalu project/skills/webdev-readme-fullstack/SKILL.md dan project/skills/web-design-engineer/SKILL.md sebelum menulis kode". Pick the skills from the AVAILABLE SKILLS cheat sheet below. A typical website build combines a structure skill (webdev-readme-fullstack or webdev-readme-static), the visual-quality skill (web-design-engineer), every requested feature skill (e.g. webdev-llm-integration for an AI-chat site, webdev-maps-integration for maps), and webapp-testing when the user asks for browser testing; a document task names its document skill (pptx/docx/pdf/xlsx). The executor follows the step text literally — a build plan that never names the skills to read WILL produce an unplanned skeleton. This is one orientation read inside the build's first phase, not a research phase of its own. Simple single-file outputs (a quick script, a one-off document) skip the manual read and the skill read — plan one step that just does the work.
 - Do NOT split a coherent activity into per-action steps. A coherent activity that produces ONE outcome is ONE step — however many clicks, fields, or commands it takes. Steps are only separate when they produce genuinely different outcomes.
 - Steps must be ordered and each one must be independently executable by the executor using the tools, with the result of the previous step available as context.
-- Self-test before returning the plan: if any step names exactly one click, one field, one command, or one navigation, it is too small — merge it into the phase it serves. If the plan merely restates the user's instructions one action at a time, you have transcribed, not planned.
+- Self-test before returning the plan: if any step names exactly one click, one field, one command, or one navigation, it is too small — merge it into the phase it serves. If the plan merely restates the user's instructions one action at a time, you have transcribed, not planned. If the task is build-class and the first step does NOT name the skill files to read, the plan is incomplete — fix it before returning.
+
+AVAILABLE SKILLS (workspace playbooks in project/skills/<name>/ — the executor reads the named SKILL.md files):
+__SKILL_ROUTES__
 
 Return format requirements:
 - Must return JSON format that complies with the following TypeScript interface
@@ -130,6 +167,13 @@ Note on attachments:
 - Do NOT apologize or say you don't understand when the user's request is clear, even if the message also contains large <file> tag blocks.
 """
 
+# Materialize the prompt with the live skill routing table injected. The
+# template keeps {message}/{attachments} for the runtime .format(); the
+# injected routes are brace-sanitized by _load_skill_routes().
+CREATE_PLAN_PROMPT = _CREATE_PLAN_TEMPLATE.replace(
+    "__SKILL_ROUTES__", _load_skill_routes()
+)
+
 UPDATE_PLAN_PROMPT = """
 You are updating the plan, you need to update the plan based on the step execution result:
 {step}
@@ -145,6 +189,7 @@ Note:
 - Carefully read the step result to determine if it is successful, if not, change the following steps
 - According to the step result, you need to update the plan steps accordingly
 - Keep the total number of steps within the original scale (3-6 for normal tasks, 8 max) — updates replace or adjust phases, they do not multiply them
+- If a new or re-planned step starts a build area whose matching skill (see the project/skills/ index) has NOT been read yet in this conversation, fold "read project/skills/<name>/SKILL.md" into that step's description — the executor follows step text literally
 
 Return format requirements:
 - Must return JSON format that complies with the following TypeScript interface
