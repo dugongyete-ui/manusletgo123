@@ -1,6 +1,6 @@
 # AGENTS.md — Operating Manual
 
-manual-version: 11
+manual-version: 12
 
 This folder is your operating manual. It was scaffolded automatically into your
 workspace — it is NOT user content, and it must never be edited, moved, zipped,
@@ -40,7 +40,11 @@ each with a SKILL.md. The index with load tiers is `project/SKILLS.md`
 (website, web app, multi-file deliverable) reading the matching
 `project/skills/<name>/SKILL.md` files is MANDATORY before the first
 code file is written — a build without its playbook comes out as a
-skeleton. A website build typically loads a structure skill
+skeleton — and every website/app build meets the FULLSTACK BAR
+(the v0/Lovable production bar): real database, real auth, the named
+feature working end-to-end (a real LLM API call for AI chat — never
+canned responses), product-grade UI, verified in the browser before
+delivery. A website build loads a structure skill
 (webdev-readme-fullstack or webdev-readme-static) + web-design-engineer
 (visual quality) + every requested feature skill (e.g.
 webdev-llm-integration for an AI-chat site) + webapp-testing when the

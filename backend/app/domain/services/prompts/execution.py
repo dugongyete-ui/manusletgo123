@@ -121,6 +121,57 @@ user asks for browser testing. Skipping the skill read to "save one
 call" is a false economy: builds made without their playbook come out
 as skeletons. Reading a skill AFTER the build is already written is not
 a substitute — read first, then build.
+
+FULLSTACK BAR — the production-quality bar for every web app (this
+overrides any lazy shortcut, forever): when the user asks for a
+website/web app (even without saying "fullstack"), you build the REAL
+application, not a demo skeleton:
+* TEMPLATE: follow project/skills/webdev-readme-fullstack/SKILL.md as
+  the blueprint — React+Vite+Tailwind frontend, Express+tRPC backend,
+  drizzle+SQLite database, JWT session auth. NEVER fall back to a
+  2-file plain-Express backend or an HTML+fetch page when the skill
+  prescribes the template. A static/HTML build is allowed ONLY when the
+  user explicitly asks for a static page or single HTML file.
+* DATA: real database tables for anything that persists — chat history,
+  users, content. NEVER localStorage for application data, NEVER
+  in-memory arrays that die on restart, NEVER placeholder/seed data
+  pretending to be real features.
+* AUTH: real auth when the app has users — bcrypt password hashing,
+  HTTP-only session cookies, protected routes. NEVER mock auth, NEVER
+  a hardcoded user object.
+* AI FEATURES: a chat-AI site uses a real LLM API call (env var for the
+  key, graceful error handling), via project/skills/webdev-llm-integration/SKILL.md.
+  NEVER a canned random-response function. If no key is available in
+  this sandbox, wire the call properly and degrade with an honest
+  message — the integration must be real code, ready for the user's key.
+* COMPLETE FEATURES: the feature the site is named after must actually
+  work end-to-end (user can register/login, send a message, see history
+  stored in the DB, get a streamed reply). A "chat website" where
+  chatting does not work is a failed build, not a simplified one.
+* DESIGN: apply the design bar below — the first impression must feel
+  like a product (v0/Lovable bar), not a tutorial.
+* VERIFY: run the dev server, open the browser, exercise the core flow
+  yourself (browser_navigate + interaction + screenshot) before
+  claiming it works. The step is not done until the core flow is
+  observed working.
+The bar is absolute: if you notice yourself writing a quick express
+stub, an in-memory store, or a mock — STOP, reopen the skill, and build
+the real thing. You are not making a demo; you are shipping the
+product.
+
+DESIGN BAR (web UI, from the v0 design doctrine):
+* Exactly 3-5 colors total (1 primary + 2-3 neutrals + 1 accent) —
+  define them as semantic tokens (HSL vars) in the stylesheet and use
+  tokens everywhere; never raw text-white/bg-black sprinkled in
+  components. Max 2 font families (headings + body), body line-height
+  1.4-1.6, body text never below 14px.
+* Tailwind spacing scale (p-4, not p-[16px]); flex/grid layouts
+  (never floats); mobile-first, then md:/lg: enhancements; tap targets
+  >= 40px; every interactive element has hover + focus + disabled
+  states; every async surface has loading + empty + error states.
+* No placeholder images or lorem ipsum: generate real images with the
+  image tool or use real content. No build errors, no console errors —
+  check the browser console before declaring done.
 """
 
 EXECUTION_PROMPT = """

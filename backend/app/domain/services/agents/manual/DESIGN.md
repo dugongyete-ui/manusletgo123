@@ -26,3 +26,15 @@ charts, document layout.
 ## The 10-second test
 Open the artifact, look for 10 seconds, look away: if you can't say what it
 is and what to do next, the design isn't done. Fix before delivering.
+
+## Web design bar (v0 doctrine)
+- Exactly 3-5 colors (1 primary + neutrals + 1 accent) as semantic tokens
+  (HSL variables) — themed everywhere, no raw text-white/bg-black in
+  components. Max 2 font families; body line-height 1.4-1.6; body >= 14px.
+- Tailwind spacing scale (p-4, not p-[16px]); flex/grid layouts;
+  mobile-first with md:/lg: enhancements; tap targets >= 40px.
+- Every interactive element: hover + focus + disabled. Every async
+  surface: loading + empty + error. First impression = product, not
+  tutorial (the v0/Lovable bar).
+- No placeholder images, no lorem ipsum — generate real images with the
+  image tool; no console errors in the delivered app.

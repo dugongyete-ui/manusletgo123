@@ -9,6 +9,34 @@ This template gives you a React 19 + Tailwind 4 + Express 4 + tRPC 11 stack with
 
 **This sandbox (Replit / E2B):** there is no pre-scaffolded project — YOU create these files yourself with `file_write`, using this guide as the blueprint, inside `<home>/project/<app-name>/`. Use `npm` (pnpm is not installed). For the database prefer SQLite (drizzle-orm + better-sqlite3 — file-based, zero config, runs everywhere) unless the user provides a real DATABASE_URL; the MySQL listings below are the pattern reference — same table shapes, sqlite-core imports.
 
+## Non-negotiable build bar (v0/Lovable production bar)
+
+This guide IS the required architecture for every fullstack request. Taking
+a "quicker" shortcut (plain Express + fetch, in-memory arrays, localStorage
+persistence, mock auth, canned AI responses) is a build FAILURE, not a
+simplification — the user asked for a product, and this is the product:
+
+1. **Template architecture, always** — React+Vite+Tailwind client, Express+tRPC
+   server, drizzle+SQLite, JWT session auth. Read the Key Files / File
+   Structure maps below and create the real tree; never a 2-file backend.
+2. **Real persistence** — anything the user would expect to survive a restart
+   (chat history, accounts, content) lives in drizzle tables. NEVER
+   localStorage, NEVER in-memory arrays, NEVER fake seed data posing as
+   features.
+3. **Real auth** — bcrypt hashing, HTTP-only session cookies, protected
+   procedures. NEVER a hardcoded user or an "everyone is logged in" mode.
+4. **Real integrations** — an AI-chat feature calls a real LLM API (key via
+   env var; honest error when the key is absent — see the llm-integration
+   skill). NEVER random/canned response functions.
+5. **Core flow works end-to-end** — a chat app: register → login → send
+   message → reply arrives → history reloads from the DB. If the named
+   feature does not work in the browser, the build is not done.
+6. **Product-grade UI** — 3-5 colors as semantic tokens, max 2 fonts,
+   mobile-first, all states (loading/empty/error), no placeholder images
+   (generate them), no console errors. The v0/Lovable first-impression bar.
+7. **Verified before delivery** — dev server up, browser opened, core flow
+   exercised, console checked — THEN zip.
+
 ---
 
 ## Quick Facts
