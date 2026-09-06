@@ -143,8 +143,9 @@ def _skill_text(skill: str) -> str:
 
 def test_manual_version_bumped() -> None:
     files = collect_manual_files()
-    marker = f"manual-version: {MANUAL_VERSION}"
-    assert marker in files["AGENTS.md"]
+    # staleness marker is the hidden dotfile; visible manual stays clean
+    assert files.get(".manual-version") == str(MANUAL_VERSION)
+    assert "manual-version" not in files["AGENTS.md"]
 
 
 @pytest.mark.parametrize("skill", USER_SKILLS)

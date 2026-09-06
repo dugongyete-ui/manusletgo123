@@ -3,8 +3,8 @@
 
 - collect_manual_files() maps the repo manual/ dir (25 core files + skills)
 - build_scaffold_script() embeds every file and stays idempotent via the
-  version marker
-- scaffold_workspace_manual() takes the fast path when the marker matches,
+  hidden .manual-version file (the visible manual carries NO version text)
+- scaffold_workspace_manual() takes the fast path when the version matches,
   writes + executes the script otherwise, and never raises on failure
 """
 
@@ -38,7 +38,7 @@ class _FakeSandbox:
         self.execs: list = []
 
     async def file_read(self, file, start_line=None, end_line=None, sudo=False):
-        if file.endswith("AGENTS.md"):
+        if file.endswith(".manual-version"):
             return SimpleNamespace(
                 success=bool(self._marker),
                 data={"content": self._marker, "file": file},
@@ -74,7 +74,10 @@ def test_manual_source_complete():
         assert name in files, f"missing manual file: {name}"
     skills = [k for k in files if k.startswith("skills/") and k.endswith("SKILL.md")]
     assert len(skills) >= 10, f"expected >= 10 skills, got {len(skills)}"
-    assert f"manual-version: {MANUAL_VERSION}" in files["AGENTS.md"]
+    # staleness marker lives in a HIDDEN file, never in visible manual text
+    assert files[".manual-version"] == str(MANUAL_VERSION)
+    assert "manual-version" not in files["AGENTS.md"]
+    assert "version" not in files["AGENTS.md"].split("\n")[2]
 
 
 def test_script_contains_every_file_and_marker_logic():
@@ -83,6 +86,9 @@ def test_script_contains_every_file_and_marker_logic():
     assert "/home/runner/project" in script
     assert "MANUAL_WROTE" in script
     assert "MANUAL_SKIP" in script
+    # idempotence check runs on the hidden version file, not AGENTS.md
+    assert "'.manual-version'" in script
+    assert "if existing == VERSION" in script
     # stale-skill pruning: the sandbox must mirror the manifest exactly
     assert "MANUAL_PRUNED" in script
     assert "rmtree" in script
@@ -153,8 +159,9 @@ def test_scaffold_roundtrip_prunes_stale_skill_dirs(tmp_path):
     assert (project / "skills" / "artifacts-builder" / "scripts" / "shadcn-components.tar.gz").is_file()
     # task output outside skills/ is never touched
     assert (project / "ai-chat-web" / "index.html").read_text(encoding="utf-8") == "<html>task output</html>"
-    # marker reflects the current version
-    assert f"manual-version: {MANUAL_VERSION}" in (project / "AGENTS.md").read_text(encoding="utf-8")
+    # hidden version file reflects the current version; visible manual is clean
+    assert (project / ".manual-version").read_text(encoding="utf-8").strip() == str(MANUAL_VERSION)
+    assert "manual-version" not in (project / "AGENTS.md").read_text(encoding="utf-8")
 
 
 # ── scaffold behaviour ───────────────────────────────────────────────────────
@@ -162,7 +169,7 @@ def test_scaffold_roundtrip_prunes_stale_skill_dirs(tmp_path):
 
 @pytest.mark.asyncio
 async def test_fast_path_when_marker_current():
-    sb = _FakeSandbox(marker_content=f"manual-version: {MANUAL_VERSION}")
+    sb = _FakeSandbox(marker_content=str(MANUAL_VERSION))
     ok = await scaffold_workspace_manual(sb, "/home/runner")
     assert ok is True
     assert sb.written == {}
@@ -183,7 +190,7 @@ async def test_full_path_writes_and_executes():
 
 @pytest.mark.asyncio
 async def test_old_version_marker_triggers_rewrite():
-    sb = _FakeSandbox(marker_content="manual-version: 0")
+    sb = _FakeSandbox(marker_content="0")   # stale version dotfile
     ok = await scaffold_workspace_manual(sb, "/home/runner")
     assert ok is True
     assert sb.written, "old version must be re-scaffolded"

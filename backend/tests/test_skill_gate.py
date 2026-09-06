@@ -114,10 +114,12 @@ def test_execution_system_prompt_has_skill_gate():
 def test_agents_md_skill_read_is_mandatory():
     text = (MANUAL / "AGENTS.md").read_text(encoding="utf-8")
     assert "MANDATORY before the first" in text
-    assert "skeleton" in text
+    # reading is mandatory AND the work must follow the skill
+    assert "the work must then FOLLOW the skill" in text
     # routing combo spelled out so orientation alone can pick skills
     assert "web-design-engineer" in text
-    assert "webdev-readme-fullstack or webdev-readme-static" in text
+    assert "webdev-readme-fullstack" in text
+    assert "webdev-readme-static" in text
     assert "webdev-llm-integration" in text
 
 
@@ -128,7 +130,14 @@ def test_system_prompt_calls_build_skill_read_mandatory():
 
 
 def test_marker_matches_scaffold_version():
-    from app.infrastructure.external.sandbox.workspace_scaffold import MANUAL_VERSION
+    from app.infrastructure.external.sandbox.workspace_scaffold import (
+        MANUAL_VERSION,
+        collect_manual_files,
+    )
 
+    files = collect_manual_files()
     text = (MANUAL / "AGENTS.md").read_text(encoding="utf-8")
-    assert f"manual-version: {MANUAL_VERSION}" in text
+    # the manual the agent reads is professionally clean: no version text,
+    # staleness tracked only by the hidden .manual-version dotfile
+    assert "manual-version" not in text
+    assert files.get(".manual-version") == str(MANUAL_VERSION)

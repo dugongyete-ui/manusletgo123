@@ -128,4 +128,6 @@ def test_scaffold_carries_both_index_paths():
     assert files.get("skills/SKILLS.md") == files.get("SKILLS.md")
     script = build_scaffold_script("/home/runner", files)
     assert "skills/SKILLS.md" in script
-    assert f"manual-version: {MANUAL_VERSION}" in files["AGENTS.md"]
+    # version tracking lives in the hidden dotfile, not visible manual text
+    assert files.get(".manual-version") == str(MANUAL_VERSION)
+    assert "manual-version" not in files["AGENTS.md"]

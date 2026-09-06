@@ -13,9 +13,11 @@ diffable). This module copies it INTO the sandbox at user-home setup —
 one code path for both providers (shared Replit container and E2B microVM)
 because it only speaks the sandbox protocol (file_write + exec_command):
 
-  1. quick marker check — file_read the first lines of AGENTS.md; if the
-     version marker matches, everything is already in place (fast path:
-     one sandbox call).
+  1. quick marker check — file_read the hidden project/.manual-version
+     file; if it matches the current version, everything is already in
+     place (fast path: one sandbox call). The manual files themselves
+     carry NO version text — the agent-facing AGENTS.md stays clean; the
+     hidden dotfile is the only staleness marker.
   2. otherwise: build ONE self-contained python script embedding all
      manual files as JSON, write it to /tmp (a shared-allowed scratch
      path), execute it. The script is idempotent and rewrites the manual
@@ -44,8 +46,9 @@ _MANUAL_DIR = (
     / "manual"
 )
 
-MANUAL_VERSION = 12
-_MARKER = f"manual-version: {MANUAL_VERSION}"
+MANUAL_VERSION = 13
+_VERSION_FILE = ".manual-version"          # hidden — never visible manual text
+_VERSION_VALUE = str(MANUAL_VERSION)
 _SCRIPT_PATH = "/tmp/dzeck_ws_manual_scaffold.py"
 _SESSION_ID = "ws-manual-scaffold"
 
@@ -100,6 +103,10 @@ def collect_manual_files() -> Dict[str, str]:
     # project/skills/SKILLS.md resolve (see docstring)
     if "SKILLS.md" in files:
         files["skills/SKILLS.md"] = files["SKILLS.md"]
+    # hidden staleness marker — the visible manual (AGENTS.md etc.) is
+    # kept free of version text (professional, user-facing); freshness
+    # is tracked by this dotfile alone
+    files[_VERSION_FILE] = _VERSION_VALUE
     return files
 
 
@@ -128,7 +135,7 @@ def manual_root_filenames() -> frozenset:
 
 def build_scaffold_script(user_home: str, files: Dict[str, str]) -> str:
     """Self-contained python script that (re)writes the manual into the
-    sandbox. Idempotent via the version marker inside AGENTS.md.
+    sandbox. Idempotent via the hidden .manual-version file.
 
     It also PRUNES stale skill folders: any directory under
     project/skills/ that is not in the manifest gets removed, so the
@@ -142,14 +149,14 @@ def build_scaffold_script(user_home: str, files: Dict[str, str]) -> str:
         "import base64, json, os, shutil\n"
         f"FILES = json.loads({payload!r})\n"
         f"TARGET = {user_home.rstrip('/') + '/project'!r}\n"
-        f"MARKER = {_MARKER!r}\n"
-        "marker_path = os.path.join(TARGET, 'AGENTS.md')\n"
+        f"VERSION = {_VERSION_VALUE!r}\n"
+        f"marker_path = os.path.join(TARGET, {_VERSION_FILE!r})\n"
         "try:\n"
         "    with open(marker_path, encoding='utf-8') as f:\n"
-        "        existing = f.read()\n"
+        "        existing = f.read().strip()\n"
         "except Exception:\n"
         "    existing = ''\n"
-        "if MARKER in existing:\n"
+        "if existing == VERSION:\n"
         "    print('MANUAL_SKIP', len(FILES))\n"
         "else:\n"
         "    n = 0\n"
@@ -179,14 +186,14 @@ def build_scaffold_script(user_home: str, files: Dict[str, str]) -> str:
     )
 
 
-def _marker_present(result) -> bool:
+def _version_current(result) -> bool:
     if not (result and getattr(result, "success", False)):
         return False
     data = getattr(result, "data", None)
     content = ""
     if isinstance(data, dict):
         content = data.get("content", "") or ""
-    return _MARKER in content
+    return content.strip() == _VERSION_VALUE
 
 
 async def scaffold_workspace_manual(sandbox, user_home: Optional[str]) -> bool:
@@ -202,10 +209,10 @@ async def scaffold_workspace_manual(sandbox, user_home: Optional[str]) -> bool:
         if not files or "AGENTS.md" not in files:
             return False
 
-        marker_file = f"{user_home.rstrip('/')}/project/AGENTS.md"
+        marker_file = f"{user_home.rstrip('/')}/project/{_VERSION_FILE}"
         try:
-            existing = await sandbox.file_read(marker_file, 1, 4)
-            if _marker_present(existing):
+            existing = await sandbox.file_read(marker_file, 1, 2)
+            if _version_current(existing):
                 return True  # fast path: up to date
         except Exception:
             pass  # first scaffold (or read unsupported) — fall through
@@ -236,10 +243,11 @@ async def scaffold_workspace_manual(sandbox, user_home: Optional[str]) -> bool:
             return True
 
         # exec sessions report "still running" after ~5s — the write may
-        # still complete; verify via the marker before declaring failure.
+        # still complete; verify via the version file before declaring
+        # failure.
         try:
-            final = await sandbox.file_read(marker_file, 1, 4)
-            if _marker_present(final):
+            final = await sandbox.file_read(marker_file, 1, 2)
+            if _version_current(final):
                 logger.info("Workspace manual verified after slow exec")
                 return True
         except Exception:

@@ -33,18 +33,26 @@ Engineering standards for every build.
 - No leftover console.log/debug prints in delivered files.
 - `ls -R` the project: everything there is either used or removed.
 
-See skills/fullstack-web-app, python-api-service, and build-verification.
+See skills/webdev-readme-fullstack, webdev-readme-static, python-api-service, and build-verification.
 
-## Fullstack bar for web apps (v0/Lovable doctrine)
-Every website/app build = the real application, never a demo skeleton:
-- The webdev-readme-fullstack template architecture is REQUIRED (React+
-  Vite+Tailwind / Express+tRPC / drizzle+SQLite / JWT auth) — never a
+## Build bar for web apps
+Scale the architecture to what the request actually needs; never fake
+the parts that are in scope:
+- App-like requests (accounts, persistent data, chat, dashboards,
+  ordering) use the webdev-readme-fullstack template (React+Vite+
+  Tailwind / Express+tRPC / drizzle+SQLite / JWT auth) — never a
   plain-Express 2-file shortcut.
-- Real persistence in the database — NEVER localStorage or in-memory
-  arrays for app data, NEVER placeholder data posing as features.
+- Content-style sites (company profile, landing, portfolio) use the
+  webdev-readme-static guide — do not bolt a database or auth onto a
+  site that never asked for them.
+- Real persistence in the database for app data — never localStorage
+  or in-memory arrays, never placeholder data posing as features.
 - Real auth (bcrypt, HTTP-only cookies) when the app has users — never
   mock auth or a hardcoded user.
 - Real integrations (actual LLM API call for AI chat, key via env var,
-  honest degradation without it) — never canned responses.
+  honest degradation without it) — never canned responses. AI features
+  load their skill only when the request actually includes them.
 - The named feature works end-to-end in the browser before delivery;
   verified by actually exercising it, not by assuming it.
+- Whatever skill guided the build, the deliverable follows it — the
+  skill's workflow and acceptance criteria define done.

@@ -1,7 +1,5 @@
 # AGENTS.md — Operating Manual
 
-manual-version: 12
-
 This folder is your operating manual. It was scaffolded automatically into your
 workspace — it is NOT user content, and it must never be edited, moved, zipped,
 or delivered as a task output.
@@ -39,20 +37,25 @@ each with a SKILL.md. The index with load tiers is `project/SKILLS.md`
 `project/skills/SKILLS.md`, so both paths work). For ANY build-class task
 (website, web app, multi-file deliverable) reading the matching
 `project/skills/<name>/SKILL.md` files is MANDATORY before the first
-code file is written — a build without its playbook comes out as a
-skeleton — and every website/app build meets the FULLSTACK BAR
-(the v0/Lovable production bar): real database, real auth, the named
-feature working end-to-end (a real LLM API call for AI chat — never
-canned responses), product-grade UI, verified in the browser before
-delivery. A website build loads a structure skill
-(webdev-readme-fullstack or webdev-readme-static) + web-design-engineer
-(visual quality) + every requested feature skill (e.g.
-webdev-llm-integration for an AI-chat site) + webapp-testing when the
-user asks for browser testing. Document tasks likewise load their
-document skill (pptx/docx/pdf/xlsx) first. Other skills load on demand.
-When a task clearly matches a skill, read that SKILL.md BEFORE writing
-any code or file — it encodes the lessons that make the difference
-between "it ran once" and "it actually works".
+code file is written — and the work must then FOLLOW the skill: its
+workflow, structure, and acceptance criteria define what "done" means
+(a pptx produced outside the pptx skill's pipeline is not a finished
+pptx; a build that read its playbook and ignored it gained nothing).
+Every website build loads a structure skill chosen by the request —
+webdev-readme-fullstack for app-like products (accounts, persistent
+data, chat, dashboards: real database, real auth, the named feature
+working end-to-end, a real LLM API call for AI chat — never canned
+responses), webdev-readme-static for content sites (company profile,
+landing, portfolio: a polished, complete front-end — no bolted-on
+backend the site never needed) — plus web-design-engineer (visual
+quality) and every requested feature skill (e.g.
+webdev-llm-integration for an AI-chat site, only when that feature is
+requested) + webapp-testing when the user asks for browser testing.
+Document tasks likewise load their document skill (pptx/docx/pdf/xlsx)
+first. Other skills load on demand. When a task clearly matches a
+skill, read that SKILL.md BEFORE writing any code or file — it encodes
+the lessons that make the difference between "it ran once" and "it
+actually works".
 
 ## Orchestration — how every task runs
 
