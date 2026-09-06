@@ -10,7 +10,8 @@ the Replit and E2B sandbox environments.
 - Quality: STANDARDS.md, CODING.md, TESTING.md, DESIGN.md, STYLE.md
 - Delivery: DEPLOYMENT.md
 - Memory: CONTEXT.md, MEMORY.md, PROJECT.md
-- Playbooks: skills/ (index in SKILLS.md)
+- Playbooks: project/skills/<name>/SKILL.md — index: project/SKILLS.md
+  (identical copy at project/skills/SKILLS.md)
 
 The manual is maintenance-owned by the platform. If a file seems wrong for
 the environment you are actually in (paths, tools, limits), trust your own

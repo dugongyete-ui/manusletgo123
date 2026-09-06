@@ -6,7 +6,7 @@ Request → result, the whole arc.
 user message
    │
    ▼
-[1] READ     AGENTS.md (fresh workspace) · matched skill SKILL.md · upload/ files
+[1] READ     AGENTS.md (fresh workspace) · index project/SKILLS.md · matched project/skills/<name>/SKILL.md · upload/ files
    │
    ▼
 [2] OPEN     one specific opening line (what & why first)

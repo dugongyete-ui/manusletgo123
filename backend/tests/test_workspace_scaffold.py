@@ -83,6 +83,9 @@ def test_script_contains_every_file_and_marker_logic():
     assert "/home/runner/project" in script
     assert "MANUAL_WROTE" in script
     assert "MANUAL_SKIP" in script
+    # stale-skill pruning: the sandbox must mirror the manifest exactly
+    assert "MANUAL_PRUNED" in script
+    assert "rmtree" in script
     for rel in (
         "AGENTS.md",
         "skills/webdev-readme-fullstack/SKILL.md",
@@ -91,6 +94,67 @@ def test_script_contains_every_file_and_marker_logic():
         "RULES.md",
     ):
         assert rel.replace("/", "\\/") in script or rel in script
+
+
+def test_index_duplicated_into_skills_dir():
+    """Agents reading prose like 'skills/ … index is SKILLS.md' guess
+    project/skills/SKILLS.md — the scaffold must place the index at BOTH
+    project/SKILLS.md and project/skills/SKILLS.md (same content).
+    Regression: session 59ead2b2b5e24be1 died on
+    'File does not exist: …/project/skills/SKILLS.md' and never loaded a
+    build skill afterwards.
+    """
+    files = collect_manual_files()
+    assert "SKILLS.md" in files, "root index missing from manual"
+    assert "skills/SKILLS.md" in files, "skills/ copy of the index missing"
+    assert files["skills/SKILLS.md"] == files["SKILLS.md"]
+    # the copy must not be mistaken for a skill folder payload entry
+    skills = [k for k in files if k.startswith("skills/") and k.endswith("/SKILL.md")]
+    assert "skills/SKILLS.md" not in skills
+
+
+def test_scaffold_roundtrip_prunes_stale_skill_dirs(tmp_path):
+    """Execute the real generated script against a fake workspace:
+    stale skill folders (e.g. dzeck-pptx) must be pruned, current skills
+    written, the index present at BOTH paths, and task output OUTSIDE
+    skills/ (e.g. project/ai-chat-web/) must survive untouched."""
+    import subprocess
+    import sys
+
+    user_home = tmp_path / "home"
+    project = user_home / "project"
+    (project / "skills" / "dzeck-pptx").mkdir(parents=True)
+    (project / "skills" / "dzeck-pptx" / "SKILL.md").write_text("STALE", encoding="utf-8")
+    (project / "ai-chat-web").mkdir(parents=True)
+    (project / "ai-chat-web" / "index.html").write_text("<html>task output</html>", encoding="utf-8")
+
+    files = collect_manual_files()
+    script = build_scaffold_script(str(user_home), files)
+    # the payload is ~4MB — too big for a argv; stage it as a file like the
+    # real scaffold does (file_write to /tmp, then exec)
+    staged = tmp_path / "scaffold.py"
+    staged.write_text(script, encoding="utf-8")
+    proc = subprocess.run(
+        [sys.executable, str(staged)], capture_output=True, text=True, timeout=180
+    )
+    assert proc.returncode == 0, proc.stderr[-2000:]
+    assert "MANUAL_WROTE" in proc.stdout
+
+    # stale skill folder gone, real skills present, index at both paths
+    assert not (project / "skills" / "dzeck-pptx").exists()
+    assert (project / "skills" / "pptx" / "SKILL.md").is_file()
+    assert (project / "SKILLS.md").is_file()
+    assert (project / "skills" / "SKILLS.md").is_file()
+    assert (
+        (project / "skills" / "SKILLS.md").read_text(encoding="utf-8")
+        == (project / "SKILLS.md").read_text(encoding="utf-8")
+    )
+    # binary skill asset survived the trip
+    assert (project / "skills" / "artifacts-builder" / "scripts" / "shadcn-components.tar.gz").is_file()
+    # task output outside skills/ is never touched
+    assert (project / "ai-chat-web" / "index.html").read_text(encoding="utf-8") == "<html>task output</html>"
+    # marker reflects the current version
+    assert f"manual-version: {MANUAL_VERSION}" in (project / "AGENTS.md").read_text(encoding="utf-8")
 
 
 # ── scaffold behaviour ───────────────────────────────────────────────────────

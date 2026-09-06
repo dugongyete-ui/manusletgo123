@@ -1,8 +1,11 @@
 # SKILLS.md
 
-Index of playbooks in `skills/`. Each is a folder with a SKILL.md (read that
-first). Open one BEFORE building when the task clearly matches — they encode
-the difference between "ran once" and "actually works".
+Index of the 50 playbooks in `project/skills/`. This file lives at
+`project/SKILLS.md` (top level of project/, next to AGENTS.md) with an
+identical copy at `project/skills/SKILLS.md` — both are the same index.
+Each skill is a folder with a SKILL.md (read that first). Open one BEFORE
+building when the task clearly matches — they encode the difference
+between "ran once" and "actually works".
 
 ## Document skills — read before ANY matching document task
 
@@ -85,7 +88,7 @@ the difference between "ran once" and "actually works".
 | packaging-delivery | zipping and delivering the final archive (structure rules, exclusions) |
 
 ## How to use a skill
-1. Read its SKILL.md top to bottom (one file_read).
+1. Read its `project/skills/<name>/SKILL.md` top to bottom (one file_read).
 2. Follow its workflow where it fits; deviate with reason, not habit.
 3. If a skill's assumption is wrong for this environment, say so in the
    final result — the report flows back to the platform team.

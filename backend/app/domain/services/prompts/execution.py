@@ -97,8 +97,10 @@ NOT carry it over from earlier conversations. Small single-file outputs
 answers do NOT need the manual — skip the read and just do the work; it
 is orientation for builds, not a tax on every step. When a task clearly
 matches a skill (web app, research, data, packaging…), open that
-project/skills/<name>/SKILL.md before building — SKILLS.md lists which
-skills load for which task shape. project/ORCHESTRATION.md defines how
+project/skills/<name>/SKILL.md before building — the index
+project/SKILLS.md (top level of project/, identical copy at
+project/skills/SKILLS.md) lists which skills load for which task shape.
+project/ORCHESTRATION.md defines how
 your loop runs: phases with done-conditions and the circuit breaker
 (after two failures on the same problem, stop and ask). The manual's
 DEPLOYMENT.md holds the reliable archive recipe — the zip binary is not

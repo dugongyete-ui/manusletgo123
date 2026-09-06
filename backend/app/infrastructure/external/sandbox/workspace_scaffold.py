@@ -44,7 +44,7 @@ _MANUAL_DIR = (
     / "manual"
 )
 
-MANUAL_VERSION = 9
+MANUAL_VERSION = 10
 _MARKER = f"manual-version: {MANUAL_VERSION}"
 _SCRIPT_PATH = "/tmp/dzeck_ws_manual_scaffold.py"
 _SESSION_ID = "ws-manual-scaffold"
@@ -57,7 +57,15 @@ _MAX_BINARY_BYTES = 512 * 1024
 
 
 def collect_manual_files() -> Dict[str, str]:
-    """{relative_posix_path: content} for every manual file (sorted, stable)."""
+    """{relative_posix_path: content} for every manual file (sorted, stable).
+
+    The skills index SKILLS.md is emitted TWICE on purpose: once at the
+    manual root (canonical, next to AGENTS.md) and once inside skills/ —
+    agents reading prose like "skills/ contains playbooks, the index is
+    SKILLS.md" reliably guess project/skills/SKILLS.md, so both paths must
+    resolve to the same content (the scaffold regenerates them together,
+    they can never drift).
+    """
     files: Dict[str, str] = {}
     if not _MANUAL_DIR.is_dir():
         logger.warning(
@@ -88,6 +96,10 @@ def collect_manual_files() -> Dict[str, str]:
                 )
         except Exception as exc:
             logger.warning("Workspace manual: skip unreadable file %s: %s", rel, exc)
+    # duplicate the skills index so BOTH project/SKILLS.md and
+    # project/skills/SKILLS.md resolve (see docstring)
+    if "SKILLS.md" in files:
+        files["skills/SKILLS.md"] = files["SKILLS.md"]
     return files
 
 
@@ -116,10 +128,18 @@ def manual_root_filenames() -> frozenset:
 
 def build_scaffold_script(user_home: str, files: Dict[str, str]) -> str:
     """Self-contained python script that (re)writes the manual into the
-    sandbox. Idempotent via the version marker inside AGENTS.md."""
+    sandbox. Idempotent via the version marker inside AGENTS.md.
+
+    It also PRUNES stale skill folders: any directory under
+    project/skills/ that is not in the manifest gets removed, so the
+    sandbox exactly mirrors the current manual (skills/ is 100%
+    scaffold-owned — AGENTS.md forbids task output there). Skill folders
+    dropped from the manual (e.g. dzeck-pptx) must not linger and mislead
+    the agent into reading outdated playbooks.
+    """
     payload = json.dumps(files, ensure_ascii=False)
     return (
-        "import base64, json, os\n"
+        "import base64, json, os, shutil\n"
         f"FILES = json.loads({payload!r})\n"
         f"TARGET = {user_home.rstrip('/') + '/project'!r}\n"
         f"MARKER = {_MARKER!r}\n"
@@ -145,7 +165,17 @@ def build_scaffold_script(user_home: str, files: Dict[str, str]) -> str:
         "            with open(p, 'w', encoding='utf-8') as f:\n"
         "                f.write(content)\n"
         "        n += 1\n"
-        "    print('MANUAL_WROTE', n)\n"
+        "    expected = {rel.split('/')[1] for rel in FILES\n"
+        "                if rel.startswith('skills/') and '/' in rel[len('skills/'):]}\n"
+        "    skills_dir = os.path.join(TARGET, 'skills')\n"
+        "    pruned = 0\n"
+        "    if os.path.isdir(skills_dir):\n"
+        "        for name in os.listdir(skills_dir):\n"
+        "            full = os.path.join(skills_dir, name)\n"
+        "            if os.path.isdir(full) and name not in expected:\n"
+        "                shutil.rmtree(full, ignore_errors=True)\n"
+        "                pruned += 1\n"
+        "    print('MANUAL_WROTE', n, 'MANUAL_PRUNED', pruned)\n"
     )
 
 

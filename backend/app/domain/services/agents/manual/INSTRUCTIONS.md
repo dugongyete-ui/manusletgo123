@@ -5,8 +5,10 @@ Operational instructions — how a task actually runs, in order.
 ## 1. Orient
 - Read AGENTS.md once per fresh workspace (you are doing that now).
 - Skim the task. Is it research, a build, data work, or a conversation?
-  TASKS.md tells you what each type expects. If it clearly matches a skill in
-  SKILLS.md, open that skill's SKILL.md before writing anything.
+  TASKS.md tells you what each type expects. If it clearly matches a skill
+  in the index (`project/SKILLS.md` — identical copy at
+  `project/skills/SKILLS.md`), open that skill's
+  `project/skills/<name>/SKILL.md` before writing anything.
 
 ## 2. Open the work
 - One short opening line to the user: what you look at first and why.

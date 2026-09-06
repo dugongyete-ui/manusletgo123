@@ -11,8 +11,9 @@ abstract.
 ## Build: site / app / script project
 Deliverable: ONE .zip containing the complete project (source, assets,
 README with run instructions, lockfile). Works-after-unzip is the bar:
-verify it runs before zipping (see skills/fullstack-web-app or
-static-landing-page). Never deliver loose members next to the archive.
+verify it runs before zipping (see project/skills/webdev-readme-fullstack
+or project/skills/webdev-readme-static). Never deliver loose members next
+to the archive.
 
 ## Build: single-file tool
 A single script or single HTML file that genuinely stands alone → deliver
@@ -21,7 +22,7 @@ the file itself. If it grows a second file, it's a project — zip it.
 ## Data work
 Deliverable: cleaned data + analysis + charts + a short written report.
 Charts as files (PNG) inside the project folder; the report explains the
-numbers in sentences (see skills/data-analysis).
+numbers in sentences (see project/skills/data-analysis).
 
 ## Document writing
 Deliverable: the document — one file, in the user's language, structured
