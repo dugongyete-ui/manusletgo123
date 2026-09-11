@@ -156,14 +156,27 @@ class Settings(BaseSettings):
     ssl_verify: bool = False
 
     # Agent loop limits
-    # Maximum number of plan steps the executor will run before force-summarising.
-    # Reduces runaway loops on complex tasks. env var: MAX_STEPS
-    max_steps: int = 50
+    # Maximum number of plan steps the executor will run before
+    # force-summarising. 0 = UNLIMITED (default): the loop runs until the
+    # plan is genuinely complete — going from zero to a running server is
+    # never cut short by an arbitrary counter (matches the reference
+    # agent's behaviour). Set a positive number only to cap runaway spend.
+    # env var: MAX_STEPS
+    max_steps: int = 0
 
-    # How many consecutive failed steps before the loop skips to SUMMARIZING.
-    # Increase if tasks involve many optional tool calls that may legitimately fail.
+    # How many consecutive FAILED steps (failed steps, not iterations —
+    # healthy work never counts) before the loop skips to SUMMARIZING.
+    # This is a health guard against infinite retry spirals burning
+    # credits, NOT an iteration limit: the in-loop nudges (strategy-change
+    # advisories, loop detector) push self-correction long before it.
     # env var: MAX_CONSECUTIVE_FAILURES
-    max_consecutive_failures: int = 3
+    max_consecutive_failures: int = 10
+
+    # Tool-loop rounds for delegated SUB-AGENTS (task_delegate).
+    # 0 = UNLIMITED (default): a sub-agent finishes its subtask instead of
+    # being cut mid-flight; it cannot ask the user anything anyway.
+    # env var: NESTED_MAX_ITERATIONS
+    nested_max_iterations: int = 0
 
     # Orchestration engine for the plan→execute→update agent loop.
     #   "langgraph" — PlanActGraphFlow: LangGraph StateGraph drives the SAME

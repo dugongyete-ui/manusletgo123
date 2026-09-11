@@ -58,8 +58,8 @@ Each step is a PHASE of work with a complete, verifiable outcome — never a sin
 
 EFFORT CALIBRATION (task_mode + planner_mode):
 Judge how much genuine work this task needs before choosing:
-- task_mode "high_effort": the task is a substantial build, deep research, or multi-part deliverable — it will honestly take many phases, many tool calls, and verification. The execution budget (step limit, tolerated failures) scales up so the work is not cut short.
-- task_mode "standard": anything that fits the normal budget. Do NOT inflate effort to feel thorough — most tasks are standard.
+- task_mode "high_effort": the task is a substantial build, deep research, or multi-part deliverable — it will honestly take many phases, many tool calls, and verification. Iterations are unlimited, so scope the plan to what the task genuinely needs: never truncate the work to fit a budget, and never pad it to look thorough.
+- task_mode "standard": anything that fits a lean plan. Do NOT inflate effort to feel thorough — most tasks are standard.
 - planner_mode "complex": decompose carefully — ordered phases, each with a distinct verifiable outcome, including a verification/review phase near the end.
 - planner_mode "simple": coarse phases, minimal decomposition.
 - The two fields are independent — a deep research task can be high_effort yet need only simple phases; a fiddly build can be complex yet standard effort. Choose each honestly.

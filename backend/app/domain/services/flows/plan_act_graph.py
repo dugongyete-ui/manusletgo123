@@ -347,10 +347,11 @@ class PlanActGraphFlow(PlanActFlow):
 
             # Guard: max total steps executed — budget scales with the
             # planner's effort tier (AgentTaskMode standard vs high_effort).
+            # 0 = UNLIMITED: never force-summarise healthy work.
             _eff_steps, _eff_failures = self._effective_step_budget(
                 _max_steps, _max_consecutive_failures
             )
-            if state["steps_executed"] >= _eff_steps:
+            if _eff_steps > 0 and state["steps_executed"] >= _eff_steps:
                 logger.warning(
                     f"Agent {self._agent_id} reached max_steps={_eff_steps} "
                     f"(mode={getattr(self.plan, 'task_mode', 'standard')}), "
@@ -553,10 +554,13 @@ class PlanActGraphFlow(PlanActFlow):
         # recursion_limit: each super-step counts one node execution. The
         # original loop allows max_steps executions (each = execute + update
         # nodes) plus the fixed phases — the default limit of 25 would kill
-        # long plans well before max_steps.
+        # long plans well before max_steps. With max_steps=0 (UNLIMITED)
+        # the graph limit must also be effectively unlimited: a huge cap
+        # (1,000,000 node executions) keeps LangGraph's internal guard
+        # satisfied while never truncating a healthy long build.
         config = {
             "configurable": {"thread_id": str(self._session_id)},
-            "recursion_limit": _max_steps * 2 + 20,
+            "recursion_limit": _max_steps * 2 + 20 if _max_steps > 0 else 1_000_000,
         }
 
         async for event in graph.astream(

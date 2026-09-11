@@ -2,13 +2,17 @@
 
 ``task_delegate`` lets the top-level executor hand one self-contained
 subtask to a focused sub-agent that shares the SAME sandbox, browser and
-files but works with its own clean context. The sub-agent runs a bounded
-tool loop autonomously (it cannot ask the user anything) and returns a
+files but works with its own clean context. The sub-agent runs a tool
+loop autonomously (it cannot ask the user anything) and returns a
 final report as the tool result, which lands in the parent's context.
 
 Depth is hard-capped at one level: the sub-agent's toolset deliberately
 excludes task_delegate and message tools, so delegation can never recurse
 and can never pause the parent task on a user question.
+
+The sub-agent's round budget comes from settings.nested_max_iterations
+(0 = UNLIMITED, the default): a sub-agent finishes its subtask instead of
+being cut mid-flight — it cannot ask the user anything anyway.
 """
 
 from typing import Callable, List, Optional
@@ -23,13 +27,14 @@ from app.domain.external.browser import Browser
 from app.domain.external.search import SearchEngine
 from app.domain.repositories.agent_repository import AgentRepository
 from app.domain.services.tools.mcp import MCPToolkit
+from app.core.config import get_settings
 from langchain.messages import AIMessage as LCAIMessage
 from langchain.tools import tool
 
 logger = logging.getLogger(__name__)
 
-# Bounded autonomy: enough rounds for a real subtask, never a runaway.
-_NESTED_MAX_ITERATIONS = 25
+# Sub-agent round budget — read from settings (NESTED_MAX_ITERATIONS,
+# 0 = UNLIMITED by default) at call time, never hardcoded here.
 # Keep the report digestible for the parent's context (chars).
 _REPORT_MAX_CHARS = 8_000
 
@@ -140,7 +145,7 @@ class DelegateToolkit(BaseToolkit):
                 agent_repository=_TransientAgentRepository(),
                 tools=self._build_nested_tools(),
             )
-            nested.max_iterations = _NESTED_MAX_ITERATIONS
+            nested.max_iterations = get_settings().nested_max_iterations
             nested.system_prompt = (
                 self._base_prompt
                 + EXECUTION_SYSTEM_PROMPT

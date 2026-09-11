@@ -396,9 +396,12 @@ class PlanActFlow(BaseFlow):
         High-effort tasks (substantial builds, deep research) legitimately
         need more phases and tolerate more failed experiments before
         giving up — the limits stay calibrated for standard tasks.
+        0 (UNLIMITED) must stay unlimited: an infinite budget cannot be
+        scaled down or up — it is already unbounded.
         """
         if self.plan is not None and getattr(self.plan, "task_mode", None) == "high_effort":
-            return base_steps * 2, max(base_failures * 2, base_failures)
+            scaled_steps = base_steps * 2 if base_steps > 0 else 0
+            return scaled_steps, max(base_failures * 2, base_failures)
         return base_steps, base_failures
 
     async def run(self, message: Message) -> AsyncGenerator[BaseEvent, None]:
@@ -676,10 +679,11 @@ class PlanActFlow(BaseFlow):
 
                 # Guard: max total steps executed — budget scales up when the
                 # planner judged this a high-effort task (AgentTaskMode).
+                # 0 = UNLIMITED: never force-summarise healthy work.
                 _eff_steps, _eff_failures = self._effective_step_budget(
                     _max_steps, _max_consecutive_failures
                 )
-                if _steps_executed >= _eff_steps:
+                if _eff_steps > 0 and _steps_executed >= _eff_steps:
                     logger.warning(
                         f"Agent {self._agent_id} reached max_steps={_eff_steps} "
                         f"(mode={getattr(self.plan, 'task_mode', 'standard')}), "

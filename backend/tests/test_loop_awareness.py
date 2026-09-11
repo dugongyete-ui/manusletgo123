@@ -11,6 +11,8 @@ Covers (see agents/loop_detector.py + BaseAgent.execute()):
 import pytest
 from unittest.mock import AsyncMock
 
+from app.core.config import get_settings
+
 from langchain.messages import AIMessage, HumanMessage, ToolMessage
 
 from app.domain.models.tool_result import ToolResult
@@ -209,6 +211,9 @@ def _make_agent(max_iterations: int = 10) -> ExecutionAgent:
     agent._narration_lang = "en"
     agent.toolkits = []
     agent.max_iterations = max_iterations
+    # Runs longer than the mid-step compaction interval need this mocked
+    # (real compact_memory needs repository-backed memory).
+    agent.compact_memory = AsyncMock()
     return agent
 
 
@@ -406,16 +411,18 @@ async def test_success_resets_failure_streak():
 
 @pytest.mark.asyncio
 async def test_strategy_change_after_consecutive_failures():
-    """3 consecutive all-failed rounds (default budget) → STRATEGY CHANGE
-    advisory injected so the model is told to switch approach."""
-    agent = _make_agent(max_iterations=10)
+    """`max_consecutive_failures` consecutive all-failed rounds (health
+    budget from settings, default 10) → STRATEGY CHANGE advisory injected
+    so the model is told to switch approach."""
+    budget = max(1, int(get_settings().max_consecutive_failures))
+    agent = _make_agent(max_iterations=budget + 5)
     agent.ask = AsyncMock(return_value=_click_msg(0))
 
     captured: list = []
 
     async def _fake_ask(messages, format=None):
         captured.append(list(messages))
-        if len(captured) < 5:
+        if len(captured) < budget + 2:
             return _click_msg(len(captured))
         return AIMessage(content='{"success": true, "result": "done"}')
 
@@ -424,9 +431,11 @@ async def test_strategy_change_after_consecutive_failures():
 
     [e async for e in agent.execute("do the thing")]
 
-    # Round 3's ask happens after 3 failed rounds (0,1,2) → advisory present.
-    round3 = " ".join(str(getattr(m, "content", "")) for m in captured[3])
-    assert "STRATEGY CHANGE REQUIRED" in round3
+    # Round N's ask follows N failed rounds (0..N-1) → advisory at budget.
+    round_after_budget = " ".join(
+        str(getattr(m, "content", "")) for m in captured[budget]
+    )
+    assert "STRATEGY CHANGE REQUIRED" in round_after_budget
 
 
 @pytest.mark.asyncio

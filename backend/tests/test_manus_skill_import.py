@@ -182,7 +182,7 @@ def test_scaffold_version_bumped():
         collect_manual_files,
     )
 
-    assert MANUAL_VERSION == 15
+    assert MANUAL_VERSION == 16
     files = collect_manual_files()
     for name in IMPORTED:
         assert f"skills/{name}/SKILL.md" in files, f"scaffold missing {name}"

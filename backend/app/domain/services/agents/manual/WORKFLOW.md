@@ -40,6 +40,8 @@ user message
    unmet requirements get named, not implied away.
 
 ## Timing checkpoints
-- Halfway through your action budget? Consolidate: lock in what's verified,
-   stop exploring, produce the deliverable.
+- Iterations are unlimited: the loop ends when the goal is genuinely met —
+  never truncate work to "save rounds". What IS finite: the user's time and
+  credits — so cut exploration when its marginal value drops, consolidate
+  what's verified, and move to the next phase.
 - New user message mid-task? It supersedes — adapt the plan, keep the arc.

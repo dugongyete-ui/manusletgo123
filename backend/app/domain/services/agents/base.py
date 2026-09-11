@@ -1,5 +1,6 @@
 import logging
 import asyncio
+import itertools
 import uuid
 import httpx
 from abc import ABC
@@ -218,7 +219,11 @@ class BaseAgent(ABC):
     name: str = ""
     system_prompt: str = ""
     format: Optional[str] = None
-    max_iterations: int = 100
+    # Tool-loop rounds per step. 0 = UNLIMITED (default): the loop ends
+    # when the model stops calling tools (goal met), not when a counter
+    # runs out — big builds legitimately need many rounds. Positive
+    # values cap the loop (tests, cost caps).
+    max_iterations: int = 0
     max_retries: int = 6
     retry_interval: float = 5.0
     tool_choice: Optional[str] = None
@@ -841,7 +846,16 @@ class BaseAgent(ABC):
         # the plan-act flow, which already tracks step-level failures.
         _failure_budget = max(1, int(_settings.max_consecutive_failures))
 
-        for iteration in range(self.max_iterations):
+        # 0 (or None) = UNLIMITED tool rounds: iterate forever until the
+        # model stops emitting tool_calls. Finite values keep the classic
+        # cap + budget advisories. Implemented via itertools.count() so the
+        # for-else "Maximum iteration count reached" branch stays reachable
+        # ONLY on the finite path.
+        _finite_iterations = isinstance(self.max_iterations, int) and self.max_iterations > 0
+        _iterations = (
+            range(self.max_iterations) if _finite_iterations else itertools.count()
+        )
+        for iteration in _iterations:
             # Legacy wire-format leak repair: models sometimes emit raw
             # <function=...> blocks as plain content instead of tool_calls.
             message = _salvage_function_calls(message)
@@ -1053,7 +1067,8 @@ class BaseAgent(ABC):
             # Last-rounds wrap-up (browser-use _force_done_after_last_step,
             # adapted: we ask for the final result JSON instead of a done()
             # tool call, matching this executor's output contract).
-            if iteration >= self.max_iterations - 2:
+            # Finite path only — an unlimited loop has no "last rounds".
+            if _finite_iterations and iteration >= self.max_iterations - 2:
                 _advisories.append(
                     "LAST ROUNDS: you are at the end of this step's action "
                     "budget. Do NOT start anything new. Unless one final "
@@ -1078,9 +1093,8 @@ class BaseAgent(ABC):
             if _advisories:
                 tool_responses.append(HumanMessage(content="\n\n".join(_advisories)))
                 logger.info(
-                    "Adaptive-loop advisory injected (round %d/%d): %s",
-                    _rounds_used,
-                    self.max_iterations,
+                    "Adaptive-loop advisory injected (round %s): %s",
+                    f"{_rounds_used}/{self.max_iterations}" if _finite_iterations else f"{_rounds_used}/unlimited",
                     " | ".join(a.splitlines()[0][:80] for a in _advisories),
                 )
 
