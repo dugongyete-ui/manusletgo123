@@ -455,4 +455,5 @@ export default {
 'Resume': 'Lanjutkan',
 'Could not update, please try again': 'Gagal memperbarui, coba lagi nanti',
 'Could not delete, please try again': 'Gagal menghapus, coba lagi nanti',
+'Connection lost during the task — the server may have restarted. Reopen this chat to resume, or resend your message.': 'Koneksi terputus saat tugas berjalan — server kemungkinan di-restart. Buka ulang chat ini untuk melanjutkan, atau kirim ulang pesan Anda.',
 }

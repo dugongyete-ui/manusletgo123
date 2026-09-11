@@ -795,6 +795,12 @@ const chat = async (message: string = '', files: FileInfo[] = []) => {
           if (cancelCurrentChat.value) {
             cancelCurrentChat.value = null;
           }
+          // A silent stream death is the worst failure mode: the plan panel
+          // freezes mid-progress (e.g. "1/8") and the user cannot tell a dead
+          // server from a working agent. Surface it — except user cancels.
+          if ((error as any)?.name !== 'AbortError') {
+            showErrorToast(t('Connection lost during the task — the server may have restarted. Reopen this chat to resume, or resend your message.'));
+          }
         }
       }
     );

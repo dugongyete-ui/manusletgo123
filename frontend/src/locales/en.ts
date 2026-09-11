@@ -454,4 +454,5 @@ export default {
 'Resume': 'Resume',
 'Could not update, please try again': 'Could not update, please try again',
 'Could not delete, please try again': 'Could not delete, please try again',
+'Connection lost during the task — the server may have restarted. Reopen this chat to resume, or resend your message.': 'Connection lost during the task — the server may have restarted. Reopen this chat to resume, or resend your message.',
 }
