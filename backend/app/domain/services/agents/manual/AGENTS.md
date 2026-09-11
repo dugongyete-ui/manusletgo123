@@ -31,7 +31,7 @@ One topic per file — open only what the current task needs:
 
 ## Skills
 
-`project/skills/` contains 50 focused playbooks — one folder per skill,
+`project/skills/` contains 61 focused playbooks — one folder per skill,
 each with a SKILL.md. The index with load tiers is `project/SKILLS.md`
 (top level of project/, next to this file; an identical copy sits at
 `project/skills/SKILLS.md`, so both paths work). For ANY build-class task

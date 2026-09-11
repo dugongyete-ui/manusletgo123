@@ -100,8 +100,8 @@ def test_agents_md_skill_count_matches_disk():
         p.parent.name
         for p in (MANUAL / "skills").glob("*/SKILL.md")
     )
-    assert "50 focused playbooks" in text
-    assert len(on_disk) == 50, f"manual claims 50 skills, disk has {len(on_disk)}"
+    assert "61 focused playbooks" in text
+    assert len(on_disk) == 61, f"manual claims 61 skills, disk has {len(on_disk)}"
 
 
 def test_skills_index_lists_every_skill_on_disk():

@@ -285,17 +285,18 @@ def test_fullstack_skill_kept_users_structure() -> None:
         assert section in text, f"section lost: {section}"
     # sandbox orientation note landed
     assert "This sandbox (Replit / E2B)" in text
-    # the user's integration table survives COMPLETE (no filtered rows)
+    # the user's integration table survives COMPLETE (no filtered rows).
+    # Task 59 dropped webdev-data-api + webdev-custom-dockerfile: they point
+    # at skills this platform will never ship (no API Hub, no deploy
+    # pipeline) — kept rows must all resolve to real skill folders.
     for row in (
         "webdev-llm-integration",
         "webdev-voice-transcription",
         "webdev-image-generation",
         "webdev-file-storage",
         "webdev-maps-integration",
-        "webdev-data-api",
         "webdev-owner-notifications",
         "webdev-periodic-updates",
-        "webdev-custom-dockerfile",
         "webdev-ssr-conversion",
     ):
         assert row in text, f"integration table row lost: {row}"

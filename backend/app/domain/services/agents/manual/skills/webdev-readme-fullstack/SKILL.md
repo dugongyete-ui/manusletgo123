@@ -856,20 +856,17 @@ Use `storagePut()` to upload files (see `skills/webdev-file-storage/SKILL.md`).
 
 ## Integration References
 
-This template ships pre-configured integrations. BEFORE implementing a feature that needs one, read the matching skill doc:
+BEFORE implementing a feature that needs one, read the matching skill doc:
 
 | Integration | Skill doc | When to use |
 |---|---|---|
 | LLM / AI chat | `skills/webdev-llm-integration/SKILL.md` | AI features, chat completions, structured JSON responses, model listing/selection, streaming, thinking/reasoning |
-| Voice transcription | `skills/webdev-voice-transcription/SKILL.md` | Speech-to-text via Whisper API |
+| Voice transcription | `skills/webdev-voice-transcription/SKILL.md` | Speech-to-text via a Whisper-class, OpenAI-compatible endpoint |
 | Image generation | `skills/webdev-image-generation/SKILL.md` | AI image creation or editing, model listing/selection |
 | File storage (S3) | `skills/webdev-file-storage/SKILL.md` | Uploading/serving user files, images, documents |
 | Google Maps | `skills/webdev-maps-integration/SKILL.md` | Maps, geocoding, directions, places |
-| Data API | `skills/webdev-data-api/SKILL.md` | External data via Dzeck API Hub |
 | Owner notifications | `skills/webdev-owner-notifications/SKILL.md` | Push alerts to the project owner |
-| Dzeck OAuth | `skills/webdev-dzeck-oauth/SKILL.md` | OAuth redirect URL handling, invite/magic links |
 | Periodic updates / cron | `skills/webdev-periodic-updates/SKILL.md` | Scheduled work — recurring jobs, end-user-scheduled cron, periodic notifications. MUST read before any scheduled-work code |
-| Custom Dockerfile | `skills/webdev-custom-dockerfile/SKILL.md` | Extra system binaries or another language runtime in production |
 | SSR conversion | `skills/webdev-ssr-conversion/SKILL.md` | Making this template server-side rendered for SEO / link previews / crawler-visible content |
 
 Rows whose skill doc is not present in this workspace's `skills/` were not shipped here — implement that feature directly from its row description, or ask the user for the details it needs.

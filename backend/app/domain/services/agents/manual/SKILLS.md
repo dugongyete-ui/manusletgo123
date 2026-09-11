@@ -1,6 +1,6 @@
 # SKILLS.md
 
-Index of the 50 playbooks in `project/skills/`. This file lives at
+Index of the 61 playbooks in `project/skills/`. This file lives at
 `project/SKILLS.md` (top level of project/, next to AGENTS.md) with an
 identical copy at `project/skills/SKILLS.md` — both are the same index.
 Each skill is a folder with a SKILL.md (read that first). Open one BEFORE
@@ -28,6 +28,9 @@ between "ran once" and "actually works".
 | video-downloader | downloading YouTube videos (quality/format options, audio-only MP3) |
 | webdev-readme-fullstack | fullstack web app (web-db-user): the complete template guide — auth, database, file storage, backend API, integrations |
 | webdev-readme-static | static site (web-static): the complete guide for static builds — conventions, file layout |
+| webdev-readme-mobile | Expo mobile app (React Native): the complete template guide — screens, theming, branding, and where the backend guide lives |
+| webdev-readme-mobile-backend | mobile-app backend: session auth, Drizzle database, tRPC API, env, testing, integrations — read before ANY backend/server/database feature in a mobile app |
+| game-dev | playable browser games (Babylon.js) end-to-end via the godogen staged pipeline — visual target, risk slices, generated art, screenshot verification |
 | python-api-service | REST API in Python (FastAPI/Flask) |
 | browser-automation | form filling, scraping, logged-in flows via CDP |
 | data-analysis | CSV/data → cleaning → charts → written report |
@@ -38,6 +41,8 @@ between "ran once" and "actually works".
 |---|---|
 | webdev-llm-integration | AI features: chat completions, structured JSON, streaming |
 | webdev-image-generation | AI image creation or editing in the built app |
+| webdev-voice-transcription | speech-to-text in the built app via a Whisper-class, OpenAI-compatible endpoint |
+| webdev-ssr-conversion | converting a built fullstack-template app to Server-Side Rendering — SEO, link-preview cards, crawler-visible content |
 | webdev-file-storage | uploading/serving user files, images, documents |
 | webdev-maps-integration | maps, geocoding, directions, places |
 | webdev-owner-notifications | pushing operational alerts to the app owner |
@@ -48,6 +53,9 @@ between "ran once" and "actually works".
 | Skill | Use when |
 |---|---|
 | web-research | multi-source research, fact-checking, reports |
+| deep-research | in-depth multi-source research with synthesized findings and a written report |
+| technical-writing | precise, structured writing for technical/academic long-form documents — Markdown reports, articles, analyses |
+| finance-pro-playbooks | ANY finance, investing, or company analysis task — valuation & modeling (DCF/LBO/comps), deal materials, due diligence, data-sourcing rules |
 | content-research-writer | long-form content with research, citations, outlines, section feedback |
 | developer-growth-analysis | analyzing coding chat history to surface patterns, gaps, learning resources |
 | lead-research-assistant | researching companies/contacts and building lead lists |
@@ -64,6 +72,8 @@ between "ran once" and "actually works".
 | file-organizer | organizing files/folders, deduplication, cleanup |
 | invoice-organizer | parsing and organizing invoices/receipts |
 | image-enhancer | upscaling/restoring images |
+| image-processing | deterministic image operations — inspect, describe, crop, resize, convert, compress, classical computer vision |
+| read-special-images | reading/OCR of screenshots, panoramas, dense documents — tiling strategy when whole-image display fails |
 | domain-name-brainstormer | brainstorming and checking domain names |
 | raffle-winner-picker | random draws from participant lists |
 | slack-gif-creator | generating animated GIFs (easing, palettes, effects) |
@@ -82,6 +92,7 @@ between "ran once" and "actually works".
 | mcp-builder | building MCP servers (Python FastMCP / Node SDK) |
 | typst-pdf-maker | polished PDF documents that Markdown-to-PDF cannot produce (typography, math, precise layouts) |
 | tts-prompter | crafting TTS prompts before entering generate mode for speech tasks |
+| imagegen | visual-deliverable routing + prompt crafting before image generation/editing tasks (also upscale/restore recipes) |
 | build-verification | proving what you built actually runs |
 | environment-troubleshooting | sandbox/network/tool failures |
 | persistent-computing | needs beyond this sandbox: always-on services, Docker, fixed IP — build-vs-deploy guidance |
