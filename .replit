@@ -1,0 +1,197 @@
+modules = ["python-3.12", "vue-node-20", "nodejs-20", "bash", "web"]
+[agent]
+expertMode = true
+stack = "BEST_EFFORT_FALLBACK"
+
+[nix]
+channel = "stable-25_05"
+packages = ["cargo", "gdb", "gitFull", "glibcLocales", "libiconv", "libxcrypt", "openssl", "pkg-config", "playwright-driver", "rustc"]
+
+[workflows]
+runButton = "Project"
+
+[[workflows.workflow]]
+name = "Project"
+mode = "parallel"
+author = "agent"
+
+[[workflows.workflow.tasks]]
+task = "workflow.run"
+args = "Start application"
+
+[[workflows.workflow.tasks]]
+task = "workflow.run"
+args = "Backend API"
+
+[[workflows.workflow.tasks]]
+task = "workflow.run"
+args = "backend-imports"
+
+[[workflows.workflow.tasks]]
+task = "workflow.run"
+args = "backend-syntax"
+
+[[workflows.workflow.tasks]]
+task = "workflow.run"
+args = "frontend-typecheck"
+
+[[workflows.workflow.tasks]]
+task = "workflow.run"
+args = "backend-pytest"
+
+[[workflows.workflow.tasks]]
+task = "workflow.run"
+args = "Sandbox Services"
+
+[[workflows.workflow]]
+name = "Start application"
+author = "agent"
+
+[[workflows.workflow.tasks]]
+task = "shell.exec"
+args = "cd frontend && pnpm approve-builds --yes 2>/dev/null; pnpm dev"
+waitForPort = 5000
+
+[workflows.workflow.metadata]
+outputType = "webview"
+
+[[workflows.workflow]]
+name = "Backend API"
+author = "agent"
+
+[workflows.workflow.metadata]
+outputType = "console"
+
+[[workflows.workflow.tasks]]
+task = "shell.exec"
+args = "cd backend && python3 -m uvicorn app.main:app --host 0.0.0.0 --port 8000"
+waitForPort = 8000
+
+[[workflows.workflow]]
+name = "backend-imports"
+author = "agent"
+
+[workflows.workflow.metadata]
+isValidation = true
+
+[[workflows.workflow.tasks]]
+task = "shell.exec"
+args = "cd backend && python3 -c \"import sys; sys.path.insert(0, '.'); [__import__(m) for m in ['app.core.config','app.domain.services.agents.planner','app.domain.services.agents.execution','app.domain.services.flows.plan_act','app.domain.services.agent_task_runner','app.domain.services.agent_domain_service','app.domain.services.prompts.system','app.domain.services.prompts.execution','app.domain.services.prompts.planner']]; print('PASSED')\""
+
+[[workflows.workflow]]
+name = "backend-syntax"
+author = "agent"
+
+[workflows.workflow.metadata]
+isValidation = true
+
+[[workflows.workflow.tasks]]
+task = "shell.exec"
+args = "cd backend && python3 -c \"import ast, os; [ast.parse(open(os.path.join(r,f)).read()) for r,d,fs in os.walk('app') if '__pycache__' not in r for f in fs if f.endswith('.py')]; print('PASSED')\""
+
+[[workflows.workflow]]
+name = "frontend-typecheck"
+author = "agent"
+
+[[workflows.workflow.tasks]]
+task = "shell.exec"
+args = "cd frontend && npx vue-tsc --noEmit 2>&1 | tail -20 && echo 'PASSED'"
+
+[workflows.workflow.metadata]
+isValidation = true
+
+[[workflows.workflow]]
+name = "backend-pytest"
+author = "agent"
+
+[workflows.workflow.metadata]
+isValidation = true
+
+[[workflows.workflow.tasks]]
+task = "shell.exec"
+args = "cd backend && python3 -m pytest tests/ -x -q"
+
+[[workflows.workflow]]
+name = "Sandbox Services"
+author = "agent"
+
+[workflows.workflow.metadata]
+outputType = "console"
+
+[[workflows.workflow.tasks]]
+task = "shell.exec"
+args = "cd sandbox && /home/runner/workspace/.pythonlibs/bin/supervisord -n -c replit_supervisord.conf"
+
+[[ports]]
+localPort = 5000
+externalPort = 80
+
+[[ports]]
+localPort = 8000
+externalPort = 8000
+
+[[ports]]
+localPort = 8080
+externalPort = 8080
+
+[[ports]]
+localPort = 8081
+externalPort = 8081
+
+[[ports]]
+localPort = 8082
+externalPort = 3001
+
+[deployment]
+deploymentTarget = "autoscale"
+build = ["bash", "-c", "pip install supervisor websockify --quiet && cd frontend && pnpm install --frozen-lockfile && pnpm build"]
+run = ["bash", "-c", "bash /home/runner/workspace/scripts/start_production.sh"]
+
+[userenv]
+
+[userenv.shared]
+API_BASE = "https://integrate.api.nvidia.com/v1"
+MODEL_NAME = "nvidia/nemotron-3-super-120b-a12b"
+MODEL_PROVIDER = "openai"
+TEMPERATURE = "0.7"
+MAX_TOKENS = "8000"
+VISION_MODEL_NAME = "meta/llama-3.2-11b-vision-instruct"
+VISION_MODEL_PROVIDER = "openai"
+VISION_API_BASE = "https://integrate.api.nvidia.com/v1"
+MONGODB_DATABASE = "manus"
+REDIS_HOST = "redis-14320.c334.asia-southeast2-1.gce.cloud.redislabs.com"
+REDIS_PORT = "14320"
+SEARCH_PROVIDER = "tavily"
+SEARCH_FALLBACK_PROVIDER = "bing_rss"
+AUTH_PROVIDER = "password"
+JWT_ALGORITHM = "HS256"
+JWT_ACCESS_TOKEN_EXPIRE_MINUTES = "1440"
+JWT_REFRESH_TOKEN_EXPIRE_DAYS = "30"
+CLAW_ENABLED = "false"
+LOG_LEVEL = "INFO"
+MCP_CONFIG_PATH = "/home/runner/workspace/mcp.json"
+SUMMARY_MODEL_NAME = "nvidia/nemotron-3-super-120b-a12b"
+MONGODB_URI = "mongodb+srv://galerizaki_db_user:wTkfzrqewY5qCxYG@cluster0.vmiek8b.mongodb.net/manus?retryWrites=true&w=majority"
+REDIS_PASSWORD = "dA82OZIdJg62zWqsPJ9sDNvgtpCKbAAs"
+JWT_SECRET_KEY = "vcyffuhduduffjdejieueueueueuu-#--$-#6#-super-secure"
+TAVILY_API_KEY = "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"
+VISION_API_KEY = "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"
+API_KEY = "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"
+SANDBOX_TTL_MINUTES = "30"
+BROWSER_ENGINE = "browser_use"
+PASSWORD_SALT = "manus-salt-2025"
+SHOW_GITHUB_BUTTON = "false"
+SANDBOX_CDP_URL = "http://localhost:8222"
+SANDBOX_BASE_URL = "http://localhost:8080"
+SANDBOX_VNC_URL = "ws://localhost:5901"
+SANDBOX_DISPLAY_SIZE = "1280x1029"
+GITHUB_REPOSITORY_URL = "https://github.com/manusletgo123/dzeck"
+SSL_VERIFY = "false"
+GITHUB_TOKEN = "None"
+E2B_API_KEY = "./)e2b_964bede70ba199765e4a595b21500872375b03be"
+SANDBOX_PROVIDER = "auto"
+E2B_SANDBOX_TIMEOUT = "900"
+
+[postMerge]
+path = "scripts/post-merge.sh"
+timeoutMs = 120000

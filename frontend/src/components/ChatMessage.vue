@@ -1,0 +1,423 @@
+<template>
+  <div v-if="message.type === 'user'" class="flex w-full flex-col items-end justify-end gap-1 group mt-3">
+    <div class="flex items-end">
+      <div class="flex items-center justify-end gap-[2px] invisible group-hover:visible">
+        <div class="float-right transition text-[12px] text-[var(--text-tertiary)] invisible group-hover:visible">
+          {{ relativeTime(message.content.timestamp) }}
+        </div>
+      </div>
+    </div>
+    <div class="flex max-w-[90%] relative flex-col gap-1 items-end">
+      <!-- Markdown container MUST be a block element: the previous
+           `flex items-center` laid every rendered block (paragraphs, lists,
+           blockquotes, hrs…) side-by-side in a horizontal row — a long
+           structured prompt then exploded into a 30,000px-wide bubble with
+           clipped text columns on phones. -->
+      <div class="w-full relative">
+        <div
+          class="md-prose relative block rounded-[12px] overflow-hidden bg-[var(--fill-white)] dark:bg-[var(--fill-tsp-white-main)] p-3 ltr:rounded-br-none rtl:rounded-bl-none border border-[var(--border-main)] dark:border-0"
+          :class="{ 'msg-clamp': isLongUserMsg && !userMsgExpanded }"
+          v-html="renderedContent">
+        </div>
+      </div>
+      <!-- Long prompt: collapse to a fixed height with a soft fade, keep the
+           full text one tap away. Short messages render exactly as before. -->
+      <button v-if="isLongUserMsg" type="button"
+        class="self-start text-[13px] font-medium text-[var(--text-brand)] hover:underline clickable bg-transparent border-0 p-0"
+        @click="userMsgExpanded = !userMsgExpanded">
+        {{ userMsgExpanded ? t('Show less') : t('Show more') }}
+      </button>
+      <div class="flex items-center gap-1">
+        <button type="button" class="msg-action-btn" :title="copied ? t('Copied') : t('Copy')"
+          :aria-label="t('Copy')" @click="copyMessageText">
+          <CheckIcon v-if="copied" :size="14" />
+          <CopyIcon v-else :size="14" />
+        </button>
+      </div>
+    </div>
+  </div>
+  <div v-else-if="message.type === 'assistant'" class="flex flex-col gap-2 w-full group" :class="hideAssistantHeader ? 'mt-0' : 'mt-3'">
+    <div v-if="!hideAssistantHeader" class="flex items-center justify-between h-7 group">
+      <div class="flex items-center gap-[3px]">
+        <component v-if="assistantIcon" :is="assistantIcon" :size="24" class="w-6 h-6" />
+        <DzeckLogoMark v-else :size="24" class="w-6 h-6" />
+        <span v-if="assistantName" class="text-base text-[var(--text-primary)] tracking-tight leading-none ml-0.5">{{ assistantName }}</span>
+        <DzeckTextIcon v-else-if="!assistantIcon" />
+      </div>
+      <div class="flex items-center gap-[2px] invisible group-hover:visible">
+        <div class="float-right transition text-[12px] text-[var(--text-tertiary)] invisible group-hover:visible">
+          {{ relativeTime(message.content.timestamp) }}
+        </div>
+      </div>
+    </div>
+    <!-- Progress narration (message_notify_user): clamped to ~300 chars for a
+         clear, compact chat flow — expandable with the Show more toggle. -->
+    <template v-if="isProgressNarration && isLongNarration">
+      <div class="md-prose max-w-none p-0 m-0 prose dark:prose-invert text-[var(--text-primary)]"
+        v-html="renderedNarration"></div>
+      <button type="button"
+        class="self-start text-[13px] font-medium text-[var(--text-brand)] hover:underline clickable bg-transparent border-0 p-0"
+        @click="narrationExpanded = !narrationExpanded">
+        {{ narrationExpanded ? t('Show less') : t('Show more') }}
+      </button>
+    </template>
+    <div v-else
+      class="md-prose max-w-none p-0 m-0 prose dark:prose-invert text-[var(--text-primary)]"
+      v-html="renderedContent"
+      @click="handleMarkdownClick"></div>
+    <!-- Copy action for the assistant reply (raw text incl. markdown source).
+         Hidden while streaming so nobody copies a half-finished answer. -->
+    <div v-if="!messageContent.isStreaming && (messageContent.content || '').trim()" class="flex items-center gap-1">
+      <button type="button" class="msg-action-btn" :title="copied ? t('Copied') : t('Copy')"
+        :aria-label="t('Copy')" @click="copyMessageText">
+        <CheckIcon v-if="copied" :size="14" />
+        <CopyIcon v-else :size="14" />
+      </button>
+    </div>
+  </div>
+  <ToolUse v-else-if="message.type === 'tool'" :tool="toolContent" @click="handleToolClick(toolContent)" />
+  <div v-else-if="message.type === 'step'" class="flex flex-col">
+    <div class="text-sm w-full clickable flex gap-2 justify-between group/header truncate text-[var(--text-primary)]"
+      data-event-id="HNtP7XOMUOhPemItd2EkK2">
+      <div class="flex flex-row gap-2 justify-center items-center truncate">
+        <div v-if="stepContent.status !== 'completed'"
+          class="w-4 h-4 flex-shrink-0 flex items-center justify-center border border-[var(--border-dark)] rounded-[15px]">
+        </div>
+        <div v-else
+          class="w-4 h-4 flex-shrink-0 flex items-center justify-center border-[var(--border-dark)] rounded-[15px] bg-[var(--text-disable)] dark:bg-[var(--fill-tsp-white-dark)] border-0">
+          <CheckIcon class="text-[var(--icon-white)] dark:text-[var(--icon-white-tsp)]" :size="10" />
+        </div>
+        <div class="truncate font-medium markdown-content"
+          v-html="renderedStepDescription">
+        </div>
+        <span class="flex-shrink-0 flex" @click="isExpanded = !isExpanded;">
+          <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none"
+            stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"
+            class="lucide lucide-chevron-down transition-transform duration-300 w-4 h-4"
+            :class="{ 'rotate-180': isExpanded }">
+            <path d="m6 9 6 6 6-6"></path>
+          </svg>
+        </span>
+      </div>
+      <div class="float-right transition text-[12px] text-[var(--text-tertiary)] invisible group-hover/header:visible">
+        {{ relativeTime(message.content.timestamp) }}
+      </div>
+    </div>
+    <div class="flex">
+      <div class="w-[24px] relative">
+        <div class="border-l border-dashed border-[var(--border-dark)] absolute start-[8px] top-0 bottom-0"
+          style="height: calc(100% + 14px);"></div>
+      </div>
+      <div
+        class="flex flex-col gap-3 flex-1 min-w-0 overflow-hidden pt-2 transition-[max-height,opacity] duration-150 ease-in-out"
+        :class="{ 'max-h-[100000px] opacity-100': isExpanded, 'max-h-0 opacity-0': !isExpanded }">
+        <ToolUse v-for="(tool, index) in stepContent.tools" :key="index" :tool="tool" @click="handleToolClick(tool)" />
+      </div>
+    </div>
+  </div>
+  <div v-else-if="message.type === 'attachments' && attachmentsContent.role === 'assistant'" class="flex flex-col gap-2 w-full group" :class="hideAssistantHeader ? 'mt-0' : 'mt-3'">
+    <div v-if="!hideAssistantHeader" class="flex items-center justify-between h-7 group">
+      <div class="flex items-center gap-[3px]">
+        <component v-if="assistantIcon" :is="assistantIcon" :size="24" class="w-6 h-6" />
+        <DzeckLogoMark v-else :size="24" class="w-6 h-6" />
+        <span v-if="assistantName" class="text-base text-[var(--text-primary)] tracking-tight leading-none ml-0.5">{{ assistantName }}</span>
+        <DzeckTextIcon v-else-if="!assistantIcon" />
+      </div>
+      <div class="flex items-center gap-[2px] invisible group-hover:visible">
+        <div class="float-right transition text-[12px] text-[var(--text-tertiary)] invisible group-hover:visible">
+          {{ relativeTime(attachmentsContent.timestamp) }}
+        </div>
+      </div>
+    </div>
+    <AttachmentsMessage :content="attachmentsContent" :hideAllFilesButton="hideAllFilesButton"/>
+  </div>
+  <AttachmentsMessage v-else-if="message.type === 'attachments'" :content="attachmentsContent" :hideAllFilesButton="hideAllFilesButton"/>
+</template>
+
+<script setup lang="ts">
+import DzeckTextIcon from './icons/DzeckTextIcon.vue';
+import DzeckLogoMark from './icons/DzeckLogoMark.vue';
+import { Message, MessageContent, AttachmentsContent } from '../types/message';
+import ToolUse from './ToolUse.vue';
+import { marked } from 'marked';
+import { markedHighlight } from 'marked-highlight';
+import hljs from 'highlight.js';
+import DOMPurify from 'dompurify';
+import { CheckIcon, CopyIcon } from 'lucide-vue-next';
+import { computed, ref, type Component } from 'vue';
+import { useI18n } from 'vue-i18n';
+import { ToolContent, StepContent } from '../types/message';
+import { useRelativeTime } from '../composables/useTime';
+import AttachmentsMessage from './AttachmentsMessage.vue';
+import { viewFile } from '../api/agent';
+
+marked.use(markedHighlight({
+  emptyLangClass: 'hljs',
+  langPrefix: 'hljs language-',
+  highlight(code, lang) {
+    const language = hljs.getLanguage(lang) ? lang : 'plaintext';
+    return hljs.highlight(code, { language }).value;
+  }
+}));
+
+const props = defineProps<{
+  message: Message;
+  sessionId?: string;
+  assistantIcon?: Component;
+  assistantName?: string;
+  hideAllFilesButton?: boolean;
+  hideHeader?: boolean;
+}>();
+
+const hideAssistantHeader = computed(() => props.hideHeader ?? false);
+
+const { t } = useI18n();
+
+// ── Progress narration clamp (official chat keeps notify lines brief) ────────
+// message_notify_user texts render as standalone chat lines; anything past
+// ~300 characters collapses to an ellipsis with a Show more toggle, so the
+// chat flow stays clear without losing the full content.
+const NARRATION_CLAMP = 300;
+const narrationExpanded = ref(false);
+
+// ── Long user prompt: visual clamp (max-height + fade) with Show more ──────
+// Char threshold decides IF the toggle exists; the clamp itself is pure CSS
+// (max-height + mask fade) so markdown never renders broken mid-block the
+// way a raw-text slice would (a 20k-char structured prompt cut mid-table).
+const USER_MSG_CLAMP_THRESHOLD = 600;
+const userMsgExpanded = ref(false);
+const isLongUserMsg = computed(
+  () => (messageContent.value.content || '').length > USER_MSG_CLAMP_THRESHOLD,
+);
+
+// ── Copy message text (user bubble + assistant reply) ─────────────────────
+// Copies the RAW text (markdown source for assistant replies) — same
+// behaviour as ChatGPT. Clipboard API first, textarea fallback for
+// non-secure contexts; a 2s check-icon confirms the copy visually.
+const copied = ref(false);
+let copyResetTimer: ReturnType<typeof setTimeout> | null = null;
+const copyMessageText = async () => {
+  const text = messageContent.value.content || '';
+  if (!text.trim()) return;
+  let ok = false;
+  try {
+    await navigator.clipboard.writeText(text);
+    ok = true;
+  } catch { /* clipboard API unavailable (http / older webview) */ }
+  if (!ok) {
+    try {
+      const ta = document.createElement('textarea');
+      ta.value = text;
+      ta.style.position = 'fixed';
+      ta.style.opacity = '0';
+      document.body.appendChild(ta);
+      ta.select();
+      ok = document.execCommand('copy');
+      document.body.removeChild(ta);
+    } catch { /* give up silently */ }
+  }
+  if (ok) {
+    copied.value = true;
+    if (copyResetTimer) clearTimeout(copyResetTimer);
+    copyResetTimer = setTimeout(() => { copied.value = false; }, 2000);
+  }
+};
+const isProgressNarration = computed(
+  () => messageContent.value.is_progress === true && !messageContent.value.isStreaming,
+);
+const isLongNarration = computed(
+  () => (messageContent.value.content || '').length > NARRATION_CLAMP,
+);
+const clampedNarration = computed(() => {
+  const text = messageContent.value.content || '';
+  if (narrationExpanded.value) return text;
+  return `${text.slice(0, NARRATION_CLAMP).trimEnd()}…`;
+});
+
+const emit = defineEmits<{
+  (e: 'toolClick', tool: ToolContent): void;
+}>();
+
+const handleToolClick = (tool: ToolContent) => {
+  emit('toolClick', tool);
+};
+
+const stepContent = computed(() => props.message.content as StepContent);
+const messageContent = computed(() => props.message.content as MessageContent);
+const toolContent = computed(() => props.message.content as ToolContent);
+const attachmentsContent = computed(() => props.message.content as AttachmentsContent);
+
+// ── Memoized markdown HTML ─────────────────────────────────────────────────
+// renderMarkdown (marked + highlight.js + DOMPurify) used to run as a plain
+// function call INSIDE the template — re-parsing the FULL message text on
+// EVERY re-render (measured 7.4ms per call for the 20.8k-char prompt on
+// desktop, ~30ms on phone). It re-ran on every minute-tick, every parent
+// re-render, every streaming flush. Caching in computed properties makes a
+// re-render cost ~0 unless the underlying text actually changed.
+const renderedContent = computed(() => renderMarkdown(messageContent.value.content));
+const renderedNarration = computed(() => renderMarkdown(clampedNarration.value));
+const renderedStepDescription = computed(() => renderMarkdown(stepContent.value.description || ''));
+
+const isExpanded = ref(true);
+
+const { relativeTime } = useRelativeTime();
+
+const isSandboxPath = (href: string) =>
+  href.startsWith('/home/') || href.startsWith('/root/') || href.startsWith('/tmp/');
+
+const cleanLinkText = (href: string, text: string): string => {
+  const isRawUrl = text === href || text.startsWith('http://') || text.startsWith('https://');
+  if (isRawUrl) {
+    try { return new URL(href).hostname; } catch { /* fall through */ }
+  }
+  return text;
+};
+
+const renderer = new marked.Renderer();
+
+renderer.link = ({ href, title: _title, text }: { href: string; title?: string | null; text: string }) => {
+  if (href && isSandboxPath(href)) {
+    return `<a href="#" data-sandbox-file="${href}" title="${href}" class="sandbox-file-link">${text}</a>`;
+  }
+  return `<a href="${href}" target="_blank" rel="noopener noreferrer" title="${href}">${cleanLinkText(href, text)}</a>`;
+};
+
+renderer.code = ({ text, lang }: { text: string; lang?: string }) => {
+  const language = lang && hljs.getLanguage(lang) ? lang : 'plaintext';
+  const highlighted = hljs.highlight(text, { language }).value;
+  const langLabel = lang ? `<span class="md-code-lang">${lang}</span>` : '';
+  const copyBtn = `<button class="md-code-copy" onclick="navigator.clipboard.writeText(this.closest('.md-code-block').querySelector('code').innerText)" title="Copy">⎘</button>`;
+  return `<div class="md-code-block"><div class="md-code-header">${langLabel}${copyBtn}</div><pre><code class="hljs language-${language}">${highlighted}</code></pre></div>`;
+};
+
+renderer.blockquote = ({ text }: { text: string }) => {
+  const trimmed = text.trim();
+  let type = 'default';
+  let inner = trimmed;
+  const typeMatch = trimmed.match(/^\[!(NOTE|TIP|WARNING|DANGER|INFO)\]\s*/i);
+  if (typeMatch) {
+    type = typeMatch[1].toLowerCase();
+    inner = trimmed.slice(typeMatch[0].length);
+  }
+  const icons: Record<string, string> = { note: 'ℹ', tip: '✦', warning: '⚠', danger: '✖', info: '◉', default: '❝' };
+  return `<div class="md-callout md-callout-${type}"><span class="md-callout-icon">${icons[type] ?? icons.default}</span><div class="md-callout-body">${inner}</div></div>`;
+};
+
+renderer.table = (token: any) => {
+  const renderCell = (cell: any): string => {
+    const raw = typeof cell === 'object' ? (cell.text ?? '') : cell;
+    try { return marked.parseInline(raw) as string; } catch { return raw; }
+  };
+  const header = token.header.map((cell: any) =>
+    `<th>${renderCell(cell)}</th>`
+  ).join('');
+  const rows = token.rows.map((row: any[]) =>
+    `<tr>${row.map((cell: any) => `<td>${renderCell(cell)}</td>`).join('')}</tr>`
+  ).join('');
+  return `<div class="md-table-wrap"><table class="md-table"><thead><tr>${header}</tr></thead><tbody>${rows}</tbody></table></div>`;
+};
+
+const renderMarkdown = (text: string) => {
+  if (typeof text !== 'string') return '';
+  const html = marked(text, { renderer, gfm: true, breaks: true }) as string;
+  return DOMPurify.sanitize(html, { ADD_ATTR: ['target', 'data-sandbox-file', 'onclick', 'title'], FORCE_BODY: true });
+};
+
+const handleMarkdownClick = async (event: MouseEvent) => {
+  const target = event.target as HTMLElement;
+  const anchor = target.closest('a[data-sandbox-file]') as HTMLAnchorElement | null;
+  if (!anchor) return;
+  event.preventDefault();
+  const filePath = anchor.getAttribute('data-sandbox-file');
+  if (!filePath || !props.sessionId) return;
+  try {
+    const result = await viewFile(props.sessionId, filePath);
+    const filename = filePath.split('/').pop() || 'file';
+    const blob = new Blob([result.content], { type: 'text/plain;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  } catch (e) {
+    console.error('Failed to download sandbox file:', e);
+  }
+};
+</script>
+
+<style>
+.duration-300 {
+  animation-duration: .3s;
+}
+
+.duration-300 {
+  transition-duration: .3s;
+}
+
+.sandbox-file-link {
+  color: var(--text-brand);
+  text-decoration: underline;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.sandbox-file-link::before {
+  content: "⬇";
+  font-size: 0.75em;
+  opacity: 0.7;
+}
+
+/* ── Long user prompt: visual clamp with soft bottom fade ───────────────────
+   max-height + mask-image fade the CONTENT itself, so no background color
+   matching is needed between light/dark themes. Mask stays enabled in the
+   expanded state too (harmless) but max-height is lifted. */
+.msg-clamp {
+  max-height: 300px;
+  overflow: hidden;
+  -webkit-mask-image: linear-gradient(to bottom, black 62%, transparent 100%);
+  mask-image: linear-gradient(to bottom, black 62%, transparent 100%);
+}
+
+/* ── Message action button (copy) ───────────────────────────────────────────
+   Desktop (hover available): hidden until the message group is hovered.
+   Touch devices (hover: none): always visible at reduced opacity — there is
+   no hover to reveal it, and tap targets must not be invisible. */
+.msg-action-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  border-radius: 6px;
+  border: 0;
+  background: transparent;
+  color: var(--text-tertiary);
+  cursor: pointer;
+  transition: opacity .15s ease, color .15s ease, background-color .15s ease;
+}
+
+.msg-action-btn:hover {
+  color: var(--text-primary);
+  background: var(--fill-tsp-gray-main);
+}
+
+@media (hover: hover) {
+  .msg-action-btn {
+    opacity: 0;
+  }
+  .group:hover .msg-action-btn {
+    opacity: 1;
+  }
+}
+
+@media (hover: none) {
+  .msg-action-btn {
+    opacity: 0.55;
+  }
+}
+</style>

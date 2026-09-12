@@ -1,0 +1,404 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+
+#app {
+  display: contents;
+}
+
+body,html {
+  width: 100%;
+  height: 100%;
+  margin: 0;
+  padding: 0;
+  font-family: -apple-system,BlinkMacSystemFont,Segoe UI Variable Display,Segoe UI,Helvetica,Apple Color Emoji,Arial,sans-serif,Segoe UI Emoji,Segoe UI Symbol;
+  background-color: var(--background-white-main);
+  color: var(--text-primary)
+}
+
+.clickable {
+  cursor: pointer;
+  -webkit-user-select: none;
+  -moz-user-select: none;
+  user-select: none;
+}
+
+.ltr\:border-l {
+  border-left-width: 1px;
+}
+
+/* Scrollbar styling */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--border-dark, #e0e0e0);
+  border-radius: 3px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: var(--text-tertiary, #888888);
+}
+
+.dark ::-webkit-scrollbar-thumb {
+  background: #333333;
+}
+
+.dark ::-webkit-scrollbar-thumb:hover {
+  background: #5E5E5B;
+}
+
+/* Smooth theme transitions */
+*, *::before, *::after {
+  transition: background-color 0.2s ease, border-color 0.2s ease, color 0.2s ease;
+}
+
+/* Prose link visibility in dark mode */
+.dark .prose a,
+.dark .prose-invert a {
+  color: #5b9cf6;
+  text-decoration: underline;
+}
+.dark .prose a:hover,
+.dark .prose-invert a:hover {
+  color: #93c5fd;
+}
+
+/* Markdown content link styling */
+.dark .markdown-content a {
+  color: #5b9cf6;
+  text-decoration: underline;
+  word-break: break-all;
+}
+
+/* Prose code blocks in dark mode */
+.dark .prose pre,
+.dark .prose code {
+  background-color: var(--background-card);
+  color: var(--text-primary);
+}
+
+/* ═══════════════════════════════════════════════════════
+   RICH MARKDOWN — CLAUDE-STYLE PROFESSIONAL TYPOGRAPHY
+═══════════════════════════════════════════════════════ */
+
+/* ── Base prose container ── */
+.md-prose {
+  font-size: 1rem;
+  line-height: 1.75;
+  color: var(--text-primary);
+  word-break: break-word;
+}
+
+/* ── Paragraphs ── */
+.md-prose p,
+.prose p {
+  margin-top: 0.6rem;
+  margin-bottom: 0.6rem;
+  line-height: 1.75;
+}
+.md-prose > p:first-child,
+.prose > p:first-child { margin-top: 0; }
+.md-prose > p:last-child,
+.prose > p:last-child  { margin-bottom: 0; }
+
+/* ── Headings ── */
+.md-prose h1, .prose h1 {
+  font-size: 1.5rem;
+  font-weight: 700;
+  line-height: 1.3;
+  letter-spacing: -0.02em;
+  margin-top: 1.6rem;
+  margin-bottom: 0.6rem;
+  padding-bottom: 0.4rem;
+  border-bottom: 1.5px solid var(--border-dark, rgba(0,0,0,.12));
+  color: var(--text-primary);
+}
+.md-prose h2, .prose h2 {
+  font-size: 1.2rem;
+  font-weight: 700;
+  line-height: 1.35;
+  letter-spacing: -0.01em;
+  margin-top: 1.4rem;
+  margin-bottom: 0.5rem;
+  padding-bottom: 0.3rem;
+  border-bottom: 1px solid var(--border-light, rgba(0,0,0,.06));
+  color: var(--text-primary);
+}
+.md-prose h3, .prose h3 {
+  font-size: 1.05rem;
+  font-weight: 600;
+  line-height: 1.4;
+  margin-top: 1.1rem;
+  margin-bottom: 0.35rem;
+  color: var(--text-primary);
+}
+.md-prose h4, .prose h4 {
+  font-size: 0.95rem;
+  font-weight: 600;
+  margin-top: 0.9rem;
+  margin-bottom: 0.3rem;
+  color: var(--text-primary);
+}
+.md-prose h1:first-child,
+.md-prose h2:first-child,
+.md-prose h3:first-child,
+.prose h1:first-child,
+.prose h2:first-child,
+.prose h3:first-child { margin-top: 0; }
+
+.dark .md-prose h1, .dark .prose h1,
+.dark .md-prose h2, .dark .prose h2 { border-color: rgba(255,255,255,.1); }
+
+/* ── Lists ── */
+.md-prose ul, .prose ul,
+.md-prose ol, .prose ol {
+  padding-left: 1.5rem;
+  margin-top: 0.5rem;
+  margin-bottom: 0.5rem;
+}
+.md-prose li, .prose li {
+  margin-top: 0.3rem;
+  margin-bottom: 0.3rem;
+  line-height: 1.7;
+}
+.md-prose li > p, .prose li > p { margin: 0; }
+.md-prose ul > li::marker, .prose ul > li::marker { color: var(--text-tertiary); }
+.md-prose ol > li::marker, .prose ol > li::marker {
+  color: var(--text-secondary);
+  font-weight: 600;
+}
+
+/* ── Strong / Em ── */
+.md-prose strong, .prose strong {
+  font-weight: 700;
+  color: var(--text-primary);
+}
+.md-prose em, .prose em { font-style: italic; }
+
+/* ── Inline code — subtle badge ── */
+/* max-width + overflow-x keep a long inline code (URL, path, command) from
+   pushing the whole message bubble wider than the viewport; short codes are
+   visually unchanged. */
+.md-prose code:not(.hljs),
+.prose code:not(.hljs) {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 0.82em;
+  background: rgba(0,0,0,.05) !important;
+  color: var(--text-primary) !important;
+  padding: 1px 5px !important;
+  border-radius: 4px !important;
+  border: 1px solid rgba(0,0,0,.08);
+  font-weight: 500;
+  white-space: nowrap;
+  max-width: 100%;
+  display: inline-block;
+  overflow-x: auto;
+  vertical-align: bottom;
+  scrollbar-width: none;
+}
+.md-prose code:not(.hljs)::-webkit-scrollbar,
+.prose code:not(.hljs)::-webkit-scrollbar { display: none; }
+.dark .md-prose code:not(.hljs),
+.dark .prose code:not(.hljs) {
+  background: rgba(255,255,255,.08) !important;
+  color: #d1d5db !important;
+  border-color: rgba(255,255,255,.1);
+}
+
+/* ── Code block container ── */
+.md-code-block {
+  margin: 1rem 0;
+  border-radius: 10px;
+  overflow: hidden;
+  border: 1px solid rgba(0,0,0,.12);
+  background: #0d1117;
+  font-size: 0.9rem;
+}
+.dark .md-code-block { border-color: #30363d; }
+
+.md-code-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 6px 14px;
+  background: #161b22;
+  border-bottom: 1px solid #30363d;
+  min-height: 34px;
+}
+
+.md-code-lang {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.68rem;
+  color: #8b949e;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  font-weight: 600;
+}
+
+.md-code-copy {
+  font-size: 0.78rem;
+  color: #8b949e;
+  background: transparent;
+  border: 1px solid #30363d;
+  border-radius: 5px;
+  padding: 2px 9px;
+  cursor: pointer;
+  line-height: 1.5;
+  transition: none;
+}
+.md-code-copy:hover {
+  color: #e6edf3;
+  border-color: #6b7280;
+  background: #21262d;
+}
+
+.md-code-block pre {
+  margin: 0 !important;
+  padding: 16px !important;
+  background: #0d1117 !important;
+  overflow-x: auto;
+}
+.md-code-block code {
+  font-family: ui-monospace, SFMono-Regular, SF Mono, Menlo, Consolas, monospace;
+  font-size: 0.83rem;
+  line-height: 1.65;
+  background: transparent !important;
+  padding: 0 !important;
+  border: none !important;
+  border-radius: 0 !important;
+  white-space: pre;
+}
+
+/* ── Blockquote / Callout ── */
+.md-callout {
+  display: flex;
+  gap: 10px;
+  align-items: flex-start;
+  padding: 11px 16px;
+  border-radius: 6px;
+  margin: 0.9rem 0;
+  border: 1px solid rgba(0,0,0,.08);
+  border-left: 3px solid rgba(0,0,0,.15);
+  background: rgba(0,0,0,.025);
+  font-size: 0.9rem;
+  line-height: 1.65;
+}
+.dark .md-callout {
+  background: rgba(255,255,255,.035);
+  border-color: rgba(255,255,255,.08);
+  border-left-color: rgba(255,255,255,.2);
+}
+.md-callout-icon { font-size: 0.9rem; flex-shrink: 0; margin-top: 2px; opacity: 0.5; }
+.md-callout-body { flex: 1; min-width: 0; color: var(--text-primary); }
+.md-callout-body p { margin: 0 !important; }
+
+.md-callout-note, .md-callout-info { border-left-color: #6b7280; }
+.md-callout-tip                    { border-left-color: #6b7280; }
+.md-callout-warning                { border-left-color: #9ca3af; }
+.md-callout-danger                 { border-left-color: #6b7280; }
+
+/* Blockquote (not a callout) */
+.md-prose blockquote:not(.md-callout),
+.prose blockquote:not(.md-callout) {
+  margin: 0.9rem 0;
+  padding: 10px 16px;
+  border-left: 3px solid rgba(0,0,0,.15);
+  background: rgba(0,0,0,.025);
+  border-radius: 0 6px 6px 0;
+  color: var(--text-secondary);
+  font-style: normal;
+}
+.dark .md-prose blockquote:not(.md-callout),
+.dark .prose blockquote:not(.md-callout) {
+  border-left-color: rgba(255,255,255,.2);
+  background: rgba(255,255,255,.035);
+}
+.md-prose blockquote p, .prose blockquote p { margin: 0; }
+
+/* ── Tables ── */
+.md-table-wrap {
+  overflow-x: auto;
+  margin: 1rem 0;
+  border-radius: 8px;
+  border: 1px solid rgba(0,0,0,.1);
+}
+.dark .md-table-wrap { border-color: rgba(255,255,255,.1); }
+
+.md-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.9rem;
+  line-height: 1.55;
+}
+.md-table thead {
+  background: rgba(0,0,0,.035);
+}
+.dark .md-table thead { background: rgba(255,255,255,.04); }
+
+.md-table th {
+  padding: 10px 16px;
+  text-align: left;
+  font-weight: 600;
+  font-size: 0.82rem;
+  color: var(--text-secondary);
+  border-bottom: 1px solid rgba(0,0,0,.1);
+  white-space: nowrap;
+}
+.dark .md-table th {
+  color: #9ca3af;
+  border-color: rgba(255,255,255,.1);
+}
+
+.md-table td {
+  padding: 9px 16px;
+  border-bottom: 1px solid rgba(0,0,0,.06);
+  color: var(--text-primary);
+  vertical-align: top;
+}
+.dark .md-table td {
+  border-color: rgba(255,255,255,.06);
+  color: #e2e8f0;
+}
+.md-table tbody tr:last-child td { border-bottom: none; }
+.md-table tbody tr:hover td { background: rgba(0,0,0,.02); }
+.dark .md-table tbody tr:hover td { background: rgba(255,255,255,.025); }
+
+/* ── Horizontal rule ── */
+.md-prose hr, .prose hr {
+  border: none;
+  border-top: 1px solid rgba(0,0,0,.1);
+  margin: 1.4rem 0;
+}
+.dark .md-prose hr, .dark .prose hr { border-color: rgba(255,255,255,.1); }
+
+/* ── Links ── */
+.md-prose a, .prose a {
+  color: var(--text-primary);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  text-decoration-color: rgba(0,0,0,.25);
+}
+.dark .md-prose a, .dark .prose a {
+  color: #e2e8f0;
+  text-decoration-color: rgba(255,255,255,.3);
+}
+.md-prose a:hover, .prose a:hover { text-decoration-color: currentColor; }
+
+/* ── Sandbox file links ── */
+.sandbox-file-link {
+  color: var(--text-primary);
+  text-decoration: underline;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+.sandbox-file-link::before { content: "⬇"; font-size: 0.75em; opacity: 0.6; }

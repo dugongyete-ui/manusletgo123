@@ -1,0 +1,3209 @@
+from typing import Any, Optional, List
+import asyncio
+import logging
+
+from browser_use.browser.session import BrowserSession, CDPSession
+from browser_use.dom.views import EnhancedDOMTreeNode
+
+from app.domain.models.tool_result import ToolResult
+from app.infrastructure.external.browser.window_fit import (
+    clear_viewport_overrides_browser_use,
+    fit_window_browser_use,
+)
+
+logger = logging.getLogger(__name__)
+
+
+# ── Shared JS snippets ─────────────────────────────────────────────────
+# Full pointer+mouse event sequence. Modern React/Vue widgets (Facebook's
+# DOB comboboxes, menus, sliders) listen to POINTER events — a plain
+# MouseEvent mousedown/mouseup/click sequence NEVER opens them. Verified
+# live on facebook.com/reg: only pointerdown->mousedown->pointerup->mouseup
+# ->click opens the combobox listbox.
+_POINTER_SEQUENCE_JS = """
+const fire = (el) => {
+    el.scrollIntoView({block: 'center', inline: 'nearest'});
+    const r = el.getBoundingClientRect();
+    const cx = r.left + r.width / 2, cy = r.top + r.height / 2;
+    const opts = {bubbles: true, cancelable: true, view: window,
+                  button: 0, buttons: 1, clientX: cx, clientY: cy};
+    const pd = Object.assign({}, opts, {pointerId: 1, pointerType: 'mouse', isPrimary: true});
+    try {
+        el.dispatchEvent(new PointerEvent('pointerover', pd));
+        el.dispatchEvent(new PointerEvent('pointerdown', pd));
+    } catch (e) {}
+    el.dispatchEvent(new MouseEvent('mouseover', opts));
+    el.dispatchEvent(new MouseEvent('mouseenter', opts));
+    el.dispatchEvent(new MouseEvent('mousedown', opts));
+    if (typeof el.focus === 'function') el.focus();
+    const up = Object.assign({}, opts, {buttons: 0});
+    const pu = Object.assign({}, pd, {buttons: 0});
+    try { el.dispatchEvent(new PointerEvent('pointerup', pu)); } catch (e) {}
+    el.dispatchEvent(new MouseEvent('mouseup', up));
+    if (typeof el.click === 'function') el.click();
+    else el.dispatchEvent(new MouseEvent('click', up));
+};
+"""
+
+# Click an element by visible text / aria-label / placeholder locator.
+# Runs entirely in-page: find best match, fire the pointer sequence, report.
+_LOCATOR_CLICK_JS = r"""
+(q) => {
+    const lower = q.trim().toLowerCase();
+    const cands = [];
+    const push = (el, why, score) => {
+        const r = el.getBoundingClientRect();
+        if (r.width < 2 || r.height < 2) return;
+        cands.push({el, why, score});
+    };
+    const vis = (el) => {
+        const s = getComputedStyle(el);
+        return s.display !== 'none' && s.visibility !== 'hidden' && parseFloat(s.opacity) > 0.05;
+    };
+    // Pass 1: attribute matches (strongest signals)
+    const all = Array.from(document.querySelectorAll('button,a,[role],input,select,textarea,label'));
+    for (const el of all) {
+        if (!vis(el)) continue;
+        const aria = (el.getAttribute('aria-label') || '');
+        const ph = (el.getAttribute('placeholder') || '');
+        const title = (el.getAttribute('title') || '');
+        const a = aria.toLowerCase(), p = ph.toLowerCase(), t = title.toLowerCase();
+        if (a === lower) push(el, 'aria-label', 100);
+        else if (p === lower) push(el, 'placeholder', 95);
+        else if (t === lower) push(el, 'title', 90);
+        else if (a.includes(lower) && lower.length > 2) push(el, 'aria-label~', 80);
+        else if (p.includes(lower) && lower.length > 2) push(el, 'placeholder~', 75);
+    }
+    // Pass 2: visible-text matches on interactive elements
+    const inter = Array.from(document.querySelectorAll(
+        'button,a,[role="button"],[role="combobox"],[role="tab"],[role="menuitem"],' +
+        '[role="option"],[role="checkbox"],[role="radio"],[role="switch"],[role="link"],' +
+        'input[type="button"],input[type="submit"],label,li,.option,.dropdown-item'));
+    for (const el of inter) {
+        if (!vis(el)) continue;
+        const txt = (el.innerText || el.value || '').trim().toLowerCase().replace(/\s+/g, ' ');
+        if (!txt) continue;
+        if (txt === lower) push(el, 'text', 85);
+        else if (txt.length <= 80 && txt.includes(lower) && lower.length > 2) push(el, 'text~', 70);
+    }
+    if (!cands.length) return JSON.stringify({ok: false, why: 'no visible element matches ' + q});
+    cands.sort((a, b) => b.score - a.score);
+    const topScore = cands[0].score;
+    const ties = cands.filter(c => c.score === topScore);
+    if (ties.length > 3) {
+        return JSON.stringify({ok: false, why: 'ambiguous (' + ties.length + ' equal matches)',
+            matches: ties.slice(0, 6).map(c => ({tag: c.el.tagName, role: c.el.getAttribute('role'),
+                aria: c.el.getAttribute('aria-label'), text: (c.el.innerText || '').trim().slice(0, 40)}))});
+    }
+    let el = cands[0].el;
+    // Container→trigger retarget: when the match is a WRAPPER (listbox/menu
+    // container with an aria-label), clicking the container is usually a
+    // no-op — retarget to the actionable control inside it (the .dd-button
+    // pattern: role=button child, or button/[role=combobox] descendant).
+    const role = (el.getAttribute('role') || '').toLowerCase();
+    if (role === 'listbox' || role === 'menu' || role === 'group' || role === 'radiogroup' || role === 'dialog') {
+        const inner = el.querySelector('[role="button"],[role="combobox"],button,.dd-button,[tabindex]:not([tabindex="-1"])');
+        if (inner && el.contains(inner)) el = inner;
+    }
+    const r = el.getBoundingClientRect();
+    const cx = r.left + r.width / 2, cy = r.top + r.height / 2;
+    const opts = {bubbles: true, cancelable: true, view: window, button: 0, buttons: 1, clientX: cx, clientY: cy};
+    const pd = Object.assign({}, opts, {pointerId: 1, pointerType: 'mouse', isPrimary: true});
+    try {
+        el.dispatchEvent(new PointerEvent('pointerover', pd));
+        el.dispatchEvent(new PointerEvent('pointerdown', pd));
+    } catch (e) {}
+    el.dispatchEvent(new MouseEvent('mouseover', opts));
+    el.dispatchEvent(new MouseEvent('mousedown', opts));
+    if (typeof el.focus === 'function') el.focus();
+    const up = Object.assign({}, opts, {buttons: 0});
+    const pu = Object.assign({}, pd, {buttons: 0});
+    try { el.dispatchEvent(new PointerEvent('pointerup', pu)); } catch (e) {}
+    el.dispatchEvent(new MouseEvent('mouseup', up));
+    if (typeof el.click === 'function') el.click();
+    else el.dispatchEvent(new MouseEvent('click', up));
+    return JSON.stringify({ok: true, matched_by: cands[0].why,
+        tag: el.tagName, role: el.getAttribute('role'),
+        aria: el.getAttribute('aria-label'),
+        text: (el.innerText || '').trim().slice(0, 60).replace(/\n/g, '|')});
+}
+"""
+
+# Open a custom dropdown by locator and pick an option — the strategy proven
+# live on facebook.com/reg DOB comboboxes (role=combobox triggers invisible to
+# the browser-use selector map + pointer-event-only interaction model).
+_LOCATOR_SELECT_JS = r"""
+(payload) => {
+    const {dropdown, option} = payload;
+    const lower = (s) => (s || '').trim().toLowerCase();
+    const vis = (el) => {
+        const s = getComputedStyle(el);
+        return s.display !== 'none' && s.visibility !== 'hidden' && parseFloat(s.opacity) > 0.05;
+    };
+    const fire = (el) => {
+        const r = el.getBoundingClientRect();
+        if (r.width < 2 || r.height < 2) return;
+        const cx = r.left + r.width / 2, cy = r.top + r.height / 2;
+        const opts = {bubbles: true, cancelable: true, view: window, button: 0, buttons: 1, clientX: cx, clientY: cy};
+        const pd = Object.assign({}, opts, {pointerId: 1, pointerType: 'mouse', isPrimary: true});
+        try {
+            el.dispatchEvent(new PointerEvent('pointerover', pd));
+            el.dispatchEvent(new PointerEvent('pointerdown', pd));
+        } catch (e) {}
+        el.dispatchEvent(new MouseEvent('mouseover', opts));
+        el.dispatchEvent(new MouseEvent('mousedown', opts));
+        if (typeof el.focus === 'function') el.focus();
+        const up = Object.assign({}, opts, {buttons: 0});
+        const pu = Object.assign({}, pd, {buttons: 0});
+        try { el.dispatchEvent(new PointerEvent('pointerup', pu)); } catch (e) {}
+        el.dispatchEvent(new MouseEvent('mouseup', up));
+        if (typeof el.click === 'function') el.click();
+        else el.dispatchEvent(new MouseEvent('click', up));
+    };
+    // 1. find the dropdown trigger: aria-label exact > contains > visible text
+    // Native <select> elements count as triggers too — a plain HTML select
+    // with aria-label/visible text was previously invisible to this matcher,
+    // so dropdown="Pilih hari" failed with "no dropdown trigger matches".
+    const triggers = Array.from(document.querySelectorAll(
+        '[role="combobox"],[role="listbox"],[aria-haspopup],button,[role="button"],select'));
+    let trigger = null, how = '';
+    for (const el of triggers) {
+        if (!vis(el)) continue;
+        if (lower(el.getAttribute('aria-label')) === lower(dropdown)) { trigger = el; how = 'aria-label'; break; }
+    }
+    if (!trigger) for (const el of triggers) {
+        if (!vis(el)) continue;
+        const a = lower(el.getAttribute('aria-label'));
+        if (a && a.includes(lower(dropdown))) { trigger = el; how = 'aria-label~'; break; }
+    }
+    if (!trigger) for (const el of triggers) {
+        if (!vis(el)) continue;
+        const t = lower((el.innerText || '').replace(/\s+/g, ' '));
+        if (t === lower(dropdown)) { trigger = el; how = 'text'; break; }
+    }
+    if (!trigger) return JSON.stringify({ok: false, why: 'no dropdown trigger matches ' + dropdown});
+    // Container→trigger retarget (aria-label often sits on the wrapper div).
+    const tRole = (trigger.getAttribute('role') || '').toLowerCase();
+    if (tRole === 'listbox' || tRole === 'menu' || tRole === 'group') {
+        const inner = trigger.querySelector('[role="button"],[role="combobox"],button,.dd-button,[tabindex]:not([tabindex="-1"])');
+        if (inner && trigger.contains(inner)) trigger = inner;
+    }
+    const before = (trigger.innerText || '').trim().replace(/\n/g, '|');
+    // Native <select>: no pointer dance, no popup to wait for — set the value
+    // directly and fire the same events a real user selection produces.
+    if (trigger.tagName === 'SELECT') {
+        const wanted = Array.from(trigger.options).find(
+            (o) => lower(o.text) === lower(option) || lower(o.value) === lower(option));
+        if (!wanted) {
+            return JSON.stringify({
+                ok: false, why: 'option not found on the select',
+                trigger_text: before,
+                options: Array.from(trigger.options).map((o) => o.text).filter(Boolean),
+            });
+        }
+        trigger.focus && trigger.focus();
+        trigger.value = wanted.value;
+        trigger.dispatchEvent(new Event('input', {bubbles: true}));
+        trigger.dispatchEvent(new Event('change', {bubbles: true}));
+        return JSON.stringify({
+            ok: true, opened_by: how + ':native-select',
+            trigger_text: before, options_visible: trigger.options.length,
+            selected: wanted.text, reopened: false,
+        });
+    }
+    return (async () => {
+        // 2. open it with the pointer sequence
+        fire(trigger);
+        const sleep = (ms) => new Promise(r => setTimeout(r, ms));
+        const countOpts = () => {
+            const boxes = Array.from(document.querySelectorAll(
+                '[role="listbox"],[role="menu"],.dropdown-menu,.dd'));
+            for (const lb of boxes) {
+                const vis = Array.from(lb.querySelectorAll(
+                    '[role="option"],[role="menuitem"],.dd-item,.option,.dropdown-item'
+                )).filter(o => {
+                    const s = getComputedStyle(o);
+                    const r = o.getBoundingClientRect();
+                    return s.display !== 'none' && s.visibility !== 'hidden' &&
+                           parseFloat(s.opacity) > 0.05 && r.width > 2 && r.height > 2;
+                });
+                if (vis.length) return vis.length;
+            }
+            return 0;
+        };
+        let n = 0;
+        for (let i = 0; i < 8; i++) { await sleep(100); n = countOpts(); if (n) break; }
+        let reopened = false;
+        if (!n) {
+            // Toggle-trap reopen: widgets that open on mousedown but close on
+            // the trailing click net to CLOSED after the full sequence. A
+            // mousedown-only pass re-opens without the closing toggle.
+            trigger.dispatchEvent(new MouseEvent('mousedown',
+                {bubbles: true, cancelable: true, view: window, button: 0, buttons: 1}));
+            reopened = true;
+            for (let i = 0; i < 8; i++) { await sleep(100); n = countOpts(); if (n) break; }
+        }
+        return JSON.stringify({ok: true, opened_by: how, trigger_text: before,
+                               options_visible: n, reopened: reopened});
+    })();
+}
+"""
+
+# Scan the live DOM for high-value ARIA widgets that are VISIBLE but missing
+# from the browser-use selector map (observed live: facebook.com/reg DOB
+# combobox triggers — role=combobox divs never enter the map, so the agent is
+# blind to the exact elements it needs to interact with).
+_WIDGET_SCAN_JS = r"""
+() => {
+    const vis = (el) => {
+        const s = getComputedStyle(el);
+        return s.display !== 'none' && s.visibility !== 'hidden' && parseFloat(s.opacity) > 0.05;
+    };
+    const PRIORITY = ['combobox', 'tab', 'switch', 'checkbox', 'radio', 'slider', 'menuitem', 'textbox', 'searchbox', 'spinbutton', 'button'];
+    const out = [];
+    const seen = new Set();
+    for (const role of PRIORITY) {
+        for (const el of document.querySelectorAll('[role="' + role + '"]')) {
+            if (seen.has(el)) continue;
+            const r = el.getBoundingClientRect();
+            if (!vis(el) || r.width < 2 || r.height < 2) continue;
+            seen.add(el);
+            out.push({role: role, tag: el.tagName,
+                      aria: (el.getAttribute('aria-label') || '').slice(0, 50),
+                      text: (el.innerText || '').trim().slice(0, 40).replace(/\n/g, '|'),
+                      x: Math.round(r.left + r.width / 2), y: Math.round(r.top + r.height / 2),
+                      expanded: el.getAttribute('aria-expanded')});
+            if (out.length >= 40) return JSON.stringify(out);
+        }
+    }
+    return JSON.stringify(out);
+}
+"""
+
+# Find visible elements by text/aria/role query (blind-spot-aware search).
+_FIND_ELEMENT_JS = r"""
+(payload) => {
+    const q = (payload.query || '').toLowerCase().trim();
+    const roleFilter = (payload.role || '').toLowerCase();
+    const vis = (el) => {
+        const s = getComputedStyle(el);
+        return s.display !== 'none' && s.visibility !== 'hidden' && parseFloat(s.opacity) > 0.05;
+    };
+    const out = [];
+    for (const el of document.querySelectorAll('button,a,input,select,textarea,[role],label,li')) {
+        const s = getComputedStyle(el);
+        if (!vis(el)) continue;
+        const r = el.getBoundingClientRect();
+        if (r.width < 2 || r.height < 2) continue;
+        const role = (el.getAttribute('role') || '').toLowerCase();
+        if (roleFilter && role !== roleFilter) continue;
+        const aria = el.getAttribute('aria-label') || '';
+        const ph = el.getAttribute('placeholder') || '';
+        const text = (el.innerText || el.value || '').trim();
+        if (!(text.toLowerCase().includes(q) || aria.toLowerCase().includes(q) || ph.toLowerCase().includes(q))) continue;
+        out.push({tag: el.tagName, role: el.getAttribute('role'),
+                  aria: aria.slice(0, 40), text: text.slice(0, 50).replace(/\n/g, '|'),
+                  x: Math.round(r.left + r.width / 2), y: Math.round(r.top + r.height / 2),
+                  expanded: el.getAttribute('aria-expanded')});
+        if (out.length >= 15) break;
+    }
+    return JSON.stringify(out);
+}
+"""
+
+
+# URL schemes the browser tools refuse up front. A data:/javascript:
+# navigation crashes the CDP session (observed live: the page ends as
+# "Empty Tab" with 0 elements and the session then hits 60s
+# Page.enable timeouts + WebSocket reconnects — the browser stays poisoned
+# for every later tool call in the task). file:// is rejected by the
+# browser_use security watchdog, but with an ugly low-level error; failing
+# fast with a clear, actionable message is kinder to the model.
+_BLOCKED_URL_SCHEMES = ("data:", "javascript:", "file:")
+
+
+def _scheme_rejection(url: str) -> Optional[ToolResult]:
+    """Return a clean failure ToolResult for unsafe URL schemes, else None."""
+    candidate = (url or "").strip().lower()
+    for scheme in _BLOCKED_URL_SCHEMES:
+        if candidate.startswith(scheme):
+            message = (
+                f"Cannot open {url}: '{scheme[:-1]}' URLs are not "
+                f"supported by the browser tools. Use a normal "
+                f"http(s):// page URL instead."
+            )
+            if scheme == "file:":
+                # Local-file viewing has a one-step recovery the model can
+                # run itself — tell it how instead of leaving it stuck.
+                message += (
+                    " To view or test a local file, serve its directory over "
+                    "HTTP and browse that: run "
+                    "`python3 -m http.server 8000 --directory <dir> &` in "
+                    "shell_exec, then browser_navigate to "
+                    "http://localhost:8000/<filename>."
+                )
+            return ToolResult(success=False, message=message)
+    return None
+
+
+class BrowserUseBrowser:
+    """Browser implementation using the browser_use library (BrowserSession + CDP).
+
+    Connects to an existing Chrome instance via CDP URL and exposes the same
+    interface as PlaywrightBrowser so it can be used as a drop-in replacement.
+    """
+
+    def __init__(self, cdp_url: str, heal_hook=None, display_size=None):
+        self.cdp_url = cdp_url
+        # Optional (width, height) of the display THIS browser renders onto.
+        # The sandbox layer knows its own Xvfb screen size (E2B: 1024x768,
+        # replit/local: SANDBOX_DISPLAY_SIZE) — forcing the wrong global size
+        # overflows the smaller display and skews the live VNC view.
+        self._display_size = display_size
+        # Optional async callable invoked when the CDP endpoint refuses
+        # connections (e.g. HTTP 502 from the in-VM proxy) — the signature of a
+        # DEAD browser process. The hook (provided by the sandbox layer) relaunches
+        # the browser inside its environment, so mid-task crashes self-heal
+        # instead of exhausting all retries. No-op when not provided.
+        self._heal_hook = heal_hook
+        self._session: Optional[BrowserSession] = None
+        # Cached actor Page for the currently focused tab.
+        # browser_use's session.get_current_page() constructs a NEW Page object
+        # (with _session_id=None) on EVERY call, so each operation would attach a
+        # fresh CDP session — leaking sessions and, critically, making any
+        # DOM.getDocument setup useless for the next Page object (root cause of
+        # the -32000 "Document needs to be requested first" failures).
+        self._cached_page = None
+        # Targets that already have the console-capture init script registered
+        # via Page.addScriptToEvaluateOnNewDocument (avoids duplicate scripts).
+        self._console_capture_targets: set = set()
+        # Signature (frozen tuple) of the interactive-element list from the
+        # most recent observation — used to tell the model whether a click
+        # VISIBLY changed the page (menu opened/closed, modal, new items),
+        # not just whether the URL changed. browser-use exposes the same
+        # signal implicitly via its DOM snapshot diffing.
+        self._last_elements_signature: Optional[tuple] = None
+        # New-element awareness (browser-use port): node identities seen in the
+        # last agent-visible observation. Elements absent from this set get a
+        # '*' prefix in the next observation's element list.
+        self._previous_node_keys: Optional[frozenset] = None
+
+    # ------------------------------------------------------------------
+    # Session lifecycle
+    # ------------------------------------------------------------------
+
+    async def _ensure_session(self) -> BrowserSession:
+        """Return a started BrowserSession, initialising it if necessary.
+
+        Uses generous retries because the first browser tool call may arrive
+        while Chrome is still warming up in the Replit sandbox.
+        """
+        if self._session is not None:
+            return self._session
+
+        # Generous retry budget: up to ~3 minutes total (15 attempts × up to 30 s each)
+        max_retries = 15
+        retry_delay = 2.0
+        last_error: Exception = RuntimeError("Unknown error")
+
+        for attempt in range(max_retries):
+            try:
+                session = BrowserSession(
+                    cdp_url=self.cdp_url,
+                    minimum_wait_page_load_time=0.5,
+                    wait_for_network_idle_page_load_time=2.0,
+                    highlight_elements=False,
+                    # Headful no-viewport mode: page content adapts to the REAL
+                    # window size (fitted to the Xvfb display), so the live VNC
+                    # view is pixel-identical to the agent's screenshots.
+                    # browser_use's default applies a virtual 1920x1080 viewport
+                    # via Emulation.setDeviceMetricsOverride — pages then render
+                    # at a resolution that doesn't match the visible window.
+                    headless=False,
+                    no_viewport=True,
+                )
+                await session.start()
+                self._session = session
+                logger.info("BrowserSession connected to CDP: %s", self.cdp_url)
+                # No window manager in the sandbox: force the window to cover
+                # the whole Xvfb display so the live VNC view matches the
+                # screenshots (--start-maximized is ignored without a WM).
+                # The display size comes from the sandbox (E2B is 1024x768,
+                # not the global 1280x1029!).
+                await fit_window_browser_use(
+                    session, "browser_use", display_size=self._display_size
+                )
+                # Tabs touched by earlier (viewport-mode) sessions still carry
+                # a stale 1920x1080 device-metrics override — clear it so every
+                # open page renders at the real window size.
+                await clear_viewport_overrides_browser_use(session, "browser_use")
+                return session
+            except Exception as exc:
+                last_error = exc
+                await self.cleanup()
+                if attempt == max_retries - 1:
+                    logger.error(
+                        "Failed to initialise BrowserSession after %d attempts: %s",
+                        max_retries,
+                        exc,
+                    )
+                    raise
+                # webSocketDebuggerUrl missing → Chrome not yet ready; back off longer
+                exc_str = str(exc)
+                if "webSocketDebuggerUrl" in exc_str:
+                    retry_delay = min(retry_delay * 2, 30.0)
+                    logger.warning(
+                        "Chrome CDP not ready (attempt %d/%d) — webSocketDebuggerUrl missing, "
+                        "Chrome may still be starting. Retrying in %.0fs…",
+                        attempt + 1, max_retries, retry_delay,
+                    )
+                elif ("502" in exc_str or "rejected" in exc_str.lower()) and self._heal_hook is not None:
+                    # HTTP 502 / WS rejected = the proxy is alive but the browser
+                    # process behind it is DEAD (crashed mid-task, OOM, etc.).
+                    # Plain retries can never fix that — ask the sandbox layer to
+                    # relaunch the browser, then reconnect.
+                    retry_delay = min(retry_delay * 1.5, 15.0)
+                    logger.warning(
+                        "CDP endpoint refuses connections (attempt %d/%d) — "
+                        "invoking browser heal hook to relaunch it: %s",
+                        attempt + 1, max_retries, exc_str[:120],
+                    )
+                    try:
+                        await asyncio.wait_for(self._heal_hook(), timeout=150.0)
+                    except Exception as heal_exc:
+                        logger.warning("Browser heal hook failed: %s", heal_exc)
+                else:
+                    retry_delay = min(retry_delay * 1.5, 15.0)
+                    logger.warning(
+                        "BrowserSession init failed (attempt %d/%d), retrying in %.1fs: %s",
+                        attempt + 1, max_retries, retry_delay, exc,
+                    )
+                await asyncio.sleep(retry_delay)
+
+        raise last_error
+
+    async def cleanup(self) -> None:
+        """Stop the browser session and release resources."""
+        if self._session is not None:
+            try:
+                await self._session.stop()
+            except Exception as exc:
+                logger.error("Error stopping BrowserSession: %s", exc)
+            finally:
+                self._session = None
+        self._cached_page = None
+        self._console_capture_targets.clear()
+
+    # ------------------------------------------------------------------
+    # Internal helpers
+    # ------------------------------------------------------------------
+
+    async def _get_current_page(self):
+        """Return the actor Page for the currently focused tab (CACHED per target).
+
+        browser_use's session.get_current_page() builds a new Page object on
+        every call — each starting with _session_id=None — so every caller
+        attached a brand-new CDP session (Target.attachToTarget). That leaked
+        sessions AND meant DOM.getDocument called on one Page never applied to
+        the next Page's session, reproducing CDP -32000 "Document needs to be
+        requested first" on every element.evaluate() based tool. Caching the
+        Page per target_id keeps ONE stable session per tab.
+
+        The cache is validated with a cheap liveness probe so a CDP websocket
+        reconnect (which clears all sessions) transparently re-attaches a
+        fresh session instead of hanging forever on a dead one.
+        """
+        session = await self._ensure_session()
+        current_target = getattr(session, "agent_focus_target_id", None)
+        if (
+            self._cached_page is not None
+            and current_target is not None
+            and getattr(self._cached_page, "_target_id", None) == current_target
+        ):
+            if await self._page_session_alive(self._cached_page):
+                return self._cached_page
+            logger.info("Cached page session is stale — re-attaching a fresh CDP session")
+            self._cached_page = None
+        # get_current_page()/new_page() go through the CDP websocket (possibly
+        # via a remote proxy). When the browser VM stalls, the underlying CDP
+        # send can hang for minutes with no internal timeout — bound them so
+        # the tool call fails fast and the agent's retry budget kicks in.
+        page = await self._call_with_deadline(session.get_current_page(), timeout=30.0)
+        if page is None:
+            page = await self._call_with_deadline(session.new_page(), timeout=30.0)
+        self._cached_page = page
+        return page
+
+    async def _page_session_alive(self, page) -> bool:
+        """Cheap liveness probe for a cached page's CDP session."""
+        try:
+            session_id = getattr(page, "_session_id", None)
+            if not session_id:
+                return False
+            await self._call_with_deadline(
+                page._client.send.Runtime.evaluate(
+                    params={"expression": "1", "returnByValue": True},
+                    session_id=session_id,
+                ),
+                timeout=3.0,
+            )
+            return True
+        except Exception:
+            return False
+
+    async def _get_cdp_session(self) -> CDPSession:
+        """Return the CDPSession for the currently focused tab."""
+        session = await self._ensure_session()
+        # Bounded: get_or_create_cdp_session can stall indefinitely on a hung
+        # CDP websocket (same class of hang as get_current_page).
+        return await self._call_with_deadline(
+            session.get_or_create_cdp_session(), timeout=30.0
+        )
+
+    async def _call_with_deadline(self, coro, timeout: float):
+        """Await `coro` with a hard deadline, ABANDONING it on timeout.
+
+        Unlike asyncio.wait_for(), this never waits for the cancelled task to
+        actually finish: cdp_use send futures do not react to cancellation
+        while the CDP websocket is reconnecting, so wait_for would hang
+        forever in its cancellation wait. asyncio.wait() leaves the timed-out
+        task running (it is garbage once the session is re-established).
+        """
+        task = asyncio.ensure_future(coro)
+        done, _pending = await asyncio.wait({task}, timeout=timeout)
+        if done:
+            return task.result()
+        task.cancel()  # best-effort cancel; do NOT await it
+        raise asyncio.TimeoutError()
+
+    async def _ensure_dom_document(self) -> None:
+        """Ensure the page's CDP session has an active DOM document.
+
+        Element.evaluate() resolves elements through
+        DOM.pushNodesByBackendIdsToFrontend, which fails with CDP error -32000
+        "Document needs to be requested first" unless DOM.getDocument has been
+        called on that session. Page._ensure_session() only enables the DOM
+        domain — it never requests the document — so every element.evaluate()
+        based tool (get_select_options / smart_select / verify_value / click
+        strategies 2–3) failed. Calling DOM.getDocument here is cheap and
+        idempotent, so we do it before each element interaction.
+        """
+        try:
+            page = await self._get_current_page()
+            session_id = await page._ensure_session()
+            await page._client.send.DOM.getDocument(
+                params={"depth": 1},
+                session_id=session_id,
+            )
+        except Exception as exc:
+            logger.debug("DOM.getDocument failed (non-fatal): %s", exc)
+
+    # Map from CSS icon-font class keywords → human-readable symbol.
+    # Covers Layui icons used by the leaftools.net calculator (and similar sites).
+    _ICON_CLASS_SYMBOLS: dict = {
+        "layui-icon-addition": "+",
+        "layui-icon-subtraction": "-",
+        "layui-icon-close": "×",
+        "layui-icon-search": "🔍",
+        "layui-icon-refresh": "↻",
+        "layui-icon-left": "←",
+        "layui-icon-right": "→",
+        "layui-icon-up": "↑",
+        "layui-icon-down": "↓",
+        "bi-backspace": "⌫",
+        "bi-plus-slash-minus": "±",
+        # generic fallbacks
+        "addition": "+",
+        "subtraction": "-",
+        "multiply": "×",
+        "divide": "÷",
+        "equals": "=",
+        "backspace": "⌫",
+        "clear": "C",
+    }
+
+    @staticmethod
+    def _get_node_hint(node) -> str:
+        """Return a human-readable hint for a node whose visible text is empty.
+
+        Priority order:
+        1. ``data-key`` / ``data-val`` attribute on the node itself (e.g. calculator buttons)
+        2. AX accessibility tree ``name`` field
+        3. CSS icon-font class keywords on the node's child <i> / <span> / <svg>
+        """
+        attrs: dict = getattr(node, "attributes", None) or {}
+
+        # 1. data-key / data-val (most reliable for widget buttons)
+        for attr in ("data-key", "data-val", "data-value"):
+            val = attrs.get(attr, "").strip()
+            if val:
+                return val
+
+        # 2. AX name
+        ax_node = getattr(node, "ax_node", None)
+        if ax_node:
+            ax_name = getattr(ax_node, "name", None) or ""
+            if ax_name.strip():
+                return ax_name.strip()
+
+        # 3. Icon-font class on child elements
+        children = getattr(node, "children_nodes", None) or []
+        for child in children:
+            child_tag = (getattr(child, "tag_name", "") or "").lower()
+            if child_tag not in ("i", "span", "em", "svg", "use"):
+                continue
+            child_attrs: dict = getattr(child, "attributes", None) or {}
+            class_str = child_attrs.get("class", "").lower()
+            for keyword, symbol in BrowserUseBrowser._ICON_CLASS_SYMBOLS.items():
+                if keyword in class_str:
+                    return symbol
+
+        return ""
+
+    @staticmethod
+    def _format_node(idx: int, node) -> str:
+        """Format a single selector-map node as 'idx:<tag>text</tag>'."""
+        tag = node.tag_name or "element"
+        text = node.get_meaningful_text_for_llm() if hasattr(node, "get_meaningful_text_for_llm") else ""
+
+        # Fallback: explicit HTML attributes (placeholder / aria-label / title)
+        if not text and node.attributes:
+            text = (
+                node.attributes.get("placeholder", "")
+                or node.attributes.get("aria-label", "")
+                or node.attributes.get("title", "")
+                or ""
+            )
+
+        # Fallback: data-key / AX name / icon-font class
+        if not text:
+            text = BrowserUseBrowser._get_node_hint(node)
+
+        if len(text) > 100:
+            text = text[:97] + "..."
+        return f"{idx}:<{tag}>{text}</{tag}>"
+
+    @staticmethod
+    def _format_selector_map(selector_map: dict) -> List[str]:
+        """Format a selector map dict into the standard index:<tag>text</tag> list."""
+        return [
+            BrowserUseBrowser._format_node(idx, node)
+            for idx, node in sorted(selector_map.items())
+        ]
+
+    def _mark_new_elements(self, selector_map: dict) -> tuple:
+        """Format the selector map, flagging elements NOT present in the previous
+        agent-visible observation with a leading '*' (browser-use port).
+
+        Identity is (session_id, backend_node_id) — stable across re-serialisations
+        even when index numbers shift. Returns (marked, unmarked, node_keys):
+        - marked:   element list with '*idx:...' lines for new elements
+        - unmarked: the plain list (what element-diff signatures must compare,
+                    otherwise marker decay would look like page changes)
+        - node_keys: identities of ALL nodes in this snapshot (full map, not
+                    truncated) — becomes the next observation's baseline
+        """
+        marked: List[str] = []
+        unmarked: List[str] = []
+        keys: set = set()
+        for idx, node in sorted(selector_map.items()):
+            line = BrowserUseBrowser._format_node(idx, node)
+            unmarked.append(line)
+            key = (
+                str(getattr(node, "session_id", "") or ""),
+                getattr(node, "backend_node_id", None) or id(node),
+            )
+            keys.add(key)
+            if self._previous_node_keys is not None and key not in self._previous_node_keys:
+                marked.append("*" + line)
+            else:
+                marked.append(line)
+        return marked, unmarked, frozenset(keys)
+
+    async def _get_interactive_elements(self) -> List[str]:
+        """Return a formatted list of interactive elements from the DOM selector map.
+
+        browser_use's get_selector_map() only returns populated data after
+        get_browser_state_summary() has been called (which triggers the DOM
+        serialisation event).  If the cached map is empty we trigger a fresh
+        state summary to ensure the selector map is populated.
+        """
+        try:
+            session = await self._ensure_session()
+            selector_map: dict[int, EnhancedDOMTreeNode] = await session.get_selector_map()
+
+            if not selector_map:
+                logger.debug(
+                    "Selector map is empty – triggering get_browser_state_summary to populate DOM cache"
+                )
+                state = await session.get_browser_state_summary(include_screenshot=False)
+                if state.dom_state is not None:
+                    selector_map = state.dom_state.selector_map or {}
+
+            return self._format_selector_map(selector_map)
+        except Exception as exc:
+            logger.warning("Failed to get interactive elements: %s", exc)
+            return []
+
+    async def _dispatch_mouse_event(
+        self,
+        event_type: str,
+        x: float,
+        y: float,
+        button: str = "none",
+        click_count: int = 0,
+    ) -> None:
+        """Send a raw CDP mouse event to the currently focused tab."""
+        cdp_sess = await self._get_cdp_session()
+        params: dict[str, Any] = {
+            "type": event_type,
+            "x": x,
+            "y": y,
+            "button": button,
+            "clickCount": click_count,
+        }
+        await cdp_sess.cdp_client.send.Input.dispatchMouseEvent(
+            params=params,
+            session_id=str(cdp_sess.session_id),
+        )
+
+    async def _get_element_center(self, element) -> Optional[tuple]:
+        """Get the click point of an element, choosing the LARGEST VISIBLE client
+        rect (browser-use port — their DOM.getContentQuads logic).
+
+        Wrapped inline elements (a link spanning two lines) have a bounding box
+        whose centre can land in empty space between the lines — a coordinate
+        click there hits nothing. getClientRects() returns each rendered
+        fragment; picking the largest viewport-visible fragment puts the click
+        on real pixels.
+
+        Returns (cx, cy) or None if the element has no rendered box.
+        Used as a fallback for CDP-direct click when Playwright click fails.
+        """
+        try:
+            raw = await element.evaluate("""() => {
+                const rects = [...this.getClientRects()].filter(r => r.width > 0 && r.height > 0);
+                if (!rects.length) return null;
+                const vw = window.innerWidth, vh = window.innerHeight;
+                let best = null, bestArea = -1;
+                for (const r of rects) {
+                    const x0 = Math.max(r.left, 0), y0 = Math.max(r.top, 0);
+                    const x1 = Math.min(r.right, vw), y1 = Math.min(r.bottom, vh);
+                    const area = Math.max(0, x1 - x0) * Math.max(0, y1 - y0);
+                    if (area > bestArea) { bestArea = area; best = {x: (x0 + x1) / 2, y: (y0 + y1) / 2}; }
+                }
+                if (best) return JSON.stringify(best);
+                const r = this.getBoundingClientRect();
+                return JSON.stringify({x: r.left + r.width / 2, y: r.top + r.height / 2});
+            }""")
+            if raw is None:
+                return None
+            import json as _json
+            coords = _json.loads(raw) if isinstance(raw, str) else raw
+            return (coords["x"], coords["y"])
+        except Exception:
+            return None
+
+    async def _cdp_click_at(self, x: float, y: float) -> None:
+        """Fire a full mousemove → mousedown → mouseup CDP sequence at (x, y)."""
+        await self._dispatch_mouse_event("mouseMoved", x, y)
+        await asyncio.sleep(0.04)
+        await self._dispatch_mouse_event("mousePressed", x, y, "left", 1)
+        await asyncio.sleep(0.06)
+        await self._dispatch_mouse_event("mouseReleased", x, y, "left", 1)
+
+    async def _click_with_fallback(self, element, index: int) -> tuple[bool, str]:
+        """Manus-style 3-strategy click chain.
+
+        Strategy 1 — Playwright element.click() (standard, handles scroll-into-view)
+        Strategy 2 — JS synthetic click + React-safe mouse events dispatched via evaluate()
+        Strategy 3 — raw CDP Input.dispatchMouseEvent at element's bounding-box center
+
+        Returns (success, strategy_used_or_error_message).
+        """
+        # ── Strategy 1: JS synthetic click with pointer + mouse events ──────
+        # PRIMARY since the browser_use actor click (Element.click(), CDP mouse
+        # events) was observed to silently no-op on some targets — it returned
+        # success while the page's onclick handler never fired. Direct JS event
+        # dispatch always reaches the right document: the same proven mechanism
+        # the select_* tools use.
+        # NOTE: the PointerEvent sequence is ESSENTIAL for modern React widgets
+        # (comboboxes/menus on facebook.com etc.) — they open on pointerdown,
+        # not mousedown. Verified live on the FB /reg DOB dropdowns.
+        try:
+            result = await element.evaluate("""() => {
+                try {
+                    this.scrollIntoView({block: 'center', inline: 'nearest'});
+                    const r = this.getBoundingClientRect();
+                    const cx = r.left + r.width / 2, cy = r.top + r.height / 2;
+                    const opts = {bubbles: true, cancelable: true, view: window,
+                                  button: 0, buttons: 1, clientX: cx, clientY: cy};
+                    const pd = Object.assign({}, opts, {pointerId: 1, pointerType: 'mouse', isPrimary: true});
+                    try {
+                        this.dispatchEvent(new PointerEvent('pointerover', pd));
+                        this.dispatchEvent(new PointerEvent('pointerdown', pd));
+                    } catch (e) {}
+                    this.dispatchEvent(new MouseEvent('mouseover', opts));
+                    this.dispatchEvent(new MouseEvent('mouseenter', opts));
+                    this.dispatchEvent(new MouseEvent('mousedown', opts));
+                    if (typeof this.focus === 'function') this.focus();
+                    const up = Object.assign({}, opts, {buttons: 0});
+                    const pu = Object.assign({}, pd, {buttons: 0});
+                    try { this.dispatchEvent(new PointerEvent('pointerup', pu)); } catch (e) {}
+                    this.dispatchEvent(new MouseEvent('mouseup', up));
+                    // Native HTMLElement.click() fires onclick AND performs
+                    // default actions (form submit, anchor navigation).
+                    if (typeof this.click === 'function') this.click();
+                    else this.dispatchEvent(new MouseEvent('click', up));
+                    return 'ok';
+                } catch(e) { return 'err:' + e.message; }
+            }""")
+            if result == "ok":
+                await asyncio.sleep(0.15)
+                return True, "js-synthetic"
+            logger.info("CLICK[%d] S1-js-synthetic returned '%s' → trying S2-actor-click", index, result)
+        except Exception as e1:
+            logger.info("CLICK[%d] S1-js-synthetic failed → trying S2-actor-click (%s)", index, type(e1).__name__)
+
+        # ── Strategy 2: browser_use actor click (CDP mouse events) ────────────
+        try:
+            # NOTE: browser_use's Element.click() signature is
+            # click(button, click_count, modifiers) — it takes NO timeout kwarg.
+            # Passing timeout= raised TypeError instantly, so this strategy
+            # always "failed" before it even attempted the click.
+            await element.click()
+            return True, "actor-click"
+        except Exception as e2:
+            logger.info("CLICK[%d] S2-actor-click failed → trying S3-cdp-coords (%s)", index, type(e2).__name__)
+
+        # ── Strategy 3: raw CDP at element center coordinates ─────────────────
+        try:
+            coords = await self._get_element_center(element)
+            if coords:
+                cx, cy = coords
+                await self._cdp_click_at(cx, cy)
+                await asyncio.sleep(0.15)
+                return True, f"cdp-coords({cx:.0f},{cy:.0f})"
+        except Exception as e3:
+            logger.info("CLICK[%d] S3-cdp-coords failed (%s)", index, type(e3).__name__)
+
+        logger.warning("CLICK[%d] ALL 3 strategies failed — element may be hidden/off-screen", index)
+        return False, "all 3 click strategies failed (js-synthetic, actor-click, cdp-coords)"
+
+    async def _wait_for_dom_settle(self, timeout: float = 0.6) -> None:
+        """Short wait for React/Vue state updates and lazy-loaded DOM changes to settle.
+
+        Mimics Manus.im behaviour of waiting after interactions before continuing.
+        Uses a MutationObserver race: resolves as soon as DOM stops mutating for
+        150 ms, or after `timeout` seconds whichever comes first.
+        """
+        try:
+            page = await self._get_current_page()
+            # Timeout-guarded: a dead CDP session makes the raw evaluate hang forever
+            # (Chrome silently drops messages addressed to unknown sessions).
+            try:
+                await self._call_with_deadline(
+                    page.evaluate(f"""() => new Promise(resolve => {{
+                let timer = null;
+                const reset = () => {{ clearTimeout(timer); timer = setTimeout(resolve, 150); }};
+                const obs = new MutationObserver(reset);
+                obs.observe(document.body, {{childList:true, subtree:true, attributes:true}});
+                reset();  // start immediately
+                setTimeout(() => {{ obs.disconnect(); resolve(); }}, {int(timeout*1000)});
+            }})"""),
+                    timeout=timeout + 5.0,
+                )
+            except asyncio.TimeoutError:
+                logger.debug("_wait_for_dom_settle timed out (session may be reconnecting)")
+        except Exception:
+            await asyncio.sleep(0.3)
+
+    async def _wait_for_network_idle(self, timeout: float = 2.0) -> None:
+        """Manus.im 'Network Idle Detection' — polls until no new resources for 300 ms.
+
+        Uses the browser's Resource Timing API to detect in-flight fetch/XHR requests.
+        Resolves when `performance.getEntriesByType('resource').length` stops growing
+        for a full 300 ms interval, or when `timeout` seconds elapses.
+        """
+        try:
+            page = await self._get_current_page()
+            try:
+                await self._call_with_deadline(
+                    page.evaluate(f"""() => new Promise(resolve => {{
+                const deadline = Date.now() + {int(timeout * 1000)};
+                let lastCount = performance.getEntriesByType('resource').length;
+                const check = () => {{
+                    const count = performance.getEntriesByType('resource').length;
+                    if (count === lastCount || Date.now() >= deadline) {{
+                        resolve(); return;
+                    }}
+                    lastCount = count;
+                    setTimeout(check, 300);
+                }};
+                setTimeout(check, 300);
+            }})"""),
+                    timeout=timeout + 5.0,
+                )
+            except asyncio.TimeoutError:
+                logger.debug("_wait_for_network_idle timed out (session may be reconnecting)")
+        except Exception:
+            await asyncio.sleep(0.5)
+
+    async def wait_for_network_idle(self, timeout: float = 5.0) -> ToolResult:
+        """Public wrapper around _wait_for_network_idle for use as a browser tool."""
+        try:
+            await self._wait_for_network_idle(timeout=timeout)
+            return ToolResult(success=True, message=f"Network idle confirmed (waited up to {timeout}s)")
+        except Exception as exc:
+            return ToolResult(success=False, message=f"wait_for_network_idle failed: {exc}")
+
+    async def _wait_for_page_ready(self, timeout: float = 10.0) -> None:
+        """Poll document.readyState until 'complete' on the current tab.
+
+        Survives mid-navigation execution-context swaps (each failed evaluate is
+        simply retried). Fixes the "Empty DOM tree" race where browser_view()
+        right after browser_back()/browser_forward() serialised the DOM while
+        the navigation was still in flight.
+        """
+        deadline = asyncio.get_event_loop().time() + timeout
+        while asyncio.get_event_loop().time() < deadline:
+            try:
+                page = await self._get_current_page()
+                state = await self._call_with_deadline(
+                    page.evaluate("() => document.readyState"), timeout=3.0,
+                )
+                if state and "complete" in str(state):
+                    return
+            except Exception:
+                pass  # context destroyed mid-navigation — keep polling
+            await asyncio.sleep(0.15)
+
+    # ------------------------------------------------------------------
+    # Console capture (browser_console_view support)
+    # ------------------------------------------------------------------
+
+    # Plain script source for Page.addScriptToEvaluateOnNewDocument — runs
+    # BEFORE page scripts on every future navigation of the tab, so console
+    # output is captured from the very first line after a page load.
+    _CONSOLE_CAPTURE_NEW_DOC_SOURCE = """
+(function () {
+    if (window.__consoleLogs) { return; }
+    try {
+        window.__consoleLogs = [];
+        var __fmt = function (args) {
+            var out = [];
+            for (var i = 0; i < args.length; i++) {
+                var a = args[i];
+                try {
+                    if (typeof a === 'string') { out.push(a); }
+                    else if (a instanceof Error) { out.push(a.message); }
+                    else { out.push(JSON.stringify(a)); }
+                } catch (e) { out.push(String(a)); }
+            }
+            return out.join(' ');
+        };
+        ['log', 'info', 'warn', 'error', 'debug'].forEach(function (level) {
+            var orig = console[level] ? console[level].bind(console) : null;
+            console[level] = function () {
+                try {
+                    window.__consoleLogs.push('[' + level.toUpperCase() + '] ' + __fmt(arguments));
+                    if (window.__consoleLogs.length > 1000) { window.__consoleLogs.shift(); }
+                } catch (e) {}
+                if (orig) { orig.apply(null, arguments); }
+            };
+        });
+        window.addEventListener('error', function (e) {
+            try {
+                window.__consoleLogs.push('[ERROR] ' + e.message + ' @ ' + (e.filename || '') + ':' + (e.lineno || 0));
+                if (window.__consoleLogs.length > 1000) { window.__consoleLogs.shift(); }
+            } catch (err) {}
+        });
+    } catch (e) {}
+})();
+"""
+
+    # Arrow-function installer for the CURRENT document (idempotent).
+    _CONSOLE_CAPTURE_INSTALL_JS = """() => {
+    if (window.__consoleLogs) { return 'already-installed'; }
+    try {
+        window.__consoleLogs = [];
+        const __fmt = (args) => Array.from(args).map(a => {
+            try {
+                if (typeof a === 'string') { return a; }
+                if (a instanceof Error) { return a.message; }
+                return JSON.stringify(a);
+            } catch (e) { return String(a); }
+        }).join(' ');
+        ['log', 'info', 'warn', 'error', 'debug'].forEach(level => {
+            const orig = console[level] ? console[level].bind(console) : null;
+            console[level] = function () {
+                try {
+                    window.__consoleLogs.push('[' + level.toUpperCase() + '] ' + __fmt(arguments));
+                    if (window.__consoleLogs.length > 1000) { window.__consoleLogs.shift(); }
+                } catch (e) {}
+                if (orig) { orig.apply(null, arguments); }
+            };
+        });
+        window.addEventListener('error', e => {
+            try {
+                window.__consoleLogs.push('[ERROR] ' + e.message + ' @ ' + (e.filename || '') + ':' + (e.lineno || 0));
+                if (window.__consoleLogs.length > 1000) { window.__consoleLogs.shift(); }
+            } catch (err) {}
+        });
+        return 'installed';
+    } catch (e) { return 'err:' + e.message; }
+}"""
+
+    async def _ensure_console_capture(self) -> None:
+        """Install the console-capture shim into the current tab.
+
+        Two layers:
+        1. Page.addScriptToEvaluateOnNewDocument — captures console output on
+           every FUTURE navigation of this tab (registered once per target).
+        2. page.evaluate installer — captures output in the CURRENT document.
+
+        Idempotent: the shim itself no-ops when already installed.
+        """
+        try:
+            page = await self._get_current_page()
+            session_id = await page._ensure_session()
+            target_id = getattr(page, "_target_id", None)
+            if target_id and target_id not in self._console_capture_targets:
+                try:
+                    await self._call_with_deadline(
+                        page._client.send.Page.addScriptToEvaluateOnNewDocument(
+                            params={"source": self._CONSOLE_CAPTURE_NEW_DOC_SOURCE},
+                            session_id=session_id,
+                        ),
+                        timeout=5.0,
+                    )
+                    self._console_capture_targets.add(target_id)
+                except Exception as exc:
+                    logger.debug("addScriptToEvaluateOnNewDocument failed: %s", exc)
+            try:
+                await self._call_with_deadline(
+                    page.evaluate(self._CONSOLE_CAPTURE_INSTALL_JS), timeout=5.0
+                )
+            except Exception as exc:
+                logger.debug("Console capture install evaluate failed: %s", exc)
+        except Exception as exc:
+            logger.debug("_ensure_console_capture failed: %s", exc)
+
+    async def wait_for_element(
+        self,
+        selector: Optional[str] = None,
+        text: Optional[str] = None,
+        timeout: float = 10.0,
+    ) -> ToolResult:
+        """Wait until a DOM element matching a CSS selector or containing specific text
+        becomes visible on the page.  Returns the first matching element's tag + text
+        so the agent knows what appeared.
+
+        Manus.im 'Element-Based Waiting' — ensures the agent doesn't act on stale DOM.
+        Use after: navigating, clicking a button that opens a modal, submitting a form,
+        or any action where you expect new content to appear before proceeding.
+
+        Args:
+            selector: CSS selector to wait for (e.g. '.modal', '#success-msg', '[role="dialog"]').
+            text:     Visible text to wait for (e.g. "Welcome", "Order confirmed").
+            timeout:  Maximum wait time in seconds (default 10).
+        """
+        try:
+            page = await self._get_current_page()
+            import json as _json
+            raw = await page.evaluate(f"""(args) => new Promise(resolve => {{
+                const [selector, text, timeout] = args;
+                const deadline = Date.now() + timeout * 1000;
+                const check = () => {{
+                    // CSS selector match
+                    if (selector) {{
+                        try {{
+                            const el = document.querySelector(selector);
+                            if (el) {{
+                                const r = el.getBoundingClientRect();
+                                const s = window.getComputedStyle(el);
+                                const visible = r.width > 0 && r.height > 0
+                                    && s.display !== 'none' && s.visibility !== 'hidden';
+                                if (visible) {{
+                                    resolve(JSON.stringify({{found:true, method:'selector',
+                                        tag:el.tagName.toLowerCase(),
+                                        text:(el.innerText||el.textContent||'').trim().substring(0,80)
+                                    }}));
+                                    return;
+                                }}
+                            }}
+                        }} catch(e) {{}}
+                    }}
+                    // Text content match (visible text nodes only)
+                    if (text) {{
+                        const lower = text.toLowerCase();
+                        const walker = document.createTreeWalker(
+                            document.body, NodeFilter.SHOW_TEXT, null, false
+                        );
+                        let node;
+                        while (node = walker.nextNode()) {{
+                            const t = (node.textContent || '').trim();
+                            if (!t) continue;
+                            const parent = node.parentElement;
+                            if (!parent) continue;
+                            const s = window.getComputedStyle(parent);
+                            if (s.display === 'none' || s.visibility === 'hidden') continue;
+                            if (t.toLowerCase().includes(lower)) {{
+                                resolve(JSON.stringify({{found:true, method:'text',
+                                    tag:parent.tagName.toLowerCase(),
+                                    text:t.substring(0,80)
+                                }}));
+                                return;
+                            }}
+                        }}
+                    }}
+                    if (Date.now() >= deadline) {{
+                        resolve(JSON.stringify({{found:false}}));
+                        return;
+                    }}
+                    setTimeout(check, 200);
+                }};
+                check();
+            }})""", [selector, text, timeout])
+            res = _json.loads(raw) if isinstance(raw, str) else raw
+            if res.get("found"):
+                tag = res.get("tag", "element")
+                found_text = res.get("text", "")
+                method = res.get("method", "")
+                return ToolResult(
+                    success=True,
+                    message=f"Element found [{method}]: <{tag}>{found_text[:60]}</{tag}>",
+                    data=res,
+                )
+            target = selector or f'text="{text}"'
+            return ToolResult(
+                success=False,
+                message=f"Element '{target}' did not appear within {timeout}s. Page may still be loading — try browser_view() to inspect current state.",
+            )
+        except Exception as exc:
+            return ToolResult(success=False, message=f"wait_for_element failed: {exc}")
+
+    async def upload_file(self, index: int, file_path: str) -> ToolResult:
+        """Upload a file to an <input type='file'> element via CDP setFileInputFiles.
+
+        Manus.im 'Integrated File Upload' — attaches a local sandbox file to any
+        file upload form field without opening a system file picker.
+
+        Args:
+            index:     DOM index of the <input type='file'> element.
+            file_path: Absolute path to the file inside the sandbox, under the
+                home directory described in your sandbox environment
+                (e.g. /home/user/photo.jpg on an E2B sandbox,
+                /home/runner/photo.jpg on a shared Replit sandbox).
+        """
+        import os
+        import json as _json
+        try:
+            # NOTE (provider consistency): the path must exist on the
+            # filesystem of the machine running CHROME, not the backend host.
+            # On the shared Replit sandbox both are the same container; on an
+            # E2B microVM the file lives INSIDE the VM where Chrome also runs
+            # — a backend-side os.path.isfile() gate would wrongly reject
+            # every E2B upload. So we attempt the CDP upload and let Chrome
+            # (which shares the sandbox filesystem on every provider) be the
+            # source of truth, then VERIFY the file actually attached.
+            session = await self._ensure_session()
+            node = await session.get_dom_element_by_index(index)
+            if node is None:
+                return ToolResult(success=False, message=f"Cannot find element with index {index}")
+
+            await self._ensure_dom_document()
+            page = await self._get_current_page()
+            element = await page.get_element(node.backend_node_id)
+
+            # Verify it is an <input type="file">
+            tag_check = await element.evaluate(
+                "() => JSON.stringify({tag:this.tagName, type:(this.type||'').toLowerCase()})"
+            )
+            info = _json.loads(tag_check) if isinstance(tag_check, str) else tag_check
+            if info.get("tag", "").upper() != "INPUT" or info.get("type") != "file":
+                return ToolResult(
+                    success=False,
+                    message=(
+                        f"Element {index} is <{info.get('tag','?')} type='{info.get('type','?')}'>, "
+                        f"not an <input type='file'>."
+                    ),
+                )
+
+            # Use CDP DOM.setFileInputFiles directly — cdp_use's Element has no
+            # Playwright-style set_input_files(); the raw CDP command is the
+            # reliable way to attach a local file to the input (works on every
+            # cdp_use version, unlike element.set_input_files which raised
+            # "'Element' object has no attribute 'set_input_files'").
+            cdp_sess = await self._get_cdp_session()
+            try:
+                await cdp_sess.cdp_client.send.DOM.setFileInputFiles(
+                    params={"files": [file_path], "backendNodeId": node.backend_node_id},
+                    session_id=str(cdp_sess.session_id),
+                )
+            except Exception as set_exc:
+                return ToolResult(
+                    success=False,
+                    message=(
+                        f"File not found or unreadable by the browser: {file_path} "
+                        f"({set_exc}). List your home directory with "
+                        "shell_exec('ls ~') to find the correct absolute path, "
+                        "then retry."
+                    ),
+                )
+            await self._wait_for_dom_settle()
+            file_name = os.path.basename(file_path)
+            # Post-verify: the input must actually hold the file. Chrome
+            # SILENTLY accepts a dangling path (files.length becomes 1 with a
+            # 0-byte entry) on both providers, so length alone proves nothing
+            # — require a non-zero size as well. (An intentionally-empty
+            # upload file is not a real use case; treat it as missing.)
+            try:
+                attached = await element.evaluate(
+                    "() => JSON.stringify({n: this.files.length, "
+                    "name: this.files.length ? this.files[0].name : null, "
+                    "size: this.files.length ? this.files[0].size : 0})"
+                )
+                att = _json.loads(attached) if isinstance(attached, str) else (attached or {})
+                if not att.get("n") or not att.get("size"):
+                    return ToolResult(
+                        success=False,
+                        message=(
+                            f"Browser did not attach {file_path} to element {index} "
+                            "(no file content was attached — the path is likely "
+                            "missing or the file is empty). Check the path exists "
+                            "and is non-empty in your sandbox home "
+                            "(shell_exec('ls -la ~')) and retry."
+                        ),
+                    )
+                return ToolResult(
+                    success=True,
+                    message=(
+                        f"File '{att.get('name') or file_name}' uploaded to element "
+                        f"{index} ({att.get('size', 0)} bytes attached)."
+                    ),
+                    data={
+                        "file_path": file_path,
+                        "file_name": att.get("name") or file_name,
+                        "size": att.get("size", 0),
+                    },
+                )
+            except Exception:
+                # Verification probe failed — the CDP call itself succeeded.
+                return ToolResult(
+                    success=True,
+                    message=f"File '{file_name}' uploaded to element {index}.",
+                    data={"file_path": file_path, "file_name": file_name},
+                )
+        except Exception as exc:
+            return ToolResult(success=False, message=f"upload_file failed: {exc}")
+
+    # ------------------------------------------------------------------
+    # Browser Protocol implementation
+    # ------------------------------------------------------------------
+
+    # Maximum interactive elements returned per browser_view / navigate call.
+    # Keeps LLM context payload manageable for complex pages (e.g. Facebook).
+    _MAX_INTERACTIVE_ELEMENTS = 300
+
+    async def _observe_page_state(self, session, include_content: bool) -> dict:
+        """Serialise the page exactly the way the LLM "sees" it after an action.
+
+        This is the post-action awareness payload: current URL, page title and
+        the fresh interactive elements (indices may have shifted after a click
+        or navigation). When ``include_content`` is True the DOM text
+        representation is included too — used when the action changed the page
+        (navigation / submit), so the agent reads what a human would read.
+        Retries once on an empty snapshot (navigation race), same as view_page.
+        """
+        state = await session.get_browser_state_summary(include_screenshot=False)
+        if include_content:
+            repr_ = (state.dom_state.llm_representation() if state.dom_state is not None else "") or ""
+            if not repr_.strip():
+                await self._wait_for_page_ready(timeout=8.0)
+                await self._wait_for_dom_settle(timeout=1.0)
+                state = await session.get_browser_state_summary(include_screenshot=False)
+        selector_map = (state.dom_state.selector_map if state.dom_state is not None else None) or {}
+        # New-element awareness: mark elements not seen in the previous
+        # agent-visible observation with '*'. Both baselines (element
+        # signature for page_changed detection, node keys for new-marking)
+        # update HERE so every consumer of this payload stays consistent.
+        marked, unmarked, node_keys = self._mark_new_elements(selector_map)
+        elements = marked
+        if len(elements) > self._MAX_INTERACTIVE_ELEMENTS:
+            elements = elements[: self._MAX_INTERACTIVE_ELEMENTS]
+            elements.append(
+                f"... (truncated, showing first {self._MAX_INTERACTIVE_ELEMENTS} of {len(selector_map)} elements)"
+            )
+        unmarked_sig = unmarked[: self._MAX_INTERACTIVE_ELEMENTS]
+        self._last_elements_signature = tuple(unmarked_sig)
+        self._previous_node_keys = node_keys
+        content = ""
+        if include_content and state.dom_state is not None:
+            content = state.dom_state.llm_representation() or ""
+        observed = {
+            "url": state.url or "",
+            "title": state.title or "",
+            "interactive_elements": elements,
+            "content": content,
+        }
+        # Chrome updates the tab's title asynchronously after load — right
+        # after a navigation (especially on the fresh session a restart
+        # creates) the CDP target info can still carry the URL as the title
+        # (with or without the scheme). document.title is the authoritative
+        # source, so prefer it whenever it is set.
+        dom_title = await self._read_dom_title()
+        if dom_title:
+            observed["title"] = dom_title
+        # ARIA widget scan — surfaces VISIBLE interactive widgets that the
+        # selector map misses (combobox triggers etc.), with locator hints.
+        try:
+            widgets = await self._scan_aria_widgets()
+            if widgets:
+                observed["aria_widgets"] = widgets
+        except Exception:
+            pass
+        return observed
+
+    async def _read_dom_title(self) -> str:
+        """document.title read from the live DOM (best-effort, "" on failure).
+
+        Chrome updates the tab title asynchronously after a load — the CDP
+        target info used by browser_use can lag behind (returning the URL or
+        an empty string right after a navigation / fresh session). The DOM
+        is the authoritative source.
+        """
+        try:
+            page = await self._get_current_page()
+            title = await self._call_with_deadline(
+                page.evaluate("() => document.title"), timeout=5.0,
+            )
+            return str(title or "").strip()
+        except Exception:
+            return ""
+
+    async def view_page(self) -> ToolResult:
+        """Return the current page content and interactive elements."""
+        try:
+            session = await self._ensure_session()
+            state = await session.get_browser_state_summary(include_screenshot=False)
+
+            content = ""
+            interactive_elements: List[str] = []
+            unmarked: List[str] = []
+            node_keys: frozenset = frozenset()
+            selector_map: dict = {}
+            if state.dom_state is not None:
+                content = state.dom_state.llm_representation()
+                selector_map = state.dom_state.selector_map or {}
+                interactive_elements, unmarked, node_keys = self._mark_new_elements(selector_map)
+
+            # Retry once when the DOM serialisation came back empty — this
+            # happens when the snapshot races an in-flight navigation (e.g.
+            # right after browser_back/forward). Wait for the page to settle,
+            # then re-serialise instead of reporting "Empty DOM tree".
+            if (not content or not content.strip()) and not interactive_elements:
+                logger.info("view_page: empty DOM snapshot — waiting for page ready and retrying once")
+                await self._wait_for_page_ready(timeout=8.0)
+                await self._wait_for_dom_settle(timeout=1.0)
+                state = await session.get_browser_state_summary(include_screenshot=False)
+                if state.dom_state is not None:
+                    content = state.dom_state.llm_representation()
+                    selector_map = state.dom_state.selector_map or {}
+                    interactive_elements, unmarked, node_keys = self._mark_new_elements(selector_map)
+
+            if len(interactive_elements) > self._MAX_INTERACTIVE_ELEMENTS:
+                interactive_elements = interactive_elements[:self._MAX_INTERACTIVE_ELEMENTS]
+                interactive_elements.append(
+                    f"... (truncated, showing first {self._MAX_INTERACTIVE_ELEMENTS} of {len(selector_map)} elements — use coordinates or scroll to reach others)"
+                )
+
+            # Element-diff baselines: browser_view is the agent's canonical
+            # observation, so the next action compares against THIS state
+            # (set AFTER the empty-snapshot retry so the baseline is final).
+            # Signature uses the UNMARKED list — '*' markers decay between
+            # observations and must never look like page changes.
+            self._last_elements_signature = tuple(
+                unmarked[: self._MAX_INTERACTIVE_ELEMENTS]
+            )
+            self._previous_node_keys = node_keys
+
+            # Build tab summary so the agent always knows which tabs are open
+            # and can use browser_switch_tab instead of browser_navigate
+            tabs_info = []
+            try:
+                pages = await session.get_pages()
+                current_page = await session.get_current_page()
+                current_target_id = current_page._target_id if current_page else None
+                for i, page in enumerate(pages):
+                    try:
+                        url = await page.get_url()
+                    except Exception:
+                        url = "unknown"
+                    tabs_info.append({
+                        "tab": i + 1,
+                        "url": url,
+                        "active": page._target_id == current_target_id,
+                    })
+            except Exception:
+                pass
+
+            # Page title — same async-lag guard as _observe_page_state:
+            # the DOM's document.title wins whenever it is set.
+            title = state.title or ""
+            page_url = state.url or ""
+            dom_title = await self._read_dom_title()
+            if dom_title:
+                title = dom_title
+
+            return ToolResult(
+                success=True,
+                data={
+                    "open_tabs": tabs_info,
+                    "title": title,
+                    "url": page_url,
+                    "interactive_elements": interactive_elements,
+                    "aria_widgets": await self._scan_aria_widgets(),
+                    "content": content,
+                },
+            )
+        except Exception as exc:
+            return ToolResult(success=False, message=f"Failed to view page: {exc}")
+
+    async def navigate(self, url: str) -> ToolResult:
+        """Navigate to the given URL."""
+        blocked = _scheme_rejection(url)
+        if blocked is not None:
+            return blocked
+        try:
+            logger.info("NAVIGATE → %s", url)
+            session = await self._ensure_session()
+            # Register the console-capture init script on this tab BEFORE
+            # navigating so browser_console_view() has data from page load.
+            await self._ensure_console_capture()
+            await session.navigate_to(url)
+            await self._wait_for_page_ready()
+            # Return the full observed state (url/title/elements/content) so the
+            # agent immediately reads the page it landed on — no extra
+            # browser_view round-trip, no acting blind on an unfamiliar site.
+            # _observe_page_state also resets both diff baselines to THIS page
+            # (element signature + seen-node keys), so the next action's
+            # change detection compares against the right baseline.
+            observed = await self._observe_page_state(session, include_content=True)
+            # Echo the FINAL URL explicitly + cross-domain redirect warning
+            # (same contract as the Playwright backend): the agent and the
+            # evidence register must know when the browser landed somewhere
+            # other than the requested domain.
+            observed["final_url"] = observed.get("url") or ""
+            try:
+                from urllib.parse import urlparse as _up
+                _req_host = (_up(url).hostname or "").lower()
+                _fin_host = (_up(observed["final_url"]).hostname or "").lower()
+                if _req_host and _fin_host and _req_host != _fin_host:
+                    observed["redirected"] = True
+                    observed["redirect_warning"] = (
+                        f"Target URL differs from the URL actually opened "
+                        f"(requested {url}, landed on {observed['final_url']}). "
+                        f"Verify this redirect is official before using the "
+                        f"page's data as evidence."
+                    )
+            except Exception:
+                pass
+            return ToolResult(success=True, data=observed)
+        except Exception as exc:
+            return ToolResult(success=False, message=f"Failed to navigate to {url}: {exc}")
+
+    async def restart(self, url: str) -> ToolResult:
+        """Restart the browser session and navigate to the given URL."""
+        await self.cleanup()
+        return await self.navigate(url)
+
+    async def click(
+        self,
+        index: Optional[int] = None,
+        coordinate_x: Optional[float] = None,
+        coordinate_y: Optional[float] = None,
+        text: Optional[str] = None,
+    ) -> ToolResult:
+        """Click an element by DOM index, by screen coordinates, or by text locator.
+
+        Index clicks use the Manus-style 3-strategy fallback chain (now with
+        full PointerEvent sequences — required by modern React widgets).
+        Locator clicks (text=...) find a VISIBLE element by aria-label /
+        placeholder / visible text and fire the same pointer sequence in-page —
+        this reaches elements that are missing from the interactive-elements
+        list (e.g. role=combobox dropdown triggers on facebook.com).
+        """
+        try:
+            if text is not None and str(text).strip():
+                return await self._click_by_locator(str(text).strip())
+
+            if coordinate_x is not None and coordinate_y is not None:
+                await self._cdp_click_at(coordinate_x, coordinate_y)
+                await self._wait_for_dom_settle()
+                return ToolResult(success=True)
+
+            elif index is not None:
+                session = await self._ensure_session()
+                node = await session.get_dom_element_by_index(index)
+                if node is None:
+                    return ToolResult(
+                        success=False,
+                        message=f"Cannot find interactive element with index {index}",
+                    )
+                # Ensure the page session has requested the DOM document —
+                # otherwise element.evaluate() fails with CDP -32000
+                # "Document needs to be requested first".
+                await self._ensure_dom_document()
+                page = await self._get_current_page()
+                element = await page.get_element(node.backend_node_id)
+
+                # Smart redirect: if clicking a native <select>, block the click and
+                # return options so the AI uses browser_select_by_text directly.
+                # This avoids the open-dropdown → view → click-option loop entirely.
+                try:
+                    import json as _json_click
+                    probe_js = (
+                        "() => {"
+                        "  if (this.tagName !== 'SELECT') return null;"
+                        "  return JSON.stringify(Array.from(this.options).map((o,i)=>({i,t:o.text.trim()})));"
+                        "}"
+                    )
+                    probe_raw = await element.evaluate(probe_js)
+                    if probe_raw is not None:
+                        opts = _json_click.loads(probe_raw) if isinstance(probe_raw, str) else probe_raw
+                        preview = ", ".join(f"{o['i']}:{o['t']}" for o in opts[:8])
+                        more = f" … +{len(opts)-8} more" if len(opts) > 8 else ""
+                        return ToolResult(
+                            success=False,
+                            message=(
+                                f"Element {index} is a native <select> — do NOT click it. "
+                                f"Use browser_select_by_text({index}, 'your value') to select directly. "
+                                f"Available options: [{preview}{more}]"
+                            ),
+                        )
+                except Exception:
+                    pass  # Not a select or probe failed — fall through to click chain
+
+                # ── Manus-style 3-strategy fallback chain ────────────────────
+                try:
+                    pre_url = await page.get_url()
+                except Exception:
+                    pre_url = ""
+                ok, strategy = await self._click_with_fallback(element, index)
+                if ok:
+                    logger.info("CLICK[%d] ✓ via [%s]", index, strategy)
+                    await self._wait_for_dom_settle()
+                    # Post-action awareness: show the agent what the click led
+                    # to (URL/title/fresh elements; full text when it navigated).
+                    try:
+                        session2 = await self._ensure_session()
+                        now_url = ""
+                        try:
+                            now_url = await (await self._get_current_page()).get_url()
+                        except Exception:
+                            pass
+                        navigated = bool(now_url) and now_url != pre_url
+                        prev_sig = self._last_elements_signature
+                        observed = await self._observe_page_state(
+                            session2, include_content=navigated
+                        )
+                        # Element-diff awareness: menus/modals change the
+                        # element list WITHOUT changing the URL. Telling the
+                        # model "no visible change" stops blind re-clicks on
+                        # toggle widgets (observed live: 10 identical clicks
+                        # on a dropdown trigger that toggled itself shut).
+                        # NOTE: _observe_page_state already refreshed the
+                        # signature baseline — compare against the snapshot
+                        # taken BEFORE the action.
+                        elements_changed = (
+                            prev_sig is not None
+                            and self._last_elements_signature is not None
+                            and self._last_elements_signature != prev_sig
+                        )
+                        observed["page_changed"] = navigated or elements_changed
+                        if not navigated and not elements_changed:
+                            observed["note"] = (
+                                "No visible change after this click. The element "
+                                "may have toggled something back shut, or it "
+                                "needs a different interaction. Do NOT repeat "
+                                "the same click — re-observe or change strategy "
+                                "(e.g. browser_smart_select for dropdowns)."
+                            )
+                        return ToolResult(
+                            success=True,
+                            message=f"Clicked element {index} via [{strategy}]",
+                            data=observed,
+                        )
+                    except Exception as obs_exc:
+                        logger.debug("post-click observe failed: %s", obs_exc)
+                        return ToolResult(
+                            success=True,
+                            message=f"Clicked element {index} via [{strategy}]",
+                        )
+                logger.warning("CLICK[%d] ✗ all strategies exhausted", index)
+                return ToolResult(success=False, message=f"Click failed for element {index}: {strategy}")
+
+            return ToolResult(success=True)
+        except Exception as exc:
+            return ToolResult(success=False, message=f"Failed to click element: {exc}")
+
+    async def _click_by_locator(self, text: str) -> ToolResult:
+        """Click a visible element located by aria-label / placeholder / text.
+
+        Covers the selector-map blind spots (elements the browser-use
+        serializer never exposes) and elements beyond the 300-element list
+        cap. Fires the same pointer+mouse event sequence as index clicks,
+        then returns the post-action page observation.
+        """
+        import json as _json
+
+        try:
+            page = await self._get_current_page()
+            try:
+                pre_url = await page.get_url()
+            except Exception:
+                pre_url = ""
+
+            raw = await self._call_with_deadline(
+                page.evaluate(_LOCATOR_CLICK_JS, text), timeout=30.0
+            )
+            res = _json.loads(raw) if isinstance(raw, str) else (raw or {})
+
+            if not res.get("ok"):
+                matches = res.get("matches") or []
+                hint = (
+                    f" Closest matches: {_json.dumps(matches)[:300]}"
+                    if matches
+                    else ""
+                )
+                return ToolResult(
+                    success=False,
+                    message=(
+                        f"browser_click(text=...) failed: {res.get('why')}.{hint} "
+                        f"Try browser_find_element('{text}') to see exact matches, "
+                        f"or use coordinates."
+                    ),
+                )
+
+            await self._wait_for_dom_settle()
+
+            # Post-action awareness — same payload shape as index clicks.
+            try:
+                session = await self._ensure_session()
+                now_url = ""
+                try:
+                    now_url = await (await self._get_current_page()).get_url()
+                except Exception:
+                    pass
+                navigated = bool(now_url) and now_url != pre_url
+                prev_sig = self._last_elements_signature
+                observed = await self._observe_page_state(
+                    session, include_content=navigated
+                )
+                elements_changed = (
+                    prev_sig is not None
+                    and self._last_elements_signature is not None
+                    and self._last_elements_signature != prev_sig
+                )
+                observed["page_changed"] = navigated or elements_changed
+                observed["clicked"] = {
+                    "matched_by": res.get("matched_by"),
+                    "tag": res.get("tag"),
+                    "role": res.get("role"),
+                    "aria": res.get("aria"),
+                    "text": res.get("text"),
+                }
+                return ToolResult(
+                    success=True,
+                    message=(
+                        f"Clicked <{res.get('tag')} role={res.get('role')} "
+                        f"aria-label={res.get('aria')!r}> matched by {res.get('matched_by')}"
+                    ),
+                    data=observed,
+                )
+            except Exception:
+                return ToolResult(
+                    success=True,
+                    message=f"Clicked element matching {text!r} (matched by {res.get('matched_by')})",
+                )
+        except Exception as exc:
+            return ToolResult(success=False, message=f"Failed to click by text: {exc}")
+
+    async def find_element(
+        self, query: str, role: Optional[str] = None
+    ) -> ToolResult:
+        """Locate elements by text / aria-label / placeholder, optionally by role.
+
+        Searches BOTH the interactive-elements selector map (returns usable
+        indexes) and the live DOM (returns coordinates + locator hints for
+        elements the map does not expose). Use this whenever you cannot find
+        an element in the browser_view list — especially custom React
+        dropdowns (role=combobox) and widgets beyond the 300-element cap.
+        """
+        import json as _json
+
+        try:
+            ql = str(query or "").lower().strip()
+            if not ql:
+                return ToolResult(success=False, message="find_element: empty query")
+
+            # 1. Selector-map search → real indexes the agent can click.
+            map_hits: List[str] = []
+            try:
+                session = await self._ensure_session()
+                state = await session.get_browser_state_summary(
+                    include_screenshot=False
+                )
+                sm = (
+                    state.dom_state.selector_map
+                    if state.dom_state is not None
+                    else {}
+                ) or {}
+                for idx, node in sorted(sm.items()):
+                    attrs = node.attributes or {}
+                    nrole = (attrs.get("role") or "").lower()
+                    if role and role.lower() != nrole:
+                        continue
+                    text = (
+                        node.get_meaningful_text_for_llm()
+                        if hasattr(node, "get_meaningful_text_for_llm")
+                        else ""
+                    ) or ""
+                    aria = attrs.get("aria-label", "") or ""
+                    ph = attrs.get("placeholder", "") or ""
+                    if ql in text.lower() or ql in aria.lower() or ql in ph.lower():
+                        label = (text or aria or ph)[:60]
+                        map_hits.append(
+                            f"index {idx}: <{node.tag_name}> {label}"
+                            f" → browser_click(index={idx})"
+                        )
+                        if len(map_hits) >= 10:
+                            break
+            except Exception as exc:
+                logger.debug("find_element selector-map search failed: %s", exc)
+
+            # 2. Live-DOM search → coordinates + locator hints (blind-spot aware).
+            dom_hits: List[str] = []
+            try:
+                page = await self._get_current_page()
+                raw = await self._call_with_deadline(
+                    page.evaluate(
+                        _FIND_ELEMENT_JS, {"query": ql, "role": role or ""}
+                    ),
+                    timeout=30.0,
+                )
+                items = (
+                    _json.loads(raw) if isinstance(raw, str) else (raw or [])
+                )
+                for it in items:
+                    label = it.get("aria") or it.get("text") or ""
+                    dom_hits.append(
+                        f"<{it.get('tag')} role={it.get('role')} aria-label={it.get('aria')!r}> "
+                        f"text={it.get('text')!r} @ ({it.get('x')},{it.get('y')}) "
+                        f"expanded={it.get('expanded')} "
+                        f"→ browser_click(text={label!r}) or coordinates"
+                    )
+            except Exception as exc:
+                logger.debug("find_element live-DOM search failed: %s", exc)
+
+            if not map_hits and not dom_hits:
+                return ToolResult(
+                    success=False,
+                    message=(
+                        f"No visible element matches {query!r}"
+                        f"{' with role=' + role if role else ''}. "
+                        "Try a different spelling, a shorter substring, or "
+                        "browser_view() to inspect the page."
+                    ),
+                )
+
+            data = {
+                "in_interactive_list": map_hits,
+                "in_live_dom": dom_hits,
+                "hint": (
+                    "Elements listed under in_interactive_list can be clicked "
+                    "by index. Elements under in_live_dom are NOT in the index "
+                    "list — click them with browser_click(text=...) or by "
+                    "coordinates."
+                ),
+            }
+            return ToolResult(
+                success=True,
+                message=(
+                    f"{len(map_hits)} match(es) in interactive list, "
+                    f"{len(dom_hits)} in live DOM scan for {query!r}."
+                ),
+                data=data,
+            )
+        except Exception as exc:
+            return ToolResult(success=False, message=f"Failed to find element: {exc}")
+
+    async def _scan_aria_widgets(self) -> List[str]:
+        """Return formatted live-DOM ARIA widget entries for the observation payload.
+
+        These are elements that ARE visible and interactive in the real DOM but
+        are frequently missing from the browser-use selector map (combobox
+        triggers being the classic case). Giving the agent this list removes
+        the 'blind spot' that caused blind index-click flailing on
+        facebook.com/reg.
+        """
+        import json as _json
+
+        try:
+            page = await self._get_current_page()
+            raw = await self._call_with_deadline(
+                page.evaluate(_WIDGET_SCAN_JS), timeout=15.0
+            )
+            items = _json.loads(raw) if isinstance(raw, str) else (raw or [])
+            out: List[str] = []
+            for it in items:
+                label = it.get("aria") or ""
+                text = it.get("text") or ""
+                desc = label or text
+                if not desc:
+                    continue
+                out.append(
+                    f"<{it.get('tag')} role={it.get('role')} {desc!r}>"
+                    f"{' [open]' if it.get('expanded') in ('true', True) else ''}"
+                    f" @ ({it.get('x')},{it.get('y')})"
+                    f" → browser_click(text={desc!r})"
+                    if it.get("role") != "combobox"
+                    else f"<{it.get('tag')} role=combobox {desc!r}> text={text!r}"
+                    f"{' [open]' if it.get('expanded') in ('true', True) else ''}"
+                    f" @ ({it.get('x')},{it.get('y')})"
+                    f" → browser_smart_select(dropdown={desc!r}, option='...')"
+                )
+            return out[:30]
+        except Exception as exc:
+            logger.debug("aria widget scan failed: %s", exc)
+            return []
+
+    async def input(
+        self,
+        text: str,
+        press_enter: bool,
+        index: Optional[int] = None,
+        coordinate_x: Optional[float] = None,
+        coordinate_y: Optional[float] = None,
+    ) -> ToolResult:
+        """Type text into an element identified by DOM index or screen coordinates.
+
+        After filling, dispatches React-safe input+change events so the framework's
+        state management detects the change — same pattern used by Manus.im.
+        DOM-settle wait is applied so lazy-loaded suggestions/validation can render.
+        """
+        try:
+            page = await self._get_current_page()
+            try:
+                pre_url = await page.get_url()
+            except Exception:
+                pre_url = ""
+
+            if coordinate_x is not None and coordinate_y is not None:
+                # CDP click-to-focus then insertText
+                await self._cdp_click_at(coordinate_x, coordinate_y)
+                await asyncio.sleep(0.05)
+                cdp_sess = await self._get_cdp_session()
+                await cdp_sess.cdp_client.send.Input.insertText(
+                    params={"text": text},
+                    session_id=str(cdp_sess.session_id),
+                )
+            elif index is not None:
+                session = await self._ensure_session()
+                node = await session.get_dom_element_by_index(index)
+                if node is None:
+                    return ToolResult(
+                        success=False,
+                        message=f"Cannot find interactive element with index {index}",
+                    )
+                element = await page.get_element(node.backend_node_id)
+                # Mirroring verify_value/upload_file: Element.evaluate() raises
+                # 'Document needs to be requested first' unless the DOM document
+                # was requested on this session — ensure it before the JS fill.
+                await self._ensure_dom_document()
+                # JS-first fill with VERIFICATION: the browser_use actor
+                # Element.fill() was observed to silently no-op on some targets
+                # (returned success but the value stayed empty). Setting the
+                # value via the prototype setter is React-safe by construction
+                # and lets us VERIFY the result instead of trusting a no-op.
+                set_value_js = """(text) => {
+                    const proto = this.tagName === 'TEXTAREA'
+                        ? window.HTMLTextAreaElement.prototype
+                        : window.HTMLInputElement.prototype;
+                    const setter = Object.getOwnPropertyDescriptor(proto, 'value').set;
+                    setter.call(this, text);
+                    this.dispatchEvent(new Event('input',  {bubbles:true}));
+                    this.dispatchEvent(new Event('change', {bubbles:true}));
+                    return this.value;
+                }"""
+                actual = await element.evaluate(set_value_js, text)
+                if actual != text:
+                    # Fallback 1: actor fill (legacy path)
+                    try:
+                        await element.fill(text)
+                        actual = await element.evaluate("() => this.value")
+                    except Exception:
+                        pass
+                if actual != text:
+                    # Fallback 2: CDP click-to-focus + insertText
+                    try:
+                        coords = await self._get_element_center(element)
+                        if coords:
+                            await self._cdp_click_at(coords[0], coords[1])
+                            await asyncio.sleep(0.05)
+                            cdp_sess = await self._get_cdp_session()
+                            await cdp_sess.cdp_client.send.Input.insertText(
+                                params={"text": text},
+                                session_id=str(cdp_sess.session_id),
+                            )
+                            actual = await element.evaluate("() => this.value")
+                    except Exception:
+                        pass
+                if actual != text:
+                    return ToolResult(
+                        success=False,
+                        message=(
+                            f"Input failed: element value is {actual!r}, "
+                            f"expected {text!r}. Try browser_verify_value or "
+                            "click the element first."
+                        ),
+                        data={"expected": text, "actual": actual},
+                    )
+                logger.info("INPUT[%d] ✓ text=%r%s", index, text[:40], "…" if len(text) > 40 else "")
+
+            if press_enter:
+                await page.press("Enter")
+                logger.info("INPUT press_enter=True")
+
+            await self._wait_for_dom_settle()
+            # press_enter usually submits a form / triggers a search — show the
+            # agent the resulting page state (full text when it navigated).
+            if press_enter and index is not None:
+                try:
+                    session2 = await self._ensure_session()
+                    now_url = ""
+                    try:
+                        now_url = await (await self._get_current_page()).get_url()
+                    except Exception:
+                        pass
+                    navigated = bool(now_url) and now_url != pre_url
+                    prev_sig = self._last_elements_signature
+                    observed = await self._observe_page_state(
+                        session2, include_content=navigated
+                    )
+                    # Element-diff (autocomplete suggestions appearing under
+                    # the field, validation messages, opened panels) counts as
+                    # a real page change too — same rule as clicks.
+                    elements_changed = (
+                        prev_sig is not None
+                        and self._last_elements_signature is not None
+                        and self._last_elements_signature != prev_sig
+                    )
+                    observed["page_changed"] = navigated or elements_changed
+                    return ToolResult(success=True, data=observed)
+                except Exception as obs_exc:
+                    logger.debug("post-input observe failed: %s", obs_exc)
+            # Non-enter path: still report WHAT was typed and WHERE so the
+            # result is never a bare success (the LLM — and the tool panel
+            # when the screenshot circuit breaker is open — both need it).
+            shown = text if len(text) <= 60 else text[:57] + "..."
+            return ToolResult(
+                success=True,
+                message=f"Text entered into element {index if index is not None else 'coordinates'}: {shown!r}",
+                data={"index": index, "value": text, "press_enter": press_enter},
+            )
+        except Exception as exc:
+            logger.warning("INPUT[%s] ✗ %s", index, exc)
+            return ToolResult(success=False, message=f"Failed to input text: {exc}")
+
+    async def move_mouse(
+        self,
+        coordinate_x: float,
+        coordinate_y: float,
+    ) -> ToolResult:
+        """Move the mouse cursor to the given coordinates."""
+        try:
+            await self._dispatch_mouse_event("mouseMoved", coordinate_x, coordinate_y)
+            return ToolResult(
+                success=True,
+                message=(
+                    f"Mouse moved to ({coordinate_x}, {coordinate_y}). "
+                    "Use browser_view to see what is under the cursor."
+                ),
+                data={"x": coordinate_x, "y": coordinate_y},
+            )
+        except Exception as exc:
+            return ToolResult(success=False, message=f"Failed to move mouse: {exc}")
+
+    async def list_tabs(self) -> ToolResult:
+        """Return a list of all currently open browser tabs with their index and URL."""
+        try:
+            session = await self._ensure_session()
+            pages = await session.get_pages()
+            tabs = []
+            for i, page in enumerate(pages):
+                try:
+                    url = await page.get_url()
+                except Exception:
+                    url = "unknown"
+                tabs.append({"tab": i + 1, "url": url})
+            return ToolResult(
+                success=True,
+                message=f"{len(tabs)} tab(s) open.",
+                data={"tabs": tabs, "total_tabs": len(tabs)},
+            )
+        except Exception as exc:
+            return ToolResult(success=False, message=f"Failed to list tabs: {exc}")
+
+    async def open_tab(self, url: str) -> ToolResult:
+        """Open a URL in a new browser tab using native browser_use API."""
+        blocked = _scheme_rejection(url)
+        if blocked is not None:
+            return blocked
+        try:
+            session = await self._ensure_session()
+            await session.navigate_to(url, new_tab=True)
+            await asyncio.sleep(0.5)
+            pages = await session.get_pages()
+            return ToolResult(
+                success=True,
+                message=f"Opened new tab with {url}. Total tabs: {len(pages)}.",
+                data={"url": url, "tab": len(pages), "total_tabs": len(pages)},
+            )
+        except Exception as exc:
+            return ToolResult(success=False, message=f"Failed to open new tab: {exc}")
+
+    async def switch_tab(self, tab_index: int) -> ToolResult:
+        """Switch the active browser tab by 1-based index."""
+        try:
+            from browser_use.browser.events import SwitchTabEvent
+            session = await self._ensure_session()
+            pages = await session.get_pages()
+            if not pages:
+                return ToolResult(success=False, message="No tabs are open")
+            if tab_index < 1 or tab_index > len(pages):
+                return ToolResult(
+                    success=False,
+                    message=f"Tab {tab_index} does not exist. {len(pages)} tab(s) are currently open.",
+                )
+            target = pages[tab_index - 1]
+            target_id = target._target_id
+            await session.on_SwitchTabEvent(SwitchTabEvent(target_id=target_id))
+            await asyncio.sleep(0.3)
+            # Different tab → the element-diff baseline from the old tab is
+            # stale; clear it so the next click's change detection starts
+            # fresh (no false "no visible change" notes across tabs).
+            self._cached_page = None  # force re-resolve against the new focus
+            self._last_elements_signature = None
+            # No prior observation of THIS tab in this flow — clear the
+            # new-element baseline too, so the first observation of the tab
+            # does not star everything (markers start from the SECOND look).
+            self._previous_node_keys = None
+            try:
+                url = await target.get_url()
+            except Exception:
+                url = "unknown"
+            return ToolResult(
+                success=True,
+                message=f"Switched to tab {tab_index}: {url}",
+                data={"tab": tab_index, "url": url, "total_tabs": len(pages)},
+            )
+        except Exception as exc:
+            return ToolResult(success=False, message=f"Failed to switch tab: {exc}")
+
+    async def press_key(self, key: str) -> ToolResult:
+        """Simulate a key press.
+
+        Tab-related browser shortcuts are intercepted and handled via native
+        browser_use session API because page.press() cannot dispatch browser-chrome
+        shortcuts (Control+t, Control+1..9, Control+Tab).
+        """
+        try:
+            import re
+            key_norm = key.lower().replace(" ", "")
+
+            # Control+t → open a blank new tab
+            if key_norm in ("control+t", "ctrl+t"):
+                session = await self._ensure_session()
+                await session.navigate_to("about:blank", new_tab=True)
+                await asyncio.sleep(0.3)
+                pages = await session.get_pages()
+                return ToolResult(
+                    success=True,
+                    message=f"Opened new blank tab (tab {len(pages)}). Total tabs: {len(pages)}.",
+                    data={"tab": len(pages), "total_tabs": len(pages)},
+                )
+
+            # Control+1 … Control+9 → switch to tab N
+            tab_match = re.match(r"^(?:control|ctrl)\+([1-9])$", key_norm)
+            if tab_match:
+                return await self.switch_tab(int(tab_match.group(1)))
+
+            # Control+Tab → next tab
+            if key_norm in ("control+tab", "ctrl+tab"):
+                session = await self._ensure_session()
+                pages = await session.get_pages()
+                current = await session.get_current_page()
+                if pages and current:
+                    idx = next((i for i, p in enumerate(pages) if p.target_id == current.target_id), 0)
+                    return await self.switch_tab((idx + 1) % len(pages) + 1)
+
+            # Control+Shift+Tab → previous tab
+            if key_norm in ("control+shift+tab", "ctrl+shift+tab"):
+                session = await self._ensure_session()
+                pages = await session.get_pages()
+                current = await session.get_current_page()
+                if pages and current:
+                    idx = next((i for i, p in enumerate(pages) if p.target_id == current.target_id), 0)
+                    return await self.switch_tab((idx - 1) % len(pages) + 1)
+
+            # Default: dispatch to page
+            page = await self._get_current_page()
+            pre_url = ""
+            try:
+                pre_url = await page.get_url()
+            except Exception:
+                pass
+            await page.press(key)
+            await self._wait_for_dom_settle()
+            # Report what happened — a bare success leaves both the LLM and
+            # the tool panel (when the screenshot breaker is open) blind.
+            try:
+                now_url = await page.get_url()
+            except Exception:
+                now_url = pre_url
+            navigated = bool(pre_url) and bool(now_url) and now_url != pre_url
+            data = {"key": key, "url": now_url, "page_changed": navigated}
+            if navigated:
+                try:
+                    session2 = await self._ensure_session()
+                    observed = await self._observe_page_state(session2, include_content=True)
+                    observed.update(data)
+                    return ToolResult(
+                        success=True,
+                        message=f"Key '{key}' pressed — page navigated to {now_url}.",
+                        data=observed,
+                    )
+                except Exception:
+                    pass
+            return ToolResult(
+                success=True,
+                message=f"Key '{key}' pressed.",
+                data=data,
+            )
+        except Exception as exc:
+            return ToolResult(success=False, message=f"Failed to press key: {exc}")
+
+    async def select_option(self, index: int, option: int) -> ToolResult:
+        """Select an option in a <select> element by DOM index and option index (0-based).
+        
+        Correctly targets the specific <select> element identified by `index` —
+        critical when multiple selects exist on the same page (e.g. Day/Month/Year).
+        """
+        try:
+            session = await self._ensure_session()
+            node = await session.get_dom_element_by_index(index)
+            if node is None:
+                return ToolResult(
+                    success=False,
+                    message=f"Cannot find selector element with index {index}",
+                )
+            await self._ensure_dom_document()
+            page = await self._get_current_page()
+
+            # Resolve to the exact Element handle for this specific backend_node_id.
+            # This is critical — page.get_element() guarantees we act on the right <select>
+            # rather than scanning document.querySelectorAll('select')[0] (which caused
+            # Day/Month/Year selects to all modify the same first select element).
+            element = await page.get_element(node.backend_node_id)
+
+            # Use element.evaluate() where `this` is bound to the exact element.
+            # We use the native HTMLSelectElement setter so React/Vue synthetic event
+            # systems detect the change, then fire both 'input' and 'change' events.
+            js_code = (
+                "(optionIndex) => {"
+                "  if (optionIndex < 0 || optionIndex >= this.options.length) {"
+                "    return JSON.stringify({success:false, error:'index '+optionIndex+' out of range ('+this.options.length+' options)'});"
+                "  }"
+                "  const opt = this.options[optionIndex];"
+                "  const text = opt.text;"
+                "  const value = opt.value;"
+                "  try {"
+                "    const setter = Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype,'value').set;"
+                "    setter.call(this, value);"
+                "  } catch(e) {"
+                "    this.selectedIndex = optionIndex;"
+                "  }"
+                "  this.dispatchEvent(new Event('input',  {bubbles:true}));"
+                "  this.dispatchEvent(new Event('change', {bubbles:true}));"
+                "  return JSON.stringify({success:true, text:text, value:value});"
+                "}"
+            )
+
+            import json as _json
+            selected_text = ""
+            try:
+                raw = await element.evaluate(js_code, option)
+                result = _json.loads(raw) if isinstance(raw, str) else raw
+                if result and result.get("success"):
+                    selected_text = result.get("text", "")
+                else:
+                    err = result.get("error", str(result)) if result else "unknown"
+                    return ToolResult(success=False, message=f"select_option JS failed: {err}")
+            except Exception as js_exc:
+                # Fallback: select by value string via element.select_option(values=[...])
+                try:
+                    # Get option value by iterating children via CDP
+                    await element.select_option(values=[str(option)])
+                    selected_text = str(option)
+                except Exception as fallback_exc:
+                    return ToolResult(
+                        success=False,
+                        message=f"select_option failed (JS: {js_exc}, fallback: {fallback_exc})",
+                    )
+
+            msg = f"Selected option {option}" + (f" ('{selected_text}')" if selected_text else "")
+            await self._wait_for_dom_settle()
+            return ToolResult(success=True, message=msg)
+        except Exception as exc:
+            return ToolResult(success=False, message=f"Failed to select option: {exc}")
+
+    async def go_back(self) -> ToolResult:
+        """Navigate back in the browser history."""
+        try:
+            page = await self._get_current_page()
+            await page.go_back()
+            # Wait for the new document to actually load before returning —
+            # Page.navigateToHistoryEntry returns immediately, and an immediate
+            # browser_view() used to race the navigation and see an empty DOM.
+            await self._wait_for_page_ready()
+            await self._wait_for_dom_settle()
+            # Refresh the DOM snapshot so the next view/interaction sees the
+            # restored page instead of stale state.
+            try:
+                session = await self._ensure_session()
+                await session.get_browser_state_summary(include_screenshot=False)
+            except Exception:
+                pass
+            logger.info("NAVIGATE ← back")
+            return ToolResult(success=True, message="Navigated back")
+        except Exception as exc:
+            return ToolResult(success=False, message=f"Failed to go back: {exc}")
+
+    async def go_forward(self) -> ToolResult:
+        """Navigate forward in the browser history."""
+        try:
+            page = await self._get_current_page()
+            await page.go_forward()
+            # Same ready-wait as go_back — fixes the "Empty DOM tree" race.
+            await self._wait_for_page_ready()
+            await self._wait_for_dom_settle()
+            try:
+                session = await self._ensure_session()
+                await session.get_browser_state_summary(include_screenshot=False)
+            except Exception:
+                pass
+            logger.info("NAVIGATE → forward")
+            return ToolResult(success=True, message="Navigated forward")
+        except Exception as exc:
+            return ToolResult(success=False, message=f"Failed to go forward: {exc}")
+
+    async def scroll_up(self, to_top: Optional[bool] = None) -> ToolResult:
+        """Scroll the page upward (or to the very top when to_top is True)."""
+        try:
+            page = await self._get_current_page()
+            if to_top:
+                await page.evaluate("() => window.scrollTo(0, 0)")
+            else:
+                await page.evaluate("() => window.scrollBy(0, -window.innerHeight)")
+            return await self._scroll_report("up" if not to_top else "top")
+        except Exception as exc:
+            return ToolResult(success=False, message=f"Failed to scroll up: {exc}")
+
+    async def scroll_down(self, to_bottom: Optional[bool] = None) -> ToolResult:
+        """Scroll the page downward (or to the very bottom when to_bottom is True)."""
+        try:
+            page = await self._get_current_page()
+            if to_bottom:
+                await page.evaluate("() => window.scrollTo(0, document.body.scrollHeight)")
+            else:
+                await page.evaluate("() => window.scrollBy(0, window.innerHeight)")
+            return await self._scroll_report("down" if not to_bottom else "bottom")
+        except Exception as exc:
+            return ToolResult(success=False, message=f"Failed to scroll down: {exc}")
+
+    async def _scroll_report(self, direction: str) -> ToolResult:
+        """Report the post-scroll position so the agent knows where it is and
+        whether more content remains below/above (avoids blind rescrolls and
+        gives the tool panel real content when no screenshot is available)."""
+        data = {"direction": direction}
+        try:
+            page = await self._get_current_page()
+            raw = await page.evaluate(
+                """() => {
+                    const doc = document.scrollingElement || document.documentElement;
+                    const max = Math.max(0, doc.scrollHeight - window.innerHeight);
+                    return JSON.stringify({
+                        scroll_y: Math.round(window.scrollY),
+                        page_height: doc.scrollHeight,
+                        viewport: window.innerHeight,
+                        max_scroll: Math.round(max),
+                    });
+                }"""
+            )
+            import json as _json
+            info = _json.loads(raw) if isinstance(raw, str) else (raw or {})
+            data.update(info)
+            y = info.get("scroll_y", 0)
+            mx = info.get("max_scroll", 0)
+            if mx <= 0:
+                pos = "whole page fits in the viewport"
+            else:
+                pct = round(100 * y / mx)
+                pos = f"{pct}% down the page"
+                if y <= 0:
+                    pos = "at the very top"
+                elif y >= mx:
+                    pos = "at the very bottom"
+            more_below = "more content below" if mx > y else "no more content below"
+            more_above = "more content above" if y > 0 else "already at top"
+            return ToolResult(
+                success=True,
+                message=(
+                    f"Scrolled {direction}: now at y={y} ({pos}; "
+                    f"page height {info.get('page_height', '?')}px, "
+                    f"viewport {info.get('viewport', '?')}px — {more_below}, {more_above})."
+                ),
+                data=data,
+            )
+        except Exception as exc:
+            # Position probe failed — the scroll itself succeeded.
+            return ToolResult(
+                success=True,
+                message=f"Scrolled {direction}.",
+                data=data,
+            )
+
+    async def screenshot(self, full_page: Optional[bool] = False) -> bytes:
+        """Return a PNG screenshot of the current page."""
+        session = await self._ensure_session()
+        return await session.take_screenshot(full_page=bool(full_page))
+
+    async def get_select_options(self, index: int) -> ToolResult:
+        """Return all options of a <select> element by DOM index.
+
+        Returns a list of {option_index, value, text} objects so the caller
+        knows exactly which option_index to pass to select_option().
+        Returns success=False with a clear message when the element is not a native <select>.
+        """
+        try:
+            session = await self._ensure_session()
+            node = await session.get_dom_element_by_index(index)
+            if node is None:
+                return ToolResult(
+                    success=False,
+                    message=f"Cannot find element with index {index}",
+                )
+            await self._ensure_dom_document()
+            page = await self._get_current_page()
+            element = await page.get_element(node.backend_node_id)
+
+            import json as _json
+            js = (
+                "() => {"
+                "  if (this.tagName !== 'SELECT') {"
+                "    return JSON.stringify({is_select: false, tag: this.tagName});"
+                "  }"
+                "  const opts = Array.from(this.options).map((o,i) => ({option_index:i, value:o.value, text:o.text.trim()}));"
+                "  return JSON.stringify({is_select: true, options: opts});"
+                "}"
+            )
+            raw = await element.evaluate(js)
+            result = _json.loads(raw) if isinstance(raw, str) else raw
+            if not result.get("is_select"):
+                tag = result.get("tag", "unknown")
+                return ToolResult(
+                    success=False,
+                    message=f"Element at index {index} is a <{tag}>, not a native <select>. Use click approach instead.",
+                )
+            options = result["options"]
+            return ToolResult(
+                success=True,
+                message=f"Native <select> found with {len(options)} options",
+                data={"options": options},
+            )
+        except Exception as exc:
+            # Report the raw error — do NOT claim "not a native <select>" when
+            # the actual failure is a CDP/session problem (misleading diagnosis).
+            return ToolResult(
+                success=False,
+                message=(
+                    f"get_select_options failed for element {index}: {exc}. "
+                    "Call browser_view() to refresh the DOM snapshot, then retry "
+                    "with a fresh index."
+                ),
+            )
+
+    async def select_by_text(self, index: int, text: str) -> ToolResult:
+        """Select a native <select> option whose visible text matches `text` (case-insensitive).
+
+        Works WITHOUT opening the dropdown first — sets the value directly via JS and fires
+        React-compatible input+change events. Returns success=False if element is not a native
+        <select> so caller knows to fall back to the click approach.
+        """
+        try:
+            session = await self._ensure_session()
+            node = await session.get_dom_element_by_index(index)
+            if node is None:
+                return ToolResult(success=False, message=f"Cannot find element with index {index}")
+            await self._ensure_dom_document()
+            page = await self._get_current_page()
+            element = await page.get_element(node.backend_node_id)
+
+            import json as _json
+            js = (
+                "(searchText) => {"
+                "  if (this.tagName !== 'SELECT') {"
+                "    return JSON.stringify({success:false, reason:'not_select', tag:this.tagName});"
+                "  }"
+                "  const lower = searchText.trim().toLowerCase();"
+                "  let found = null;"
+                "  for (let i = 0; i < this.options.length; i++) {"
+                "    if (this.options[i].text.trim().toLowerCase() === lower) { found = i; break; }"
+                "  }"
+                "  if (found === null) {"
+                "    const opts = Array.from(this.options).map(o => o.text.trim()).join(', ');"
+                "    return JSON.stringify({success:false, reason:'not_found', available:opts});"
+                "  }"
+                "  const opt = this.options[found];"
+                "  try {"
+                "    const setter = Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype,'value').set;"
+                "    setter.call(this, opt.value);"
+                "  } catch(e) { this.selectedIndex = found; }"
+                "  this.dispatchEvent(new Event('input',  {bubbles:true}));"
+                "  this.dispatchEvent(new Event('change', {bubbles:true}));"
+                "  return JSON.stringify({success:true, selected_text:opt.text.trim(), option_index:found});"
+                "}"
+            )
+            raw = await element.evaluate(js, text)
+            result = _json.loads(raw) if isinstance(raw, str) else raw
+            if result.get("success"):
+                sel = result.get("selected_text", text)
+                return ToolResult(success=True, message=f"Selected '{sel}' in native <select>")
+            reason = result.get("reason", "")
+            if reason == "not_select":
+                tag = result.get("tag", "unknown")
+                return ToolResult(success=False, message=f"Element {index} is <{tag}>, not a native <select>. Use click approach.")
+            available = result.get("available", "")
+            return ToolResult(success=False, message=f"Option '{text}' not found. Available: {available[:200]}")
+        except Exception as exc:
+            return ToolResult(success=False, message=f"select_by_text failed: {exc}")
+
+    async def _verify_element_value(self, index: int, expected_text: str) -> bool:
+        """Internal helper: returns True if element value matches expected text."""
+        try:
+            result = await self.verify_value(index, expected_text)
+            return result.success
+        except Exception:
+            return False
+
+    async def smart_select(
+        self,
+        index: Optional[int] = None,
+        option: Optional[str] = None,
+        dropdown: Optional[str] = None,
+    ) -> ToolResult:
+        """Adaptive dropdown selector — 3-strategy chain (Manus.im style).
+
+        Strategy 0 (locator): find the trigger by aria-label/visible text
+            (``dropdown=...``) and drive it with pointer events. REQUIRED for
+            modern React comboboxes (role=combobox) whose triggers never appear
+            in the interactive-elements list — verified live on the
+            facebook.com/reg DOB dropdowns.
+        Strategy 1 (native <select>): React-safe text match + prototype setter + synthetic events.
+        Strategy 2 (custom dropdown by index): click trigger → verify list visible → scan DOM → click option.
+        Strategy 3 (text mismatch): return available options list so agent retries with correct text.
+
+        Key Manus.im behaviours implemented here:
+        - Visibility check: after opening custom dropdown we wait and CONFIRM the list appeared
+          before scanning for options (avoids clicking stale/hidden nodes).
+        - DOM-settle wait after every successful pick so React/Vue state settles.
+        - Coordinate-based CDP fallback for option clicks when JS .click() is intercepted.
+
+        Returns success + which strategy worked so the agent can log/debug easily.
+        No looping needed — one call handles everything.
+        """
+        import json as _json
+
+        # Models routinely pass numeric options as JSON numbers (option=1995
+        # instead of "1995") — coerce BEFORE any string ops to avoid
+        # "'int' object has no attribute 'strip'" crashes that derail the
+        # whole task into blind-click loops (observed live in E2E test).
+        if option is not None:
+            option = str(option).strip()
+        if dropdown is not None:
+            dropdown = str(dropdown).strip()
+
+        # ── Strategy 0: locator-based (dropdown trigger by aria-label/text) ──
+        if dropdown and option is not None:
+            return await self._smart_select_locator(dropdown, option)
+
+        if index is None or option is None:
+            return ToolResult(
+                success=False,
+                message=(
+                    "smart_select: provide either (index, option) or "
+                    "(dropdown, option). dropdown = the trigger's aria-label "
+                    "or visible text (e.g. dropdown='Select day', option='15')."
+                ),
+            )
+        text = option
+        logger.info("SMART_SELECT[%d] text=%r — trying S1-native-select", index, text)
+        # ── Strategy 1: native <select> via React-safe JS ──────────────────────
+        s1 = await self.select_by_text(index, text)
+        if s1.success:
+            await self._wait_for_dom_settle()
+            verified = await self._verify_element_value(index, text)
+            logger.info("SMART_SELECT[%d] ✓ S1-native-select verified=%s", index, verified)
+            return ToolResult(
+                success=True,
+                message=f"[native-select] Selected '{text}'. Verified={verified}",
+                data={"strategy": "native_select", "verified": verified},
+            )
+
+        reason = s1.message or ""
+        is_custom = (
+            "not a native" in reason.lower()
+            or "not_select" in reason.lower()
+            or "use click" in reason.lower()
+        )
+        if is_custom:
+            logger.info("SMART_SELECT[%d] S1 found custom dropdown → trying S2-custom-dropdown", index)
+        else:
+            logger.info("SMART_SELECT[%d] S1 failed (%s)", index, reason[:80])
+
+        # ── Strategy 2: custom dropdown (click → visibility check → scan DOM → click option) ──
+        if is_custom:
+            # Open the dropdown using the full 3-strategy click chain
+            click_r = await self.click(index=index)
+            if not click_r.success:
+                return ToolResult(
+                    success=False,
+                    message=(
+                        f"smart_select: cannot open custom dropdown at index {index}: "
+                        f"{click_r.message}"
+                    ),
+                )
+
+            # ── Visibility check (Manus.im key step) ──────────────────────────
+            # Wait up to 800 ms for at least one option-like element to become visible.
+            # This prevents scanning the DOM before the dropdown animation completes.
+            page = await self._get_current_page()
+            OPTION_SELECTORS = (
+                '[role="option"],[role="listitem"],[role="menuitem"],'
+                '[aria-selected],[data-value],[data-option],'
+                'li,ul>li,ol>li,.option,.dropdown-item'
+            )
+            visible_count = 0
+            for _ in range(8):  # 8 × 100 ms = 800 ms max
+                await asyncio.sleep(0.1)
+                try:
+                    visible_count = await page.evaluate(f"""() => {{
+                        const nodes = document.querySelectorAll('{OPTION_SELECTORS}');
+                        let n = 0;
+                        for (const el of nodes) {{
+                            const s = window.getComputedStyle(el);
+                            if (s.display !== 'none' && s.visibility !== 'hidden' && parseFloat(s.opacity) >= 0.1) n++;
+                        }}
+                        return n;
+                    }}""")
+                    if visible_count > 0:
+                        break
+                except Exception:
+                    break
+
+            # Toggle-trap reopen (mousedown-open + click-close widgets): the
+            # full click chain nets to CLOSED on such widgets. A mousedown-
+            # only pass re-opens the menu without the closing toggle.
+            if not visible_count:
+                try:
+                    await element.evaluate(
+                        "() => { this.dispatchEvent(new MouseEvent('mousedown', "
+                        "{bubbles: true, cancelable: true, view: window, button: 0, buttons: 1})); }"
+                    )
+                    for _ in range(6):  # 6 × 100 ms
+                        await asyncio.sleep(0.1)
+                        try:
+                            visible_count = await page.evaluate(f"""() => {{
+                                const nodes = document.querySelectorAll('{OPTION_SELECTORS}');
+                                let n = 0;
+                                for (const el of nodes) {{
+                                    const s = window.getComputedStyle(el);
+                                    if (s.display !== 'none' && s.visibility !== 'hidden' && parseFloat(s.opacity) >= 0.1) n++;
+                                }}
+                                return n;
+                            }}""")
+                            if visible_count > 0:
+                                break
+                        except Exception:
+                            break
+                except Exception:
+                    pass
+
+            js_find_click = """(searchText) => {
+                const lower = searchText.trim().toLowerCase();
+                const SELECTORS = [
+                    '[role="option"]', '[role="listitem"]', '[role="menuitem"]',
+                    '[aria-selected]', '[data-value]', '[data-option]',
+                    'li', 'ul > li', 'ol > li', '.option', '.dropdown-item'
+                ];
+                const fire = (n) => {
+                    const r = n.getBoundingClientRect();
+                    const cx = r.left + r.width / 2, cy = r.top + r.height / 2;
+                    const opts = {bubbles: true, cancelable: true, view: window,
+                                  button: 0, buttons: 1, clientX: cx, clientY: cy};
+                    const pd = Object.assign({}, opts, {pointerId: 1, pointerType: 'mouse', isPrimary: true});
+                    try {
+                        n.dispatchEvent(new PointerEvent('pointerover', pd));
+                        n.dispatchEvent(new PointerEvent('pointerdown', pd));
+                    } catch (e) {}
+                    n.dispatchEvent(new MouseEvent('mouseover', opts));
+                    n.dispatchEvent(new MouseEvent('mousedown', opts));
+                    const up = Object.assign({}, opts, {buttons: 0});
+                    const pu = Object.assign({}, pd, {buttons: 0});
+                    try { n.dispatchEvent(new PointerEvent('pointerup', pu)); } catch (e) {}
+                    n.dispatchEvent(new MouseEvent('mouseup', up));
+                    if (typeof n.click === 'function') n.click();
+                    else n.dispatchEvent(new MouseEvent('click', up));
+                    return {cx: cx, cy: cy};
+                };
+                const seen = new Set();
+                // Exact match first
+                for (const sel of SELECTORS) {
+                    let nodes;
+                    try { nodes = Array.from(document.querySelectorAll(sel)); } catch(e) { continue; }
+                    for (const n of nodes) {
+                        if (seen.has(n)) continue;
+                        seen.add(n);
+                        const s = window.getComputedStyle(n);
+                        if (s.display === 'none' || s.visibility === 'hidden' || parseFloat(s.opacity) < 0.1) continue;
+                        const t = (n.innerText || n.textContent || '').trim();
+                        if (t.toLowerCase() === lower) {
+                            const hit = fire(n);
+                            return JSON.stringify({success:true, clicked:t, match:'exact', cx: hit.cx, cy: hit.cy});
+                        }
+                    }
+                }
+                // Partial match fallback
+                const seen2 = new Set();
+                const visible = [];
+                for (const sel of SELECTORS) {
+                    let nodes;
+                    try { nodes = Array.from(document.querySelectorAll(sel)); } catch(e) { continue; }
+                    for (const n of nodes) {
+                        if (seen2.has(n)) continue;
+                        seen2.add(n);
+                        const s = window.getComputedStyle(n);
+                        if (s.display === 'none' || s.visibility === 'hidden' || parseFloat(s.opacity) < 0.1) continue;
+                        const t = (n.innerText || n.textContent || '').trim();
+                        if (!t) continue;
+                        if (t.toLowerCase().includes(lower)) {
+                            const hit = fire(n);
+                            return JSON.stringify({success:true, clicked:t, match:'partial', cx: hit.cx, cy: hit.cy});
+                        }
+                        if (visible.length < 20) visible.push(t.substring(0, 40));
+                    }
+                }
+                return JSON.stringify({success:false, visible_options:[...new Set(visible)]});
+            }"""
+
+            try:
+                raw = await page.evaluate(js_find_click, text)
+                res = _json.loads(raw) if isinstance(raw, str) else raw
+                if res.get("success"):
+                    clicked = res.get("clicked", text)
+                    match_type = res.get("match", "")
+                    note = " (partial match)" if match_type == "partial" else ""
+                    # CDP coordinate fallback: if JS .click() was intercepted, fire raw CDP event
+                    cx = res.get("cx")
+                    cy = res.get("cy")
+                    if cx is not None and cy is not None:
+                        try:
+                            await self._cdp_click_at(cx, cy)
+                        except Exception:
+                            pass
+                    await self._wait_for_dom_settle()
+                    logger.info("SMART_SELECT[%d] ✓ S2-custom-dropdown clicked=%r match=%s", index, clicked, match_type)
+                    return ToolResult(
+                        success=True,
+                        message=f"[custom-dropdown] Clicked option '{clicked}'{note}",
+                        data={"strategy": "custom_dropdown", "clicked": clicked},
+                    )
+                visible = res.get("visible_options", [])
+                visible_str = (
+                    ", ".join(f'"{v}"' for v in visible[:12])
+                    if visible
+                    else "none visible — dropdown may not have opened"
+                )
+                logger.warning("SMART_SELECT[%d] ✗ S2 option %r not found. visible=[%s]", index, text, visible_str[:120])
+                return ToolResult(
+                    success=False,
+                    message=(
+                        f"smart_select: dropdown opened but option '{text}' not found. "
+                        f"Visible options: [{visible_str}]. "
+                        f"Call browser_view() to inspect, then retry with exact text from visible list."
+                    ),
+                )
+            except Exception as exc:
+                logger.warning("SMART_SELECT[%d] ✗ S2 exception: %s", index, exc)
+                return ToolResult(
+                    success=False,
+                    message=f"smart_select custom-dropdown strategy failed: {exc}",
+                )
+
+        # Not custom — option text mismatch, pass back original message with available options
+        logger.warning("SMART_SELECT[%d] ✗ no matching strategy for text=%r", index, text)
+        return ToolResult(success=False, message=f"smart_select: {reason}")
+
+    async def _smart_select_locator(self, dropdown: str, option: str) -> ToolResult:
+        """Strategy 0: open a custom dropdown by locator and pick an option.
+
+        The full pipeline proven live on facebook.com/reg DOB comboboxes:
+          1. locate trigger (aria-label exact > contains > visible text)
+          2. fire pointer+mouse event sequence to open the listbox
+          3. wait for visible options to appear
+          4. click the matching option with the same pointer sequence
+          5. verify the trigger's text changed to the chosen option
+        """
+        import json as _json
+
+        try:
+            page = await self._get_current_page()
+
+            # 1+2. find and open the trigger
+            raw = await self._call_with_deadline(
+                page.evaluate(_LOCATOR_SELECT_JS, {"dropdown": dropdown, "option": option}),
+                timeout=30.0,
+            )
+            res = _json.loads(raw) if isinstance(raw, str) else (raw or {})
+            if not res.get("ok"):
+                return ToolResult(
+                    success=False,
+                    message=(
+                        f"smart_select(dropdown={dropdown!r}): {res.get('why')}. "
+                        "Call browser_find_element() to see the exact trigger "
+                        "labels on this page."
+                    ),
+                )
+
+            # Native <select> shortcut: the locator JS already set the value
+            # and fired input/change — there is no popup to wait for, so the
+            # generic "wait for visible options" path below must be skipped
+            # (it would otherwise time out and report a bogus failure).
+            if res.get("selected") is not None:
+                await self._wait_for_dom_settle()
+                return ToolResult(
+                    success=True,
+                    message=(
+                        f"smart_select(dropdown={dropdown!r}): selected "
+                        f"{res.get('selected')!r} on the native <select>."
+                    ),
+                    data={
+                        "strategy": "locator_native_select",
+                        "selected": res.get("selected"),
+                        "options": res.get("options"),
+                    },
+                )
+
+            # 3. wait for visible options (up to 1.5s)
+            option_js = """() => {
+                const boxes = Array.from(document.querySelectorAll(
+                    '[role="listbox"],[role="menu"],.dropdown-menu,ul[style*="display: block"]'));
+                for (const lb of boxes) {
+                    const vis = Array.from(lb.querySelectorAll(
+                        '[role="option"],[role="menuitem"],li,.option,.dropdown-item'
+                    )).filter(o => {
+                        const s = getComputedStyle(o);
+                        const r = o.getBoundingClientRect();
+                        return s.display !== 'none' && s.visibility !== 'hidden' &&
+                               parseFloat(s.opacity) > 0.05 && r.width > 2 && r.height > 2;
+                    });
+                    if (vis.length) {
+                        const texts = vis.map(o => (o.innerText || '').trim());
+                        return JSON.stringify({n: vis.length, texts: texts.slice(0, 60)});
+                    }
+                }
+                return JSON.stringify({n: 0});
+            }"""
+            found = None
+            for _ in range(12):  # 12 × 125ms = 1.5s
+                await asyncio.sleep(0.125)
+                try:
+                    raw = await self._call_with_deadline(
+                        page.evaluate(option_js), timeout=10.0
+                    )
+                    o = _json.loads(raw) if isinstance(raw, str) else (raw or {})
+                    if o.get("n", 0) > 0:
+                        found = o
+                        break
+                except Exception:
+                    break
+
+            # Toggle-trap reopen: some widgets open on mousedown but CLOSE on
+            # the trailing click (open→closed net effect from the full pointer
+            # sequence). Fire a mousedown-only pass to re-open without the
+            # closing toggle, then wait again.
+            if not found or not found.get("n"):
+                try:
+                    reopen_js = r"""(dd) => {
+                        const lower = (s) => (s || '').trim().toLowerCase();
+                        const els = Array.from(document.querySelectorAll(
+                            '[role="combobox"],[aria-haspopup],button,[role="button"]'));
+                        const el = els.find(e => lower(e.getAttribute('aria-label')) === lower(dd)) ||
+                                   els.find(e => lower(e.getAttribute('aria-label') || '').includes(lower(dd))) ||
+                                   els.find(e => lower((e.innerText || '').replace(/\s+/g, ' ')) === lower(dd));
+                        if (!el) return 'no-trigger';
+                        el.dispatchEvent(new MouseEvent('mousedown', {bubbles: true, cancelable: true, view: window, button: 0, buttons: 1}));
+                        return 'reopened';
+                    }"""
+                    await self._call_with_deadline(
+                        page.evaluate(reopen_js, dropdown), timeout=10.0
+                    )
+                    for _ in range(8):  # 8 × 125ms = 1s
+                        await asyncio.sleep(0.125)
+                        try:
+                            raw = await self._call_with_deadline(
+                                page.evaluate(option_js), timeout=10.0
+                            )
+                            o = _json.loads(raw) if isinstance(raw, str) else (raw or {})
+                            if o.get("n", 0) > 0:
+                                found = o
+                                break
+                        except Exception:
+                            break
+                except Exception:
+                    pass
+
+            if not found or not found.get("n"):
+                return ToolResult(
+                    success=False,
+                    message=(
+                        f"smart_select(dropdown={dropdown!r}): dropdown opened "
+                        f"(trigger text: {res.get('trigger_text')!r}) but no "
+                        "visible options appeared. The widget may need a "
+                        "different interaction — try browser_click(text=...) "
+                        "then browser_view()."
+                    ),
+                )
+
+            texts = found.get("texts") or []
+            lower = (option or "").strip().lower()
+            match_idx = None
+            for i, t in enumerate(texts):
+                if t.lower() == lower:
+                    match_idx = i
+                    break
+            if match_idx is None:
+                for i, t in enumerate(texts):
+                    if lower and lower in t.lower():
+                        match_idx = i
+                        break
+            if match_idx is None:
+                preview = ", ".join(repr(t) for t in texts[:15])
+                return ToolResult(
+                    success=False,
+                    message=(
+                        f"smart_select(dropdown={dropdown!r}): option {option!r} "
+                        f"not in the visible options. Options: [{preview}]. "
+                        "Retry with the exact text from this list."
+                    ),
+                )
+
+            # 4. click the matching option with the pointer sequence
+            pick_js = """(payload) => {
+                const {want} = payload;
+                const lower = want.toLowerCase();
+                const boxes = Array.from(document.querySelectorAll(
+                    '[role="listbox"],[role="menu"],.dropdown-menu,ul[style*="display: block"]'));
+                for (const lb of boxes) {
+                    const vis = Array.from(lb.querySelectorAll(
+                        '[role="option"],[role="menuitem"],li,.option,.dropdown-item'
+                    )).filter(o => {
+                        const s = getComputedStyle(o);
+                        const r = o.getBoundingClientRect();
+                        return s.display !== 'none' && s.visibility !== 'hidden' &&
+                               parseFloat(s.opacity) > 0.05 && r.width > 2 && r.height > 2;
+                    });
+                    const t = vis.find(o => (o.innerText || '').trim().toLowerCase() === lower) ||
+                              vis.find(o => lower.includes((o.innerText || '').trim().toLowerCase()) ||
+                                            (o.innerText || '').trim().toLowerCase().includes(lower));
+                    if (t) {
+                        const r = t.getBoundingClientRect();
+                        const cx = r.left + r.width / 2, cy = r.top + r.height / 2;
+                        const opts = {bubbles: true, cancelable: true, view: window,
+                                      button: 0, buttons: 1, clientX: cx, clientY: cy};
+                        const pd = Object.assign({}, opts, {pointerId: 1, pointerType: 'mouse', isPrimary: true});
+                        try {
+                            t.dispatchEvent(new PointerEvent('pointerover', pd));
+                            t.dispatchEvent(new PointerEvent('pointerdown', pd));
+                        } catch (e) {}
+                        t.dispatchEvent(new MouseEvent('mouseover', opts));
+                        t.dispatchEvent(new MouseEvent('mousedown', opts));
+                        const up = Object.assign({}, opts, {buttons: 0});
+                        const pu = Object.assign({}, pd, {buttons: 0});
+                        try { t.dispatchEvent(new PointerEvent('pointerup', pu)); } catch (e) {}
+                        t.dispatchEvent(new MouseEvent('mouseup', up));
+                        if (typeof t.click === 'function') t.click();
+                        else t.dispatchEvent(new MouseEvent('click', up));
+                        return JSON.stringify({ok: true, clicked: (t.innerText || '').trim()});
+                    }
+                }
+                return JSON.stringify({ok: false});
+            }"""
+            raw = await self._call_with_deadline(
+                page.evaluate(pick_js, {"want": option}), timeout=30.0
+            )
+            pick = _json.loads(raw) if isinstance(raw, str) else (raw or {})
+            if not pick.get("ok"):
+                return ToolResult(
+                    success=False,
+                    message=f"smart_select(dropdown={dropdown!r}): failed to click option {option!r}.",
+                )
+
+            await self._wait_for_dom_settle()
+
+            # 5. verify the trigger now shows the chosen value
+            try:
+                verify_js = r"""(dd) => {
+                    const lower = (s) => (s || '').trim().toLowerCase();
+                    const els = Array.from(document.querySelectorAll('[role="combobox"],[aria-haspopup],button,[role="button"]'));
+                    const el = els.find(e => lower(e.getAttribute('aria-label')) === lower(dd)) ||
+                               els.find(e => lower(e.getAttribute('aria-label') || '').includes(lower(dd)));
+                    if (!el) return JSON.stringify(null);
+                    return JSON.stringify((el.innerText || '').trim().replace(/\n/g, '|'));
+                }"""
+                raw = await self._call_with_deadline(
+                    page.evaluate(verify_js, dropdown), timeout=10.0
+                )
+                after = _json.loads(raw) if isinstance(raw, str) else raw
+                verified = bool(after) and option.lower() in (after or "").lower()
+            except Exception:
+                after, verified = None, False
+
+            logger.info(
+                "SMART_SELECT[locator %r → %r] ✓ verified=%s", dropdown, option, verified
+            )
+            msg = (
+                f"[locator-combobox] Selected {option!r} in {dropdown!r}"
+                + (f" — verified: trigger now reads {after!r}" if verified else "")
+            )
+            return ToolResult(
+                success=True,
+                message=msg,
+                data={
+                    "strategy": "locator_combobox",
+                    "dropdown": dropdown,
+                    "option": option,
+                    "verified": verified,
+                    "trigger_text_after": after,
+                },
+            )
+        except Exception as exc:
+            return ToolResult(
+                success=False,
+                message=f"smart_select(dropdown={dropdown!r}) failed: {exc}",
+            )
+
+    async def verify_value(self, index: int, expected_text: str) -> ToolResult:
+        """Verify that an interactive element has the expected value after interaction.
+
+        Works for:
+        - native <select>  → checks selectedOptions[0].text
+        - <input>/<textarea> → checks .value
+        - custom elements  → checks innerText / aria-label / data-value
+
+        Returns success=True if the element's current value matches expected_text
+        (case-insensitive, partial containment accepted).
+        """
+        try:
+            session = await self._ensure_session()
+            node = await session.get_dom_element_by_index(index)
+            if node is None:
+                return ToolResult(
+                    success=False,
+                    message=f"Cannot find element with index {index}",
+                )
+            await self._ensure_dom_document()
+            page = await self._get_current_page()
+            element = await page.get_element(node.backend_node_id)
+
+            import json as _json
+            js = """(expected) => {
+                const lower = expected.trim().toLowerCase();
+                const tag = this.tagName;
+                let actual = '';
+                if (tag === 'SELECT') {
+                    const sel = this.selectedOptions[0];
+                    actual = sel ? sel.text.trim() : '';
+                } else if (tag === 'INPUT' || tag === 'TEXTAREA') {
+                    actual = (this.value || '').trim();
+                } else {
+                    actual = (
+                        this.innerText ||
+                        this.getAttribute('aria-label') ||
+                        this.getAttribute('data-value') ||
+                        this.textContent || ''
+                    ).trim();
+                }
+                const aLower = actual.toLowerCase();
+                // Empty actual must only match empty expected — previously
+                // lower.includes('') was always true, so verify_value claimed
+                // success even when the element had NO value at all.
+                const match = aLower === ''
+                    ? lower === ''
+                    : (aLower === lower || aLower.includes(lower) || lower.includes(aLower));
+                return JSON.stringify({match, actual, expected, tag});
+            }"""
+            raw = await element.evaluate(js, expected_text)
+            import json as _json2
+            res = _json2.loads(raw) if isinstance(raw, str) else raw
+            match = res.get("match", False)
+            actual = res.get("actual", "")
+            return ToolResult(
+                success=match,
+                message=(
+                    f"✅ Verified '{actual}' matches '{expected_text}'"
+                    if match
+                    else f"❌ Mismatch: expected='{expected_text}', actual='{actual}'"
+                ),
+                data=res,
+            )
+        except Exception as exc:
+            return ToolResult(success=False, message=f"verify_value failed: {exc}")
+
+    async def console_exec(self, javascript: str) -> ToolResult:
+        """Execute arbitrary JavaScript in the current page context.
+
+        Returns BOTH the completion value of the code AND any console.log/
+        warn/error lines it produced (captured via the console shim). This
+        fixes the historical awareness hole where diagnostics written as
+        console.log(...) came back as an empty string — the agent ran a
+        probe, got "", and concluded nothing.
+        """
+        import json as _json
+
+        try:
+            page = await self._get_current_page()
+            # Install the console capture shim FIRST so any console.* calls
+            # inside the user's code are recorded.
+            await self._ensure_console_capture()
+
+            # Snapshot the log buffer length BEFORE execution.
+            before = 0
+            try:
+                before = await self._call_with_deadline(
+                    page.evaluate("() => (window.__consoleLogs || []).length"),
+                    timeout=10.0,
+                )
+                before = int(before or 0)
+            except Exception:
+                before = 0
+
+            js = javascript.strip()
+            if not (js.startswith("(") and "=>" in js):
+                # Bare JavaScript (not an arrow function). page.evaluate()
+                # requires an expression starting with "(" containing "=>",
+                # so wrap the code in an async arrow that runs it through
+                # GLOBAL INDIRECT EVAL — this gives console-like semantics:
+                # multiple statements are allowed AND the completion value
+                # (last expression) is returned.
+                js = f"(async () => (0, eval)({_json.dumps(js)}))"
+            try:
+                result = await self._call_with_deadline(page.evaluate(js), timeout=60.0)
+            except Exception as eval_exc:
+                # A top-level `return` (e.g. "return document.title;") is a
+                # SyntaxError under eval — console habits die hard. Retry
+                # once with the code as an async function BODY, where return
+                # is legal and its value becomes the result.
+                if "Illegal return statement" not in str(eval_exc):
+                    raise
+                body = f"(async function () {{\n{javascript.strip()}\n}})()"
+                js = f"(async () => (0, eval)({_json.dumps(body)}))"
+                result = await self._call_with_deadline(page.evaluate(js), timeout=60.0)
+
+            # Collect the NEW console lines produced by this execution.
+            new_logs = []
+            try:
+                raw = await self._call_with_deadline(
+                    page.evaluate(
+                        "() => JSON.stringify((window.__consoleLogs || []).slice(%d).slice(-50))"
+                        % before
+                    ),
+                    timeout=10.0,
+                )
+                new_logs = (
+                    _json.loads(raw) if isinstance(raw, str) else (raw or [])
+                )
+            except Exception:
+                pass
+
+            data = {"result": result}
+            if new_logs:
+                data["console_logs"] = new_logs
+            # Empty-result hint: distinguish "ran but produced nothing" from a
+            # real (empty-string) value, and teach the agent the console
+            # completion-value pattern in place (observed live: probes written
+            # as `forEach(...)` loops returned "" and looked broken).
+            if (result is None or result == "") and not new_logs:
+                data["result"] = None
+                data["note"] = (
+                    "Code produced no return value and no console.log output. "
+                    "End your code with the value you want — e.g. a final "
+                    "expression like JSON.stringify({...}) — or use "
+                    "console.log(...) for diagnostics; both come back to you."
+                )
+            return ToolResult(success=True, data=data)
+        except Exception as exc:
+            # Compact error: CDP stack traces carry full callFrames that bloat
+            # the LLM context for zero diagnostic value. Keep the first line
+            # (exception type + message) plus a short location hint.
+            msg = str(exc)
+            if len(msg) > 300:
+                import re as _re
+                first_line = _re.split(r"\n|\\n", msg)[0][:250]
+                msg = f"{first_line}… (stack trace truncated)"
+            return ToolResult(success=False, message=f"Failed to execute JavaScript: {msg}")
+
+    async def console_view(self, max_lines: Optional[int] = None) -> ToolResult:
+        """Return captured console log lines from the current page.
+
+        Reads the buffer maintained by the console-capture shim installed via
+        _ensure_console_capture() (registered with
+        Page.addScriptToEvaluateOnNewDocument + an in-document installer, so
+        capture also survives navigations).
+        """
+        try:
+            # Make sure capture is active on the current document before reading.
+            await self._ensure_console_capture()
+            page = await self._get_current_page()
+            logs_raw = await self._call_with_deadline(
+                page.evaluate("() => JSON.stringify(window.__consoleLogs || [])"),
+                timeout=30.0,
+            )
+
+            import json
+
+            try:
+                logs = json.loads(logs_raw) if isinstance(logs_raw, str) else logs_raw
+            except (TypeError, ValueError):
+                logs = logs_raw
+
+            if logs is None:
+                logs = []
+            if max_lines is not None and isinstance(logs, list) and max_lines > 0:
+                logs = logs[-max_lines:]
+
+            return ToolResult(success=True, data={"logs": logs})
+        except Exception as exc:
+            return ToolResult(success=False, message=f"Failed to view console: {exc}")

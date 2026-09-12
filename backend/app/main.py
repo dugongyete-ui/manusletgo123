@@ -1,0 +1,189 @@
+from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
+from fastapi.responses import FileResponse, JSONResponse
+from contextlib import asynccontextmanager
+import logging
+import asyncio
+import os
+
+from app.core.config import get_settings
+from app.infrastructure.storage.mongodb import get_mongodb
+from app.infrastructure.storage.redis import get_redis
+from app.interfaces.dependencies import get_agent_service
+from app.interfaces.api.routes import router
+from app.infrastructure.logging import setup_logging
+from app.interfaces.errors.exception_handlers import register_exception_handlers
+from app.infrastructure.models.documents import AgentDocument, SessionDocument, UserDocument, ProjectDocument, FileFavoriteDocument, KnowledgeDocument, ScheduledTaskDocument, AgentProfileDocument
+from app.infrastructure.build_guard import ensure_fresh_frontend
+from beanie import init_beanie
+
+# Initialize logging system
+setup_logging()
+logger = logging.getLogger(__name__)
+
+# Load configuration
+settings = get_settings()
+
+# Startup readiness flag — True once MongoDB + Redis are fully initialized
+_app_ready = False
+
+
+async def _init_databases() -> None:
+    """Initialize MongoDB/Beanie and Redis in the background so uvicorn
+    starts accepting requests (and healthchecks) immediately.
+
+    Retries MongoDB up to MAX_RETRIES times before giving up so that
+    transient Atlas connection delays at startup don't permanently break
+    the service.
+    """
+    global _app_ready
+    MAX_RETRIES = 5
+    RETRY_DELAY = 3.0  # seconds between attempts
+
+    for attempt in range(1, MAX_RETRIES + 1):
+        try:
+            logger.info(f"DB init attempt {attempt}/{MAX_RETRIES} — connecting to MongoDB…")
+            await get_mongodb().initialize()
+            await init_beanie(
+                database=get_mongodb().client[settings.mongodb_database],
+                document_models=[AgentDocument, SessionDocument, UserDocument, ProjectDocument, FileFavoriteDocument, KnowledgeDocument, ScheduledTaskDocument, AgentProfileDocument],
+            )
+            logger.info("Successfully initialized Beanie")
+            break
+        except Exception as exc:
+            logger.error(f"MongoDB/Beanie initialization failed (attempt {attempt}/{MAX_RETRIES}): {exc}")
+            if attempt < MAX_RETRIES:
+                logger.info(f"Retrying in {RETRY_DELAY}s…")
+                await asyncio.sleep(RETRY_DELAY)
+            else:
+                logger.critical(
+                    "MongoDB initialization failed after all retries — "
+                    "API endpoints requiring the database will return 503."
+                )
+                return
+
+    try:
+        await get_redis().initialize()
+        logger.info("Successfully initialized Redis")
+    except Exception as exc:
+        logger.error(f"Redis initialization failed: {exc} — continuing without Redis")
+
+    _app_ready = True
+    logger.info("Application fully ready — all services initialized")
+
+    # ── Recurring agent runs (scheduleTask) ──────────────────────────────
+    # The scheduler only starts once the database is ready; it feeds due
+    # prompts into their sessions through the normal chat pathway.
+    try:
+        from app.interfaces.dependencies import get_scheduler_service
+        get_scheduler_service().start()
+    except Exception as exc:
+        logger.error(f"Scheduler service failed to start: {exc}")
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    logger.info("Application startup - Dzeck AI Agent initializing")
+
+    # Self-heal the compiled frontend: a reprovision/snapshot restore can roll
+    # frontend/dist back to an old build while the source stays new (observed
+    # in production — the chat UI suddenly lost the collapsible-prompt/copy
+    # fixes). Rebuild in a background thread; fail-open, never blocks startup.
+    ensure_fresh_frontend()
+
+    # Kick off DB init as a background task so the server starts immediately
+    # and Replit's healthcheck can reach /health right away.
+    asyncio.create_task(_init_databases())
+
+    try:
+        yield
+    finally:
+        logger.info("Application shutdown - Dzeck AI Agent terminating")
+        # Stop the recurring-run scheduler before tearing down services.
+        try:
+            from app.interfaces.dependencies import get_scheduler_service
+            await get_scheduler_service().stop()
+        except Exception:
+            pass
+        await get_mongodb().shutdown()
+        await get_redis().shutdown()
+
+        logger.info("Cleaning up AgentService instance")
+        try:
+            await asyncio.wait_for(get_agent_service().shutdown(), timeout=30.0)
+            logger.info("AgentService shutdown completed successfully")
+        except asyncio.TimeoutError:
+            logger.warning("AgentService shutdown timed out after 30 seconds")
+        except Exception as exc:
+            logger.error(f"Error during AgentService cleanup: {str(exc)}")
+
+
+app = FastAPI(title="Dzeck AI Agent", lifespan=lifespan)
+
+# Database-backed routes must not run before Beanie has initialized the
+# document models.  Beanie installs the class-level query fields (for example
+# UserDocument.email) during init_beanie, so allowing an API request through
+# during the background startup task causes an AttributeError rather than a
+# useful service-unavailable response.
+@app.middleware("http")
+async def database_readiness_guard(request, call_next):
+    path = request.url.path.rstrip("/") or "/"
+    is_api_health = path == "/api/v1/health"
+    if path.startswith("/api/") and not is_api_health and not _app_ready:
+        return JSONResponse(
+            status_code=503,
+            content={
+                "status": "starting",
+                "ready": False,
+                "detail": "The API is still initializing. Please retry shortly.",
+            },
+            headers={"Retry-After": "3"},
+        )
+    return await call_next(request)
+
+# Configure CORS
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=False,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+# Register exception handlers
+register_exception_handlers(app)
+
+# Register routes
+app.include_router(router, prefix="/api/v1")
+
+
+# Health check — returns 200 immediately; reports readiness in body
+@app.get("/health")
+async def health_check():
+    """Lightweight health endpoint — always 200 so deployment healthchecks pass."""
+    return {"status": "ok", "ready": _app_ready}
+
+
+# Serve compiled Vue frontend in production (when frontend/dist exists)
+_frontend_dist = os.path.normpath(
+    os.path.join(os.path.dirname(__file__), "../../frontend/dist")
+)
+
+if os.path.exists(_frontend_dist):
+    _assets_dir = os.path.join(_frontend_dist, "assets")
+    if os.path.exists(_assets_dir):
+        app.mount("/assets", StaticFiles(directory=_assets_dir), name="static-assets")
+
+    @app.get("/{full_path:path}", include_in_schema=False)
+    async def serve_frontend(full_path: str):
+        target = os.path.join(_frontend_dist, full_path)
+        if full_path and os.path.isfile(target):
+            return FileResponse(target)
+        return FileResponse(os.path.join(_frontend_dist, "index.html"))
+else:
+    from fastapi.responses import JSONResponse
+
+    @app.get("/", include_in_schema=False)
+    async def health_root():
+        return JSONResponse({"status": "ok", "ready": _app_ready, "msg": "Dzeck backend running — frontend not built yet"})

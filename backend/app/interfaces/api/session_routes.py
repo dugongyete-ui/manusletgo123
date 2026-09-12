@@ -1,0 +1,537 @@
+from fastapi import APIRouter, Depends, WebSocket, WebSocketDisconnect, Query
+from sse_starlette.sse import EventSourceResponse
+from typing import AsyncGenerator, List, Optional
+from sse_starlette.event import ServerSentEvent
+from datetime import datetime
+import asyncio
+import ssl
+import websockets
+import logging
+import time
+from app.interfaces.dependencies import get_file_service
+
+from app.application.services.agent_service import AgentService
+from app.application.services.token_service import TokenService
+from app.application.errors.exceptions import NotFoundError, UnauthorizedError
+from app.interfaces.dependencies import get_agent_service, get_current_user, get_optional_current_user, get_token_service, verify_signature_websocket
+from app.interfaces.schemas.base import APIResponse
+from app.interfaces.schemas.session import (
+    ChatRequest, ShellViewRequest, CreateSessionRequest, CreateSessionResponse, GetSessionResponse,
+    ListSessionItem, ListSessionResponse, ShellViewResponse,
+    ShareSessionResponse, SharedSessionResponse, ForkSessionResponse,
+    MoveSessionProjectRequest, MoveSessionProjectResponse
+)
+from app.interfaces.schemas.file import FileViewRequest, FileViewResponse
+from app.interfaces.schemas.resource import AccessTokenRequest, SignedUrlResponse
+from app.interfaces.schemas.event import EventMapper
+from app.domain.models.file import FileInfo
+from app.domain.models.user import User
+
+logger = logging.getLogger(__name__)
+SESSION_POLL_INTERVAL = 5
+
+router = APIRouter(prefix="/sessions", tags=["sessions"])
+
+@router.put("", response_model=APIResponse[CreateSessionResponse])
+async def create_session(
+    request: Optional[CreateSessionRequest] = None,
+    current_user: User = Depends(get_current_user),
+    agent_service: AgentService = Depends(get_agent_service)
+) -> APIResponse[CreateSessionResponse]:
+    # Optional agent profile (built-in preset or the user's custom one) —
+    # its persona is appended to every run's system prompt in this session.
+    profile_id = (request.agent_profile_id if request else None)
+    if profile_id:
+        # Validate: built-in ids pass through; custom ids must exist + belong.
+        from app.domain.models.agent_profile import BUILTIN_PROFILE_IDS
+        if profile_id not in BUILTIN_PROFILE_IDS:
+            profile = await agent_service.get_agent_profile(profile_id, current_user.id)
+            if not profile:
+                raise NotFoundError("Agent profile not found")
+    session = await agent_service.create_session(current_user.id, profile_id)
+    return APIResponse.success(
+        CreateSessionResponse(
+            session_id=session.id,
+        )
+    )
+
+@router.post("/{session_id}/fork", response_model=APIResponse[ForkSessionResponse])
+async def fork_session(
+    session_id: str,
+    current_user: User = Depends(get_current_user),
+    agent_service: AgentService = Depends(get_agent_service)
+) -> APIResponse[ForkSessionResponse]:
+    """Fork a session (own or shared) into the current user's account.
+
+    Manus fork: the readable storyline is copied into a fresh session the
+    user owns and can continue in their own sandbox.
+    """
+    forked = await agent_service.fork_session(session_id, current_user.id)
+    return APIResponse.success(ForkSessionResponse(
+        session_id=forked.id,
+        title=forked.title,
+    ))
+
+@router.get("/{session_id}", response_model=APIResponse[GetSessionResponse])
+async def get_session(
+    session_id: str,
+    current_user: User = Depends(get_current_user),
+    agent_service: AgentService = Depends(get_agent_service)
+) -> APIResponse[GetSessionResponse]:
+    session = await agent_service.get_session(session_id, current_user.id)
+    if not session:
+        raise NotFoundError("Session not found")
+    return APIResponse.success(GetSessionResponse(
+        session_id=session.id,
+        title=session.title,
+        status=session.status,
+        events=await EventMapper.events_to_sse_events(session.events),
+        is_shared=session.is_shared
+    ))
+
+@router.delete("", response_model=APIResponse[None])
+async def delete_all_sessions(
+    current_user: User = Depends(get_current_user),
+    agent_service: AgentService = Depends(get_agent_service)
+) -> APIResponse[None]:
+    await agent_service.delete_all_sessions(current_user.id)
+    return APIResponse.success()
+
+@router.delete("/{session_id}", response_model=APIResponse[None])
+async def delete_session(
+    session_id: str,
+    current_user: User = Depends(get_current_user),
+    agent_service: AgentService = Depends(get_agent_service)
+) -> APIResponse[None]:
+    await agent_service.delete_session(session_id, current_user.id)
+    return APIResponse.success()
+
+@router.post("/{session_id}/stop", response_model=APIResponse[None])
+async def stop_session(
+    session_id: str,
+    current_user: User = Depends(get_current_user),
+    agent_service: AgentService = Depends(get_agent_service)
+) -> APIResponse[None]:
+    await agent_service.stop_session(session_id, current_user.id)
+    return APIResponse.success()
+
+@router.post("/{session_id}/clear_unread_message_count", response_model=APIResponse[None])
+async def clear_unread_message_count(
+    session_id: str,
+    current_user: User = Depends(get_current_user),
+    agent_service: AgentService = Depends(get_agent_service)
+) -> APIResponse[None]:
+    await agent_service.clear_unread_message_count(session_id, current_user.id)
+    return APIResponse.success()
+
+@router.get("", response_model=APIResponse[ListSessionResponse])
+async def get_all_sessions(
+    current_user: User = Depends(get_current_user),
+    agent_service: AgentService = Depends(get_agent_service)
+) -> APIResponse[ListSessionResponse]:
+    summaries = await agent_service.get_all_sessions(current_user.id)
+    session_items = [
+        ListSessionItem(
+            session_id=s.id,
+            title=s.title,
+            status=s.status,
+            unread_message_count=s.unread_message_count,
+            latest_message=s.latest_message,
+            latest_message_at=int(s.latest_message_at.timestamp()) if s.latest_message_at else None,
+            is_shared=s.is_shared,
+            project_id=s.project_id
+        ) for s in summaries
+    ]
+    return APIResponse.success(ListSessionResponse(sessions=session_items))
+
+@router.post("")
+async def stream_sessions(
+    current_user: User = Depends(get_current_user),
+    agent_service: AgentService = Depends(get_agent_service)
+) -> EventSourceResponse:
+    async def event_generator() -> AsyncGenerator[ServerSentEvent, None]:
+        # Push ONLY when the serialized list actually changed. Previously this
+        # pushed the FULL session list every 5s forever — every client, every
+        # 5 seconds — forcing the frontend session sidebar to re-render its
+        # whole list nonstop (constant background CPU on the chat page).
+        last_payload: Optional[str] = None
+        while True:
+            summaries = await agent_service.get_all_sessions(current_user.id)
+            session_items = [
+                ListSessionItem(
+                    session_id=s.id,
+                    title=s.title,
+                    status=s.status,
+                    unread_message_count=s.unread_message_count,
+                    latest_message=s.latest_message,
+                    latest_message_at=int(s.latest_message_at.timestamp()) if s.latest_message_at else None,
+                    is_shared=s.is_shared,
+                    project_id=s.project_id
+                ) for s in summaries
+            ]
+            payload = ListSessionResponse(sessions=session_items).model_dump_json()
+            if payload != last_payload:
+                last_payload = payload
+                yield ServerSentEvent(
+                    event="sessions",
+                    data=payload
+                )
+            await asyncio.sleep(SESSION_POLL_INTERVAL)
+    return EventSourceResponse(event_generator())
+
+@router.post("/{session_id}/chat")
+async def chat(
+    session_id: str,
+    request: ChatRequest,
+    current_user: User = Depends(get_current_user),
+    agent_service: AgentService = Depends(get_agent_service)
+) -> EventSourceResponse:
+    async def event_generator() -> AsyncGenerator[ServerSentEvent, None]:
+        async for event in agent_service.chat(
+            session_id=session_id,
+            user_id=current_user.id,
+            message=request.message,
+            timestamp=datetime.fromtimestamp(request.timestamp / 1000 if request.timestamp > 1e10 else request.timestamp) if request.timestamp else None,
+            event_id=request.event_id,
+            attachments=request.attachments
+        ):
+            logger.debug(f"Received event from chat: {event}")
+            sse_event = await EventMapper.event_to_sse_event(event)
+            logger.debug(f"Received event: {sse_event}")
+            if sse_event:
+                yield ServerSentEvent(
+                    event=sse_event.event,
+                    data=sse_event.data.model_dump_json() if sse_event.data else None
+                )
+
+    return EventSourceResponse(event_generator())
+
+@router.post("/{session_id}/shell")
+async def view_shell(
+    session_id: str,
+    request: ShellViewRequest,
+    current_user: User = Depends(get_current_user),
+    agent_service: AgentService = Depends(get_agent_service)
+) -> APIResponse[ShellViewResponse]:
+    """View shell session output
+    
+    If the agent does not exist or fails to get shell output, an appropriate exception will be thrown and handled by the global exception handler
+    
+    Args:
+        session_id: Session ID
+        request: Shell view request containing session ID
+        
+    Returns:
+        APIResponse with shell output
+    """
+    result = await agent_service.shell_view(session_id, request.session_id, current_user.id)
+    return APIResponse.success(result)
+
+@router.post("/{session_id}/file")
+async def view_file(
+    session_id: str,
+    request: FileViewRequest,
+    current_user: User = Depends(get_current_user),
+    agent_service: AgentService = Depends(get_agent_service)
+) -> APIResponse[FileViewResponse]:
+    """View file content
+    
+    If the agent does not exist or fails to get file content, an appropriate exception will be thrown and handled by the global exception handler
+    
+    Args:
+        session_id: Session ID
+        request: File view request containing file path
+        
+    Returns:
+        APIResponse with file content
+    """
+    result = await agent_service.file_view(session_id, request.file, current_user.id)
+    return APIResponse.success(result)
+
+@router.websocket("/{session_id}/vnc")
+async def vnc_websocket(
+    websocket: WebSocket,
+    session_id: str,
+    signature: str = Depends(verify_signature_websocket),
+    agent_service: AgentService = Depends(get_agent_service)
+) -> None:
+    """VNC WebSocket endpoint (binary mode)
+    
+    Establishes a connection with the VNC WebSocket service in the sandbox environment and forwards data bidirectionally
+    Supports authentication via signed URL with signature verification
+    
+    Args:
+        websocket: WebSocket connection
+        session_id: Session ID
+        signature: Verified signature from dependency injection
+    """
+    
+    await websocket.accept(subprotocol="binary")
+    logger.info(f"Accepted WebSocket connection for session {session_id}")
+
+    # Live-view viewer accounting: while this websocket is open the sandbox
+    # must stay un-paused (pause freezes the VM → the user's screen dies).
+    # E2B sandboxes expose vnc_viewer_connected/disconnected hooks; the
+    # disconnect hook schedules a delayed re-pause to save quota after the
+    # last viewer leaves. Non-E2B sandboxes simply don't expose the hooks.
+    vnc_sandbox = None
+    viewer_registered = False
+    try:
+        # Get sandbox (auto-resumes a paused E2B VM and re-bootstraps its
+        # VNC stack) with user validation
+        vnc_sandbox = await agent_service.get_vnc_sandbox(session_id)
+        sandbox_ws_url = vnc_sandbox.vnc_url
+
+        on_connect = getattr(vnc_sandbox, "vnc_viewer_connected", None)
+        if callable(on_connect):
+            on_connect()
+            viewer_registered = True
+
+        logger.info(f"Connecting to VNC WebSocket at {sandbox_ws_url}")
+
+        # Connect to sandbox WebSocket (binary subprotocol required by noVNC/websockify)
+        # ws://localhost connections do not require SSL
+        ssl_context = None
+        if sandbox_ws_url.startswith("wss://"):
+            ssl_context = ssl.create_default_context()
+            ssl_context.check_hostname = False
+            ssl_context.verify_mode = ssl.CERT_NONE
+        async with websockets.connect(sandbox_ws_url, subprotocols=["binary"], ssl=ssl_context) as sandbox_ws:
+            logger.info(f"Connected to VNC WebSocket at {sandbox_ws_url}")
+            # Create two tasks to forward data bidirectionally
+            async def forward_to_sandbox():
+                try:
+                    while True:
+                        data = await websocket.receive_bytes()
+                        await sandbox_ws.send(data)
+                except WebSocketDisconnect:
+                    logger.info("Web -> VNC connection closed")
+                    pass
+                except Exception as e:
+                    logger.error(f"Error forwarding data to sandbox: {e}")
+
+            async def forward_from_sandbox():
+                try:
+                    while True:
+                        data = await sandbox_ws.recv()
+                        # websockify may send str or bytes; noVNC needs bytes
+                        if isinstance(data, str):
+                            data = data.encode("latin-1")
+                        await websocket.send_bytes(data)
+                except websockets.exceptions.ConnectionClosed:
+                    logger.info("VNC -> Web connection closed")
+                    pass
+                except Exception as e:
+                    logger.error(f"Error forwarding data from sandbox: {e}")
+
+            # Run two forwarding tasks concurrently
+            forward_task1 = asyncio.create_task(forward_to_sandbox())
+            forward_task2 = asyncio.create_task(forward_from_sandbox())
+
+            # Wait for either task to complete (meaning connection has closed)
+            done, pending = await asyncio.wait(
+                [forward_task1, forward_task2],
+                return_when=asyncio.FIRST_COMPLETED
+            )
+
+            logger.info("WebSocket connection closed")
+
+            # Cancel pending tasks
+            for task in pending:
+                task.cancel()
+
+    except ConnectionError as e:
+        logger.error(f"Unable to connect to sandbox environment: {str(e)}")
+        await websocket.close(code=1011, reason=f"Unable to connect to sandbox environment: {str(e)}")
+    except Exception as e:
+        logger.error(f"WebSocket error: {str(e)}")
+        await websocket.close(code=1011, reason=f"WebSocket error: {str(e)}")
+    finally:
+        if viewer_registered and vnc_sandbox is not None:
+            on_disconnect = getattr(vnc_sandbox, "vnc_viewer_disconnected", None)
+            if callable(on_disconnect):
+                try:
+                    await on_disconnect()
+                except Exception as exc:
+                    logger.warning(f"VNC viewer disconnect hook failed: {exc}")
+
+@router.get("/{session_id}/files")
+async def get_session_files(
+    session_id: str,
+    current_user: Optional[User] = Depends(get_optional_current_user),
+    agent_service: AgentService = Depends(get_agent_service)
+) -> APIResponse[List[FileInfo]]:
+    if not current_user and not await agent_service.is_session_shared(session_id):
+        raise UnauthorizedError()
+    files = await agent_service.get_session_files(session_id, current_user.id if current_user else None)
+    # Semantic category (slides/tables/docs/media/code/archives/other) so the
+    # frontend can group deliverables like official Manus getSessionFilesV2.
+    from app.domain.services.file_categorize import categorize_file
+    from app.interfaces.schemas.file import FileInfoResponse
+    responses = []
+    for file_info in files or []:
+        try:
+            responses.append(await FileInfoResponse.from_file_info(file_info))
+        except Exception:
+            responses.append(FileInfoResponse(
+                file_id=file_info.file_id or "",
+                filename=file_info.filename or "",
+                content_type=file_info.content_type,
+                size=file_info.size,
+                upload_date=file_info.upload_date,
+                metadata=file_info.metadata,
+                file_url=file_info.file_url,
+            ))
+        if responses:
+            responses[-1].category = categorize_file(
+                file_info.filename, file_info.content_type
+            )
+    return APIResponse.success(responses)
+
+
+@router.post("/{session_id}/vnc/signed-url", response_model=APIResponse[SignedUrlResponse])
+async def create_vnc_signed_url(
+    session_id: str,
+    request_data: AccessTokenRequest,
+    current_user: User = Depends(get_current_user),
+    agent_service: AgentService = Depends(get_agent_service),
+    token_service: TokenService = Depends(get_token_service)
+) -> APIResponse[SignedUrlResponse]:
+    """Generate signed URL for VNC WebSocket access
+    
+    This endpoint creates a signed URL that allows temporary access to the VNC
+    WebSocket for a specific session without requiring authentication headers.
+    """
+    
+    # Validate expiration time (max 15 minutes)
+    expire_minutes = request_data.expire_minutes
+    if expire_minutes > 15:
+        expire_minutes = 15
+    
+    # Check if session exists and belongs to user
+    session = await agent_service.get_session(session_id, current_user.id)
+    if not session:
+        raise NotFoundError("Session not found")
+    
+    # Create signed URL for VNC WebSocket
+    ws_base_url = f"/api/v1/sessions/{session_id}/vnc"
+    signed_url = token_service.create_signed_url(
+        base_url=ws_base_url,
+        expire_minutes=expire_minutes
+    )
+    
+    logger.info(f"Created signed URL for VNC access for user {current_user.id}, session {session_id}")
+    
+    return APIResponse.success(SignedUrlResponse(
+        signed_url=signed_url,
+        expires_in=expire_minutes * 60,
+    ))
+
+
+@router.patch("/{session_id}/project", response_model=APIResponse[MoveSessionProjectResponse])
+async def move_session_project(
+    session_id: str,
+    request: MoveSessionProjectRequest,
+    current_user: User = Depends(get_current_user),
+    agent_service: AgentService = Depends(get_agent_service)
+) -> APIResponse[MoveSessionProjectResponse]:
+    """Move a session into a project (or remove it when project_id is null)"""
+    if request.project_id:
+        from app.interfaces.dependencies import get_project_service
+        project_service = get_project_service()
+        await project_service.get_project(request.project_id, current_user.id)
+    await agent_service.update_session_project(session_id, current_user.id, request.project_id)
+    return APIResponse.success(MoveSessionProjectResponse(
+        session_id=session_id,
+        project_id=request.project_id,
+    ))
+
+
+@router.post("/{session_id}/share", response_model=APIResponse[ShareSessionResponse])
+async def share_session(
+    session_id: str,
+    current_user: User = Depends(get_current_user),
+    agent_service: AgentService = Depends(get_agent_service)
+) -> APIResponse[ShareSessionResponse]:
+    """Share a session to make it publicly accessible
+    
+    This endpoint marks a session as shared, allowing it to be accessed
+    without authentication using the shared session endpoint.
+    """
+    await agent_service.share_session(session_id, current_user.id)
+    return APIResponse.success(ShareSessionResponse(
+        session_id=session_id,
+        is_shared=True
+    ))
+
+@router.get("/{session_id}/share/files")
+async def get_shared_session_files(
+    session_id: str,
+    agent_service: AgentService = Depends(get_agent_service)
+) -> APIResponse[List[FileInfo]]:
+    _lookup_started = time.monotonic()
+    files = await agent_service.get_shared_session_files(session_id)
+    if files is None:
+        logger.info(
+            "shared_session_files_lookup share_id=%s found=false load_ms=%d",
+            session_id, int((time.monotonic() - _lookup_started) * 1000),
+        )
+        raise NotFoundError("Shared session not found")
+    for file in files:
+        await get_file_service().enrich_with_file_url(file)
+    logger.info(
+        "shared_session_files_lookup share_id=%s found=true files=%d load_ms=%d",
+        session_id, len(files), int((time.monotonic() - _lookup_started) * 1000),
+    )
+    return APIResponse.success(files)
+
+
+@router.delete("/{session_id}/share", response_model=APIResponse[ShareSessionResponse])
+async def unshare_session(
+    session_id: str,
+    current_user: User = Depends(get_current_user),
+    agent_service: AgentService = Depends(get_agent_service)
+) -> APIResponse[ShareSessionResponse]:
+    """Unshare a session to make it private again
+    
+    This endpoint marks a session as not shared, removing public access.
+    """
+    await agent_service.unshare_session(session_id, current_user.id)
+    return APIResponse.success(ShareSessionResponse(
+        session_id=session_id,
+        is_shared=False
+    ))
+
+
+@router.get("/shared/{session_id}", response_model=APIResponse[SharedSessionResponse])
+async def get_shared_session(
+    session_id: str,
+    agent_service: AgentService = Depends(get_agent_service)
+) -> APIResponse[SharedSessionResponse]:
+    """Get a shared session without authentication
+    
+    This endpoint allows public access to sessions that have been marked as shared.
+    No authentication is required, but the session must be explicitly shared.
+    """
+    _lookup_started = time.monotonic()
+    session = await agent_service.get_shared_session(session_id)
+    _load_ms = int((time.monotonic() - _lookup_started) * 1000)
+    if not session:
+        # Structured lookup log — share id, outcome, latency. No tokens or
+        # conversation content are ever logged here.
+        logger.info(
+            "shared_session_lookup share_id=%s found=false load_ms=%d",
+            session_id, _load_ms,
+        )
+        raise NotFoundError("Shared session not found")
+    logger.info(
+        "shared_session_lookup share_id=%s found=true status=%s events=%d load_ms=%d",
+        session_id, session.status, len(session.events), _load_ms,
+    )
+    return APIResponse.success(SharedSessionResponse(
+        session_id=session.id,
+        title=session.title,
+        status=session.status,
+        events=await EventMapper.events_to_sse_events(session.events),
+        is_shared=session.is_shared
+    ))

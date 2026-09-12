@@ -1,0 +1,65 @@
+from pydantic import BaseModel, Field
+from typing import List, Dict, Any, Optional
+from enum import Enum
+import uuid
+
+class ExecutionStatus(str, Enum):
+    PENDING = "pending"
+    RUNNING = "running"
+    COMPLETED = "completed"
+    # Set by the final validation gate when the task finished but mechanical
+    # checks found failures or warnings (failed steps, missing/corrupt
+    # deliverables, failed tool calls). Old sessions never emit this value.
+    COMPLETED_WITH_WARNINGS = "completed_with_warnings"
+    FAILED = "failed"
+
+class Step(BaseModel):
+    id: str = Field(default_factory=lambda: str(uuid.uuid4()))
+    description: str = ""
+    status: ExecutionStatus = ExecutionStatus.PENDING
+    result: Optional[str] = None
+    error: Optional[str] = None
+    success: bool = False
+    attachments: List[str] = []
+
+    def is_done(self) -> bool:
+        return (
+            self.status == ExecutionStatus.COMPLETED
+            or self.status == ExecutionStatus.COMPLETED_WITH_WARNINGS
+            or self.status == ExecutionStatus.FAILED
+        )
+
+class Plan(BaseModel):
+    id: str = Field(default_factory=lambda: str(uuid.uuid4()))
+    title: str = ""
+    goal: str = ""
+    language: Optional[str] = "en"
+    steps: List[Step] = []
+    message: Optional[str] = None
+    status: ExecutionStatus = ExecutionStatus.PENDING
+    result: Optional[Dict[str, Any]] = None
+    error: Optional[str] = None
+    # Effort tier the planner judged this task needs
+    # ("standard" | "high_effort"). High-effort tasks get a larger execution
+    # budget (max steps / tolerated failures) so complex builds are not
+    # cut short by limits calibrated for simple tasks.
+    task_mode: Optional[str] = "standard"
+    # Planning depth the planner chose ("simple" | "complex"). Simple tasks
+    # stay at a handful of coarse steps; complex ones may decompose more.
+    planner_mode: Optional[str] = "simple"
+
+    def is_done(self) -> bool:
+        return (
+            self.status == ExecutionStatus.COMPLETED
+            or self.status == ExecutionStatus.COMPLETED_WITH_WARNINGS
+            or self.status == ExecutionStatus.FAILED
+        )
+    
+    def get_next_step(self) -> Optional[Step]:
+        for step in self.steps:
+            if not step.is_done():
+                return step
+        return None
+    
+    def dump_json(self) -> str:
+        return self.model_dump_json(include={"goal", "language", "steps"})

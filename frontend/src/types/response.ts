@@ -1,0 +1,106 @@
+import { AgentSSEEvent } from "./event";
+
+export enum SessionStatus {
+    PENDING = "pending",
+    /** Message accepted, sandbox/task bootstrap still running. */
+    IN_QUEUE = "in_queue",
+    RUNNING = "running",
+    WAITING = "waiting",
+    COMPLETED = "completed",
+    /** The run ended with an unrecoverable error — shown honestly. */
+    FAILED = "failed"
+}
+
+export interface CreateSessionResponse {
+    session_id: string;
+}
+
+export interface GetSessionResponse {
+    session_id: string;
+    title: string | null;
+    status: SessionStatus;
+    events: AgentSSEEvent[];
+    is_shared: boolean;
+}
+
+export interface ListSessionItem {
+    session_id: string;
+    title: string | null;
+    latest_message: string | null;
+    latest_message_at: number | null;
+    status: SessionStatus;
+    unread_message_count: number;
+    is_shared: boolean;
+    project_id?: string | null;
+}
+
+export interface ListSessionResponse {
+    sessions: ListSessionItem[];
+}
+
+export interface ProjectItem {
+    project_id: string;
+    name: string;
+    instruction: string | null;
+    is_pinned: boolean;
+    sort_order: number;
+    created_at: string | null;
+    updated_at: string | null;
+}
+
+export interface ListProjectsResponse {
+    projects: ProjectItem[];
+}
+
+export interface LibraryFileItem {
+    session_id: string;
+    session_title: string | null;
+    file_id: string | null;
+    filename: string | null;
+    file_path: string | null;
+    content_type: string | null;
+    size: number | null;
+    upload_date: string | null;
+    is_favorite: boolean;
+    latest_message_at: number | null;
+}
+
+export interface LibraryResponse {
+    files: LibraryFileItem[];
+}
+
+export interface ConsoleRecord {
+    ps1: string;
+    command: string;
+    output: string;
+  }
+  
+  export interface ShellViewResponse {
+    output: string;
+    session_id: string;
+    console: ConsoleRecord[];
+  }
+
+export interface FileViewResponse {
+    content: string;
+    file: string;
+}
+
+export interface SignedUrlResponse {
+    signed_url: string;
+    expires_in: number;
+}
+
+export interface ShareSessionResponse {
+    session_id: string;
+    is_shared: boolean;
+}
+
+export interface SharedSessionResponse {
+    session_id: string;
+    title: string | null;
+    status: SessionStatus;
+    events: AgentSSEEvent[];
+    is_shared: boolean;
+}
+  
