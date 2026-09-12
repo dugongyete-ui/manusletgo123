@@ -188,6 +188,78 @@ class BrowserToolkit(BaseToolkit):
         return await self.browser.scroll_down(to_bottom)
     
     @tool(parse_docstring=True)
+    async def browser_search_page(
+        self,
+        query: str,
+        is_regex: bool = False,
+        max_results: int = 20,
+    ) -> ToolResult:
+        """Search the WHOLE page's visible text for a query — free and instant, no scrolling needed.
+
+        Great for: verifying content exists, locating prices/dates/names, checking for
+        error or confirmation messages, and finding data beyond the viewport that the
+        interactive-elements list does not show. Returns each match's context line plus
+        a total count. MUCH cheaper than scroll-and-scan — call this when hunting text.
+
+        If no match: the text may be inside an iframe/canvas or still loading —
+        browser_wait_for_element or browser_console_exec are the fallbacks.
+
+        Args:
+            query: Text (or regex pattern when is_regex=true) to search for.
+            is_regex: (Optional) Treat query as a JavaScript regular expression.
+            max_results: (Optional) Max context lines returned (default 20).
+        """
+        return await self.browser.search_page(query, is_regex=is_regex, max_results=max_results)
+
+    @tool(parse_docstring=True)
+    async def browser_find_elements(
+        self,
+        selector: str,
+        max_results: int = 30,
+    ) -> ToolResult:
+        """Query the live DOM with a CSS selector — free and instant structure probe.
+
+        Great for: counting items (table rows, cards, list entries), collecting links or
+        attributes, and understanding page layout BEFORE acting. Each match returns tag,
+        text preview, key attributes and its viewport rectangle — so anything actionable
+        can be clicked via browser_click coordinates even when it is NOT in the
+        interactive_elements list.
+
+        Args:
+            selector: CSS selector (e.g. 'table tr', 'a[href*="docs"]', '.product-card').
+            max_results: (Optional) Max element summaries returned (default 30).
+        """
+        return await self.browser.find_elements(selector, max_results=max_results)
+
+    @tool(parse_docstring=True)
+    async def browser_find_text(self, query: str) -> ToolResult:
+        """Scroll the first occurrence of a text into the viewport (centered) and report its position.
+
+        Use when a target exists but sits off-screen: after this call its interactive index
+        becomes visible in the next browser_view observation, or its reported rectangle can
+        be clicked via browser_click coordinates. Pair with browser_search_page (which sees
+        the WHOLE page) to first confirm the text exists.
+
+        Args:
+            query: Text to find. Matching is case-insensitive.
+        """
+        return await self.browser.find_text(query)
+
+    @tool(parse_docstring=True)
+    async def browser_close_tab(self, tab_index: int) -> ToolResult:
+        """Close a browser tab by its 1-based index — keep the tab set focused.
+
+        Use this when a research or side-task tab is finished: closing spent tabs keeps
+        open_tabs small and unambiguous. The last remaining tab cannot be closed. If you
+        close the ACTIVE tab, focus moves to the first remaining tab — re-observe
+        (browser_view) before the next action there.
+
+        Args:
+            tab_index: 1-based index of the tab to close (from open_tabs / browser_list_tabs).
+        """
+        return await self.browser.close_tab(tab_index)
+
+    @tool(parse_docstring=True)
     async def browser_console_exec(
         self,
         javascript: str

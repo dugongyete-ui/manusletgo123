@@ -3207,3 +3207,290 @@ class BrowserUseBrowser:
             return ToolResult(success=True, data={"logs": logs})
         except Exception as exc:
             return ToolResult(success=False, message=f"Failed to view console: {exc}")
+
+    # ------------------------------------------------------------------
+    # Cheap page-inspection tools (browser-use cloud parity)
+    # ------------------------------------------------------------------
+    # Rationale (SKILL.md §6 — awareness over instructions): these give the
+    # agent INSTANT, LLM-free answers about the page that previously required
+    # scroll loops, full re-observations, or hand-written console_exec JS.
+
+    async def search_page(
+        self,
+        query: str,
+        is_regex: bool = False,
+        max_results: int = 20,
+        case_sensitive: bool = False,
+    ) -> ToolResult:
+        """Search the page's visible text for a query — free and instant (no LLM, no scrolling).
+
+        Returns every match with its context line, plus a total count across
+        the WHOLE document (including content beyond the viewport that the
+        elements list does not show).
+        """
+        import json as _json
+
+        try:
+            page = await self._get_current_page()
+            payload = _json.dumps(
+                {
+                    "query": query,
+                    "is_regex": bool(is_regex),
+                    "max_results": max(1, min(int(max_results or 20), 100)),
+                    "case_sensitive": bool(case_sensitive),
+                }
+            )
+            js = (
+                "(async () => {"
+                f"const p = {_json.dumps(payload)};"
+                "const cfg = JSON.parse(p);"
+                "const text = (document.body && document.body.innerText) || '';"
+                "const lines = text.split(/\\n/).map(l => l.trim()).filter(l => l.length > 0);"
+                "let matcher;"
+                "if (cfg.is_regex) {"
+                "  try { matcher = new RegExp(cfg.query, cfg.case_sensitive ? '' : 'i'); }"
+                "  catch (e) { return {error: 'Invalid regex: ' + e.message}; }"
+                "}"
+                "const matches = [];"
+                "let total = 0;"
+                "for (let i = 0; i < lines.length; i++) {"
+                "  const line = lines[i];"
+                "  let hit = false;"
+                "  if (cfg.is_regex) { hit = matcher.test(line); }"
+                "  else { hit = (cfg.case_sensitive ? line : line.toLowerCase()).includes(cfg.query.toLowerCase()); }"
+                "  if (!hit) continue;"
+                "  total++;"
+                "  if (matches.length < cfg.max_results) {"
+                "    matches.push({line_number: i + 1, text: line.slice(0, 300)});"
+                "  }"
+                "}"
+                "return JSON.stringify({total_matches: total, shown: matches.length, matches: matches});"
+                "})"
+            )
+            raw = await self._call_with_deadline(page.evaluate(js), timeout=30.0)
+            data = _json.loads(raw) if isinstance(raw, str) else (raw or {})
+            if isinstance(data, dict) and data.get("error"):
+                return ToolResult(success=False, message=data["error"])
+            total = data.get("total_matches", 0)
+            shown = data.get("matches", [])
+            if total == 0:
+                return ToolResult(
+                    success=True,
+                    message=(
+                        f"No match for {query!r} on the visible page text. "
+                        "The text may live inside an iframe, canvas, or load later — "
+                        "browser_wait_for_element / scrolling / browser_console_exec are the fallbacks."
+                    ),
+                    data={"total_matches": 0, "matches": []},
+                )
+            return ToolResult(
+                success=True,
+                message=f"Found {total} match(es) for {query!r} (showing {len(shown)}).",
+                data={
+                    "total_matches": total,
+                    "matches": shown,
+                    "note": (
+                        "Counts cover the WHOLE page text, including off-viewport content. "
+                        "Free and instant — prefer this over scroll-and-scan when locating text."
+                    ),
+                },
+            )
+        except Exception as exc:
+            return ToolResult(success=False, message=f"Failed to search page: {exc}")
+
+    async def find_elements(
+        self,
+        selector: str,
+        max_results: int = 30,
+    ) -> ToolResult:
+        """Query the live DOM with a CSS selector and get a compact element summary.
+
+        Free and instant — great for counting items (table rows, cards, results),
+        collecting links/attributes, or understanding page structure BEFORE acting.
+        Each match carries its viewport position, so anything actionable can be
+        clicked via browser_click coordinates even when it is not in the
+        interactive-elements list.
+        """
+        import json as _json
+
+        try:
+            page = await self._get_current_page()
+            payload = _json.dumps(
+                {
+                    "selector": selector,
+                    "max_results": max(1, min(int(max_results or 30), 200)),
+                }
+            )
+            js = (
+                "(async () => {"
+                f"const p = {_json.dumps(payload)};"
+                "const cfg = JSON.parse(p);"
+                "let nodes;"
+                "try { nodes = Array.from(document.querySelectorAll(cfg.selector)); }"
+                "catch (e) { return JSON.stringify({error: 'Invalid CSS selector: ' + e.message}); }"
+                "const total = nodes.length;"
+                "const out = [];"
+                "const vw = window.innerWidth, vh = window.innerHeight;"
+                "for (let i = 0; i < nodes.length && out.length < cfg.max_results; i++) {"
+                "  const el = nodes[i];"
+                "  const r = el.getBoundingClientRect();"
+                "  const attrs = {};"
+                "  for (const a of el.attributes) {"
+                "    if (['id','class','href','type','name','aria-label','placeholder','role','value','title','action','data-testid'].includes(a.name)) attrs[a.name] = a.value.slice(0, 120);"
+                "  }"
+                "  const text = (el.innerText || el.textContent || '').trim().replace(/\\s+/g, ' ').slice(0, 120);"
+                "  out.push({"
+                "    tag: el.tagName.toLowerCase(),"
+                "    text: text,"
+                "    attributes: attrs,"
+                "    rect: {x: Math.round(r.x), y: Math.round(r.y), w: Math.round(r.width), h: Math.round(r.height)},"
+                "    in_viewport: r.width > 0 && r.height > 0 && r.bottom > 0 && r.right > 0 && r.top < vh && r.left < vw"
+                "  });"
+                "}"
+                "return JSON.stringify({total: total, shown: out.length, elements: out});"
+                "})"
+            )
+            raw = await self._call_with_deadline(page.evaluate(js), timeout=30.0)
+            data = _json.loads(raw) if isinstance(raw, str) else (raw or {})
+            if isinstance(data, dict) and data.get("error"):
+                return ToolResult(success=False, message=data["error"])
+            total = data.get("total", 0)
+            elements = data.get("elements", [])
+            if total == 0:
+                return ToolResult(
+                    success=True,
+                    message=f"0 elements match {selector!r}.",
+                    data={"total": 0, "elements": []},
+                )
+            return ToolResult(
+                success=True,
+                message=f"{total} element(s) match {selector!r} (showing {len(elements)}).",
+                data={
+                    "total": total,
+                    "elements": elements,
+                    "note": (
+                        "Click any match with browser_click(coordinate_x, coordinate_y) using "
+                        "rect center; out-of-viewport elements need a scroll first."
+                    ),
+                },
+            )
+        except Exception as exc:
+            return ToolResult(success=False, message=f"Failed to find elements: {exc}")
+
+    async def find_text(
+        self,
+        query: str,
+        is_regex: bool = False,
+    ) -> ToolResult:
+        """Scroll the first occurrence of a text into the viewport and report where it is.
+
+        Use when a target is off-screen: this brings it into view (centered) so
+        its interactive index becomes visible in the next observation, or its
+        position can be clicked via coordinates.
+        """
+        import json as _json
+
+        try:
+            page = await self._get_current_page()
+            payload = _json.dumps({"query": query, "is_regex": bool(is_regex)})
+            js = (
+                "(async () => {"
+                f"const p = {_json.dumps(payload)};"
+                "const cfg = JSON.parse(p);"
+                "let re;"
+                "try {"
+                "  re = cfg.is_regex ? new RegExp(cfg.query, 'i') : new RegExp(cfg.query.replace(/[.*+?^${}()|[\\]\\\\]/g, '\\\\$&'), 'i');"
+                "} catch (e) { return JSON.stringify({error: 'Invalid pattern: ' + e.message}); }"
+                "const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT, {"
+                "  acceptNode: (n) => {"
+                "    if (!n.nodeValue || !n.nodeValue.trim()) return NodeFilter.FILTER_REJECT;"
+                "    const s = window.getComputedStyle(n.parentElement);"
+                "    if (s.display === 'none' || s.visibility === 'hidden') return NodeFilter.FILTER_REJECT;"
+                "    return re.test(n.nodeValue) ? NodeFilter.FILTER_ACCEPT : NodeFilter.FILTER_REJECT;"
+                "  }"
+                "});"
+                "const node = walker.nextNode();"
+                "if (!node) return JSON.stringify({found: false});"
+                "const el = node.parentElement;"
+                "el.scrollIntoView({block: 'center', behavior: 'instant'});"
+                "const r = el.getBoundingClientRect();"
+                "return JSON.stringify({"
+                "  found: true,"
+                "  tag: el.tagName.toLowerCase(),"
+                "  text: (el.innerText || node.nodeValue || '').trim().replace(/\\s+/g, ' ').slice(0, 200),"
+                "  rect: {x: Math.round(r.x), y: Math.round(r.y), w: Math.round(r.width), h: Math.round(r.height)},"
+                "  scrolled_to_center: true"
+                "});"
+                "})"
+            )
+            raw = await self._call_with_deadline(page.evaluate(js), timeout=30.0)
+            data = _json.loads(raw) if isinstance(raw, str) else (raw or {})
+            if isinstance(data, dict) and data.get("error"):
+                return ToolResult(success=False, message=data["error"])
+            if not data.get("found"):
+                return ToolResult(
+                    success=True,
+                    message=(
+                        f"Text {query!r} not found on the page. Use browser_search_page to confirm, "
+                        "or the text may render later — browser_wait_for_element can help."
+                    ),
+                    data={"found": False},
+                )
+            return ToolResult(
+                success=True,
+                message=f"Found and scrolled {query!r} into view.",
+                data=data,
+            )
+        except Exception as exc:
+            return ToolResult(success=False, message=f"Failed to find text: {exc}")
+
+    async def close_tab(self, tab_index: int) -> ToolResult:
+        """Close a browser tab by its 1-based index (as shown by open_tabs / browser_list_tabs).
+
+        The last remaining tab cannot be closed. If the ACTIVE tab is closed,
+        focus moves to the first remaining tab and the observation baseline is
+        reset — re-observe before the next action.
+        """
+        try:
+            session = await self._ensure_session()
+            pages = await session.get_pages()
+            if not pages:
+                return ToolResult(success=False, message="No tabs are open")
+            if tab_index < 1 or tab_index > len(pages):
+                return ToolResult(
+                    success=False,
+                    message=f"Tab {tab_index} does not exist. {len(pages)} tab(s) are currently open.",
+                )
+            if len(pages) == 1:
+                return ToolResult(
+                    success=False,
+                    message="Cannot close the only remaining tab — use browser_navigate to leave the page instead.",
+                )
+            target = pages[tab_index - 1]
+            target_id = target._target_id
+            current = await session.get_current_page()
+            was_active = bool(current and current._target_id == target_id)
+            await session.close_page(target)
+            await asyncio.sleep(0.3)
+            remaining = await session.get_pages()
+            if was_active:
+                # Same hygiene as switch_tab: the element-diff baselines belong
+                # to the closed page — reset them so the next observation of the
+                # newly-focused tab starts clean.
+                self._cached_page = None
+                self._last_elements_signature = None
+                self._previous_node_keys = None
+            try:
+                new_url = await remaining[0].get_url() if remaining else ""
+            except Exception:
+                new_url = "unknown"
+            return ToolResult(
+                success=True,
+                message=(
+                    f"Closed tab {tab_index}. {len(remaining)} tab(s) remain."
+                    + (f" Active tab is now: {new_url} — re-observe before acting." if was_active else "")
+                ),
+                data={"closed_tab": tab_index, "total_tabs": len(remaining), "was_active": was_active},
+            )
+        except Exception as exc:
+            return ToolResult(success=False, message=f"Failed to close tab: {exc}")

@@ -189,7 +189,7 @@ GITHUB_REPOSITORY_URL = "https://github.com/manusletgo123/dzeck"
 SSL_VERIFY = "false"
 GITHUB_TOKEN = "None"
 E2B_API_KEY = "./)e2b_964bede70ba199765e4a595b21500872375b03be"
-SANDBOX_PROVIDER = "auto"
+SANDBOX_PROVIDER = "replit"
 E2B_SANDBOX_TIMEOUT = "900"
 
 [postMerge]
