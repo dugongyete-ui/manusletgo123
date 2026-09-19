@@ -64,6 +64,12 @@ def _friendly_task_error(exc: Exception) -> str:
     meaningless to end users. Map the common provider failures to short,
     actionable guidance while the full traceback still goes to the server log.
     """
+    # Runtime-contract wall-clock guard (runtime.config.json
+    # agent.task_timeout_ms) — must surface its own clear message, never the
+    # generic "Task error: ..." fallback.
+    if isinstance(exc, _TaskTimeoutError):
+        return str(exc)
+
     import openai as _openai
 
     if isinstance(exc, _openai.AuthenticationError):
@@ -112,6 +118,11 @@ def _friendly_task_error(exc: Exception) -> str:
             "new session or split the task into smaller steps."
         )
     return f"Task error: {exc}"
+
+
+class _TaskTimeoutError(Exception):
+    """Raised when an agent run exceeds the runtime-contract wall clock."""
+
 
 class AgentTaskRunner(TaskRunner):
     """Agent task that can be cancelled"""
@@ -999,6 +1010,30 @@ class AgentTaskRunner(TaskRunner):
         # so the post-run quota-saving pause is skipped.
         waited_for_user = False
         self._run_failed = False
+        # ── Runtime contract: agent.task_timeout_ms wall clock ──────────
+        # A runaway run (infinite tool loops the identical-call guard cannot
+        # see, hung browsers) must terminate honestly as FAILED instead of
+        # burning provider tokens forever. Checked between flow events —
+        # 0 disables the guard (operator choice).
+        import time as _time_mod
+        _run_started = _time_mod.monotonic()
+        _timeout_ms = int(
+            getattr(get_settings(), "manus_task_timeout_ms", 0) or 0
+        )
+
+        def _check_task_timeout() -> None:
+            if _timeout_ms <= 0:
+                return
+            elapsed_ms = (_time_mod.monotonic() - _run_started) * 1000
+            if elapsed_ms >= _timeout_ms:
+                raise _TaskTimeoutError(
+                    f"Task exceeded the wall-clock limit of "
+                    f"{_timeout_ms // 1000}s and was stopped "
+                    f"(runtime.config.json agent.task_timeout_ms). "
+                    f"/ Tugas melebihi batas waktu {_timeout_ms // 1000} detik "
+                    f"dan dihentikan — coba pecah menjadi beberapa task lebih kecil."
+                )
+
         try:
             logger.info(f"Agent {self._agent_id} message processing task started")
 
@@ -1011,6 +1046,7 @@ class AgentTaskRunner(TaskRunner):
             mcp_task = asyncio.create_task(self._mcp_tool.initialized(mcp_config))
 
             while not await task.input_stream.is_empty():
+                _check_task_timeout()
                 event = await self._pop_event(task)
                 message = ""
                 if isinstance(event, MessageEvent):
@@ -1105,6 +1141,10 @@ class AgentTaskRunner(TaskRunner):
                 
                 async for event in self._run_flow(message_obj, sandbox_task, mcp_task):
                     await self._put_and_add_event(task, event)
+                    # Wall-clock guard also fires MID-FLOW: long tool loops
+                    # pump events continuously, so this is the natural
+                    # checkpoint between every agent step.
+                    _check_task_timeout()
                     if isinstance(event, TitleEvent):
                         await self._session_repository.update_title(self._session_id, event.title)
                     elif isinstance(event, MessageEvent):

@@ -67,10 +67,23 @@ def get_registry() -> Dict[str, Any]:
     counts = registry.get("counts") or {}
     mcp_count = sum(1 for t in tools if t["transport"] == "mcp")
     shell_count = sum(1 for t in tools if t["transport"] == "shell")
+    # ToolRegistry reference contract (agent_runtime_examples.ts): a declared
+    # counts.total that disagrees with the array means a drifted registry —
+    # fail loudly instead of serving a partial tool surface.
+    if counts.get("total") is not None and counts.get("total") != len(tools):
+        raise RegistryError(
+            f"Registry count mismatch: declared={counts.get('total')}, "
+            f"actual={len(tools)}"
+        )
     if counts and counts.get("mcp") != mcp_count:
         logger.warning(
             "registry counts.mcp=%s but array holds %s MCP tools — array wins",
             counts.get("mcp"), mcp_count,
+        )
+    if counts and counts.get("shell") != shell_count:
+        logger.warning(
+            "registry counts.shell=%s but array holds %s shell tools — array wins",
+            counts.get("shell"), shell_count,
         )
 
     # Standalone file drift check (non-fatal: log-only, files are informational)

@@ -265,6 +265,10 @@ class ManusGate:
                             session_id=self.session_id,
                         )
                     )
+                    # Contract task.state-machine.json: confirmation_required
+                    # pauses the task (running → waiting_confirmation) until
+                    # the approval resumes it.
+                    run_registry.pause_run(self.task_id)
                 except Exception:  # noqa: BLE001
                     logger.debug("confirmation event failed", exc_info=True)
                 return self._finish(tool_name, tool_call_id, args_hash, payload, brief)
@@ -284,6 +288,10 @@ class ManusGate:
                     session_id=self.session_id,
                 )
             )
+            # Contract task.state-machine.json: a tool actually executing
+            # means the run is running again (waiting_confirmation → running
+            # after an approved confirmation).
+            run_registry.resume_run(self.task_id)
             self._execution_started = True
         except Exception:  # noqa: BLE001
             logger.debug("tool_call_started event failed", exc_info=True)

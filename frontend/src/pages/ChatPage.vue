@@ -642,6 +642,9 @@ const handleStepEvent = (stepData: StepEventData) => {
 // Handle error event
 const handleErrorEvent = (errorData: ErrorEventData) => {
   isLoading.value = false;
+  // An errored turn frees the user to resend the same text immediately —
+  // lift the duplicate-send guard for the next submission.
+  lastSubmission.value.errored = true;
   messages.value.push({
     type: 'assistant',
     content: {
@@ -718,6 +721,21 @@ const handleSubmit = () => {
   chat(inputMessage.value, attachments.value);
 }
 
+// ── Double-send guard ──────────────────────────────────────────────────
+// Reported bug: one send produced TWO full agent turns 33 s apart (same
+// text, same session). Whatever re-fired the submit (double Enter, double
+// click, flaky client), the second identical submission must never leave
+// this page. Window 45 s covers the observed 33 s case; a failed send
+// (connection error / error event) EXEMPTS so a manual retry still works.
+// The backend enforces the same rule with a 120 s window as a backstop.
+const DUPLICATE_SEND_WINDOW_MS = 45_000;
+const lastSubmission = ref({
+  sessionId: '',
+  content: '',
+  at: 0,
+  errored: false,
+});
+
 const chat = async (message: string = '', files: FileInfo[] = []) => {
   if (!sessionId.value) return;
 
@@ -728,6 +746,26 @@ const chat = async (message: string = '', files: FileInfo[] = []) => {
   }
 
   if (message.trim()) {
+    const content = message.trim();
+    const now = Date.now();
+    const isDuplicate =
+      lastSubmission.value.sessionId === sessionId.value &&
+      lastSubmission.value.content === content &&
+      !lastSubmission.value.errored &&
+      now - lastSubmission.value.at < DUPLICATE_SEND_WINDOW_MS;
+    if (isDuplicate) {
+      console.warn('[Guard] duplicate send suppressed (identical message within window)');
+      showErrorToast(t('The same message was just sent — duplicate send ignored.'));
+      // Keep isLoading untouched: the original run is still streaming.
+      return;
+    }
+    lastSubmission.value = {
+      sessionId: sessionId.value,
+      content,
+      at: now,
+      errored: false,
+    };
+
     // Add user message to conversation list
     messages.value.push({
       type: 'user',
@@ -795,6 +833,9 @@ const chat = async (message: string = '', files: FileInfo[] = []) => {
           if (cancelCurrentChat.value) {
             cancelCurrentChat.value = null;
           }
+          // The failed send is exempt from the duplicate guard — the user
+          // must be able to retry immediately.
+          lastSubmission.value.errored = true;
           // A silent stream death is the worst failure mode: the plan panel
           // freezes mid-progress (e.g. "1/8") and the user cannot tell a dead
           // server from a working agent. Surface it — except user cancels.

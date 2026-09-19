@@ -1,0 +1,41 @@
+{
+  "schema_version": "1.0",
+  "states": [
+    "pending",
+    "running",
+    "waiting_confirmation",
+    "completed",
+    "failed",
+    "cancelled"
+  ],
+  "transitions": [
+    {
+      "from": "pending",
+      "to": "running"
+    },
+    {
+      "from": "running",
+      "to": "waiting_confirmation"
+    },
+    {
+      "from": "waiting_confirmation",
+      "to": "running"
+    },
+    {
+      "from": "running",
+      "to": "completed"
+    },
+    {
+      "from": "running",
+      "to": "failed"
+    },
+    {
+      "from": "pending",
+      "to": "cancelled"
+    },
+    {
+      "from": "running",
+      "to": "cancelled"
+    }
+  ]
+}

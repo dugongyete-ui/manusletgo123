@@ -1,0 +1,26 @@
+{
+  "schema_version": "1.0",
+  "purpose": "Runtime configuration and verification contracts for the autonomous agent.",
+  "not_tools": true,
+  "use_with": [
+    "manus_tool_registry/registry.json",
+    "agent_architecture_json/architecture.json"
+  ],
+  "missing_if_not_implemented": [
+    "actual MCP client adapter",
+    "actual model provider adapter",
+    "database persistence",
+    "SSE/WebSocket server",
+    "authentication/authorization",
+    "queue worker for long tasks"
+  ],
+  "order": [
+    "load registry",
+    "load config",
+    "initialize policy",
+    "initialize state",
+    "run orchestrator",
+    "publish events",
+    "persist trace"
+  ]
+}

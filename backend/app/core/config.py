@@ -241,6 +241,19 @@ class Settings(BaseSettings):
     manus_max_retries_per_call: int = 2
     # Pending confirmation TTL (contract: expire token rule).
     manus_confirmation_ttl_seconds: int = 600
+    # ── Agent runtime contracts (agent_runtime_json v1.0) ──────────────────
+    # Wall-clock budget per agent RUN in ms (runtime.config.json
+    # agent.task_timeout_ms=900000). 0 disables the wall-clock guard.
+    manus_task_timeout_ms: int = 900_000
+    # LLM context cap in messages (runtime.config.json
+    # agent.context_max_messages=200) — oldest messages roll off first.
+    agent_context_max_messages: int = 200
+    # Duplicate-submission window in seconds: the SAME message text re-sent
+    # to the same session within this window (double Enter / double click /
+    # flaky client retry) is treated as a reconnect instead of a new turn —
+    # it must never run the whole agent loop twice (reported bug: one send
+    # produced two full replies 33 s apart).
+    agent_duplicate_message_window_seconds: int = 120
 
     # Logging configuration
     log_level: str = "INFO"

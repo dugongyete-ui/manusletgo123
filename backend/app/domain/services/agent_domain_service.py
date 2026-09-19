@@ -392,20 +392,98 @@ class AgentDomainService:
                     else None
                 )
 
+                # ── Duplicate-submission guard (runtime dedup) ──────────────
+                # Reported bug: ONE user send produced TWO full agent turns
+                # 33 s apart (same text, same session) — the second POST
+                # passed every existing guard because dedup only covered
+                # status==RUNNING with a <10 s timestamp window.
+                #
+                # Rule now: the same message text re-submitted to the same
+                # session is treated as a RECONNECT (never a new turn) while
+                # it is in flight, or shortly after it completed.
+                # Exemptions (a resend must flow):
+                #   - FAILED        → the user retries after an error
+                #   - WAITING       → ask_user resume (answers may repeat)
+                #   - unprocessed   → the message never actually ran
+                #                     (restart orphan) — recovery re-feeds it
+                try:
+                    from app.core.config import get_settings as _gs
+                    dup_window = int(
+                        getattr(_gs(), "agent_duplicate_message_window_seconds", 120) or 0
+                    )
+                except Exception:  # noqa: BLE001
+                    dup_window = 120
+
+                now_ts = _to_utc_naive(datetime.now(timezone.utc))
+                same_content = bool(
+                    session.latest_user_message
+                    and message.strip() == str(session.latest_user_message).strip()
+                )
+                age_seconds = (
+                    (now_ts - stored_ts).total_seconds() if stored_ts else None
+                )
+                recently_submitted = (
+                    age_seconds is not None and 0 <= age_seconds < dup_window
+                )
+
+                in_flight = session.status in (
+                    SessionStatus.PENDING,
+                    SessionStatus.IN_QUEUE,
+                    SessionStatus.RUNNING,
+                )
+                task_finished = bool(getattr(task, "done", False)) if task else False
+                last_turn_failed = session.status == SessionStatus.FAILED
+                ask_user_resume = session.status == SessionStatus.WAITING
+
+                # When the identical message exists but no live task holds it,
+                # only suppress if it was ALREADY processed (an assistant
+                # answer followed it in the event log). An unprocessed copy
+                # means the run died before starting — a resend must recover.
+                processed_cleanly = True
+                if task is None and same_content:
+                    processed_cleanly = (
+                        self._last_unprocessed_user_message(session) is None
+                    )
+
                 is_reconnect = (
-                    session.status == SessionStatus.RUNNING
-                    and task is not None
-                    and incoming_ts is not None
-                    and stored_ts is not None
-                    and abs((incoming_ts - stored_ts).total_seconds()) < 10
+                    same_content
+                    and not last_turn_failed
+                    and not ask_user_resume
+                    and (
+                        (task is not None and (in_flight or task_finished))
+                        or (
+                            task is None
+                            and processed_cleanly
+                            and recently_submitted
+                            and session.status
+                            in (
+                                SessionStatus.PENDING,
+                                SessionStatus.IN_QUEUE,
+                                SessionStatus.RUNNING,
+                                SessionStatus.COMPLETED,
+                            )
+                        )
+                    )
                 )
 
                 if is_reconnect:
                     logger.info(
-                        "[Dedup] Session %s: duplicate message detected (reconnect) — "
-                        "skipping re-queue, re-subscribing to existing task output",
+                        "[Dedup] Session %s: duplicate submission of the last "
+                        "user message (age=%.1fs, status=%s, live_task=%s) — "
+                        "treating as reconnect, NOT re-queuing",
                         session_id,
+                        age_seconds if age_seconds is not None else -1.0,
+                        session.status.value,
+                        task is not None,
                     )
+                    if task is None:
+                        # The earlier identical turn already finished and its
+                        # task is gone — nothing to subscribe to. Close the
+                        # SSE stream cleanly instead of running the loop again.
+                        yield DoneEvent()
+                        return
+                    # Live (or just-finished) task owns this message: fall
+                    # through to the drain loop and re-subscribe to its output.
                 else:
                     # ── Persist the user message IMMEDIATELY (fast path) ────────
                     # _create_task() below can block for 1–7 minutes on the

@@ -1,0 +1,46 @@
+{
+  "schema_version": "1.0",
+  "defaults": {
+    "allow_unknown_tools": false,
+    "allow_disabled_tools": false,
+    "allow_raw_shell_command": false,
+    "log_secrets": false,
+    "send_secrets_to_model": false
+  },
+  "confirmation_required_for": [
+    "destructive",
+    "database_changes",
+    "secret_changes",
+    "external_submission",
+    "billing",
+    "permission_changes",
+    "delete_operations"
+  ],
+  "shell": {
+    "allowlist": [
+      "/usr/local/bin/manus-analyze-pptx",
+      "/usr/local/bin/manus-analyze-video",
+      "/usr/local/bin/manus-channel",
+      "/usr/local/bin/manus-config",
+      "/usr/local/bin/manus-export-slides",
+      "/usr/local/bin/manus-heartbeat",
+      "/usr/local/bin/manus-mcp-cli",
+      "/usr/local/bin/manus-md-to-pdf",
+      "/usr/local/bin/manus-render-diagram",
+      "/usr/local/bin/manus-speech-to-text",
+      "/usr/local/bin/manus-token-local-proxy",
+      "/usr/local/bin/manus-tools",
+      "/usr/local/bin/manus-touchpoint",
+      "/usr/local/bin/manus-touchpoint-fuse",
+      "/usr/local/bin/manus-upload-file",
+      "/usr/local/bin/manus-webdev-logs"
+    ],
+    "reject_args": [
+      "bash",
+      "sh",
+      "-c",
+      "--command",
+      "eval"
+    ]
+  }
+}

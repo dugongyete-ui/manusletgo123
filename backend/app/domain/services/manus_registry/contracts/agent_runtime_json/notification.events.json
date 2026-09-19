@@ -1,0 +1,39 @@
+{
+  "schema_version": "1.0",
+  "delivery": [
+    "sse",
+    "websocket",
+    "polling",
+    "database_event_log"
+  ],
+  "events": {
+    "agent_started": {
+      "terminal": false
+    },
+    "tool_call_started": {
+      "terminal": false
+    },
+    "tool_call_finished": {
+      "terminal": false
+    },
+    "confirmation_required": {
+      "terminal": false,
+      "pauses_task": true
+    },
+    "agent_error": {
+      "terminal": true
+    },
+    "agent_finished": {
+      "terminal": true
+    }
+  },
+  "redaction": [
+    "api_key",
+    "access_token",
+    "cookie",
+    "password",
+    "secret",
+    "authorization",
+    "raw_stack_trace"
+  ]
+}

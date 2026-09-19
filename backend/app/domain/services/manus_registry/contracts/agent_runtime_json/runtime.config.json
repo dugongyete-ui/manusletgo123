@@ -1,0 +1,37 @@
+{
+  "schema_version": "1.0",
+  "agent": {
+    "max_steps": 20,
+    "max_retries_per_tool_call": 2,
+    "max_identical_tool_calls": 2,
+    "task_timeout_ms": 900000,
+    "context_max_messages": 200
+  },
+  "transports": {
+    "mcp": {
+      "enabled": true,
+      "server": "manus-tools",
+      "timeout_ms": 120000
+    },
+    "shell": {
+      "enabled": true,
+      "timeout_ms": 120000,
+      "max_stdout_bytes": 1000000,
+      "max_stderr_bytes": 1000000,
+      "shell": false
+    }
+  },
+  "browser": {
+    "default_target": "sandbox",
+    "refresh_view_after_mutation": true,
+    "reject_stale_element_index": true
+  },
+  "notifications": {
+    "adapter": "sse",
+    "persist_events": true
+  },
+  "logging": {
+    "redact_secrets": true,
+    "include_tool_arguments": false
+  }
+}

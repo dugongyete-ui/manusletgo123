@@ -1,0 +1,34 @@
+{
+  "schema_version": "1.0",
+  "variables": [
+    {
+      "name": "LLM_API_KEY",
+      "required": true,
+      "secret": true,
+      "description": "Provider model key"
+    },
+    {
+      "name": "MCP_ENDPOINT",
+      "required": true,
+      "secret": false,
+      "description": "MCP server endpoint"
+    },
+    {
+      "name": "AGENT_DATABASE_URL",
+      "required": true,
+      "secret": true,
+      "description": "Task and conversation persistence"
+    },
+    {
+      "name": "NOTIFICATION_PUBLIC_URL",
+      "required": false,
+      "secret": false,
+      "description": "SSE/WebSocket public endpoint"
+    }
+  ],
+  "rules": [
+    "never commit actual values",
+    "load server-side only",
+    "redact from logs and events"
+  ]
+}

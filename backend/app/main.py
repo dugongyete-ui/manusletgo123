@@ -86,6 +86,27 @@ async def _init_databases() -> None:
 async def lifespan(app: FastAPI):
     logger.info("Application startup - Dzeck AI Agent initializing")
 
+    # ── Agent runtime contract: environment validation (v1.0) ──────────
+    # environment.template.json declares required variables; presence-only
+    # check (values NEVER logged). Missing required vars log a WARNING —
+    # the server still boots so the operator can fix the env and restart.
+    try:
+        from app.domain.services.manus_registry.runtime_config import (
+            get_runtime_config,
+            validate_environment,
+        )
+        validate_environment()
+        cfg = get_runtime_config()
+        logger.info(
+            "Runtime contract loaded: max_steps=%s task_timeout_ms=%s "
+            "context_max_messages=%s shell_timeout_ms=%s (source=%s)",
+            cfg.agent.max_steps, cfg.agent.task_timeout_ms,
+            cfg.agent.context_max_messages,
+            cfg.transports.shell_timeout_ms, cfg.source,
+        )
+    except Exception:  # noqa: BLE001 — contract loading must never kill boot
+        logger.warning("Runtime contract validation failed", exc_info=True)
+
     # Self-heal the compiled frontend: a reprovision/snapshot restore can roll
     # frontend/dist back to an old build while the source stays new (observed
     # in production — the chat UI suddenly lost the collapsible-prompt/copy

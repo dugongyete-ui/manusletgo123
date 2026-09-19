@@ -1,0 +1,45 @@
+{
+  "schema_version": "1.0",
+  "scenarios": [
+    {
+      "id": "final_without_tool",
+      "expected": "completed"
+    },
+    {
+      "id": "single_mcp_tool",
+      "tool": "browser_view",
+      "expected": "tool_result_then_final"
+    },
+    {
+      "id": "multi_step_browser",
+      "tools": [
+        "browser_navigate",
+        "browser_view",
+        "browser_click",
+        "browser_view"
+      ],
+      "expected": "preserve_session"
+    },
+    {
+      "id": "invalid_arguments",
+      "expected": "validation_error_no_execution"
+    },
+    {
+      "id": "shell_not_allowlisted",
+      "expected": "permission_denied"
+    },
+    {
+      "id": "confirmation_required",
+      "tool": "webdev_execute_sql",
+      "expected": "waiting_confirmation"
+    },
+    {
+      "id": "max_steps",
+      "expected": "failed_or_stopped"
+    },
+    {
+      "id": "repeated_call",
+      "expected": "loop_guard_stop"
+    }
+  ]
+}

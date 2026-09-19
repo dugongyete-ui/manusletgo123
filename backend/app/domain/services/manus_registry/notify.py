@@ -1,12 +1,19 @@
-"""Notification Event Bus + Run Registry (agent architecture contract v1.0).
+"""Notification Event Bus + Run Registry (agent architecture contract v1.0
++ agent_runtime_json v1.0 notification.events.json).
 
 Contract: agent_architecture_json/notification-event-bus/contract.json
+          contracts/agent_runtime_json/notification.events.json
 
 Role: menerbitkan status agent kepada frontend/user — BUKAN MCP tool.
 
-Events (contract enum):
-    agent_started, tool_call_started, tool_call_finished,
-    confirmation_required, agent_error, agent_finished
+Events (contract enum — terminal / pauses_task flags from the runtime
+notification.events.json):
+    agent_started          terminal=False
+    tool_call_started      terminal=False
+    tool_call_finished     terminal=False
+    confirmation_required  terminal=False, pauses_task=True
+    agent_error            terminal=True
+    agent_finished         terminal=True
 
 Event shape (contract event_schema):
     {type, task_id, step?, message, data?}   (+ timestamp, session_id)
@@ -17,6 +24,8 @@ Adapters implemented here:
 
 Redaction: every event passes redact_secrets() — api_key / access_token /
 cookie / password / secret / raw stack traces never leave the process.
+Run lifecycle changes are validated against task.state-machine.json
+(pending → running ⇄ waiting_confirmation → completed | failed | cancelled).
 """
 from __future__ import annotations
 
@@ -25,6 +34,8 @@ import time
 from typing import Any, Dict, List, Optional
 
 from app.domain.services.manus_registry.errors import redact_secrets
+from app.domain.services.manus_registry.runtime_config import load_contract
+from app.domain.services.manus_registry import state_machine as tsm
 
 logger = logging.getLogger(__name__)
 
@@ -40,6 +51,31 @@ EVENT_TYPES = {
     AGENT_STARTED, TOOL_CALL_STARTED, TOOL_CALL_FINISHED,
     CONFIRMATION_REQUIRED, AGENT_ERROR, AGENT_FINISHED,
 }
+
+# ── notification.events.json contract metadata ──────────────────────────
+def _load_event_metadata() -> Dict[str, Dict[str, Any]]:
+    try:
+        contract = load_contract("notification.events.json")
+        return contract.get("events") or {}
+    except Exception:  # noqa: BLE001 — missing contract → safe defaults
+        return {}
+
+_EVENT_META = _load_event_metadata()
+
+TERMINAL_EVENTS = frozenset(
+    name for name, meta in _EVENT_META.items() if meta.get("terminal")
+) or frozenset({AGENT_ERROR, AGENT_FINISHED})
+
+PAUSES_TASK_EVENTS = frozenset(
+    name for name, meta in _EVENT_META.items() if meta.get("pauses_task")
+) or frozenset({CONFIRMATION_REQUIRED})
+
+DELIVERY_ADAPTERS = ("sse", "websocket", "polling", "database_event_log")
+
+
+def event_metadata(event_type: str) -> Dict[str, Any]:
+    """Contract metadata (terminal / pauses_task) for one event type."""
+    return dict(_EVENT_META.get(event_type, {}))
 
 # Bounded retention (single-process uvicorn deployment).
 MAX_EVENTS_PER_RUN = 400
@@ -103,10 +139,14 @@ class RunRegistry:
             user_id=user_id,
             started_at=time.time(),
             finished_at=None,
-            status="running",
+            # Contract task.state-machine.json: a run is born pending and
+            # immediately transitions pending → running (bootstrap below).
+            status=tsm.PENDING,
             events=[],
             trace=[],
         )
+        tsm.assert_transition(rec["status"], tsm.RUNNING)
+        rec["status"] = tsm.RUNNING
         bucket = self._sessions.setdefault(session_id, [])
         bucket.append(rec)
         while len(bucket) > MAX_RUNS_PER_SESSION:
@@ -121,11 +161,47 @@ class RunRegistry:
         return rec
 
     def finish_run(self, task_id: str, status: str) -> None:
+        """Move a run to its terminal status (state-machine validated).
+
+        Valid targets: completed | failed | cancelled. A terminal run never
+        resurrects (illegal transition → logged, record left untouched).
+        """
         rec = self._by_task.get(task_id)
         if rec is None:
             return
-        rec["status"] = status
+        target = tsm.normalize_status(status)
+        try:
+            tsm.assert_transition(rec.get("status", tsm.RUNNING), target)
+        except tsm.IllegalTransition as exc:
+            logger.warning(
+                "finish_run(%s → %s) rejected: %s", rec.get("status"), status, exc
+            )
+            return
+        rec["status"] = target
         rec["finished_at"] = time.time()
+
+    def pause_run(self, task_id: str) -> None:
+        """running → waiting_confirmation (contract: confirmation_required
+        pauses the task; the run resumes when the tool is approved)."""
+        rec = self._by_task.get(task_id)
+        if rec is None:
+            return
+        try:
+            tsm.assert_transition(rec.get("status", tsm.RUNNING), tsm.WAITING_CONFIRMATION)
+        except tsm.IllegalTransition:
+            return  # already waiting / terminal — nothing to pause
+        rec["status"] = tsm.WAITING_CONFIRMATION
+
+    def resume_run(self, task_id: str) -> None:
+        """waiting_confirmation → running (approval granted, tool executing)."""
+        rec = self._by_task.get(task_id)
+        if rec is None:
+            return
+        try:
+            tsm.assert_transition(rec.get("status", tsm.RUNNING), tsm.RUNNING)
+        except tsm.IllegalTransition:
+            return  # not paused / terminal — nothing to resume
+        rec["status"] = tsm.RUNNING
 
     # ── events ───────────────────────────────────────────────────────────
     def emit(self, event: Dict[str, Any]) -> None:

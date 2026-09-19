@@ -31,6 +31,7 @@ from app.domain.services.manus_registry import (
 )
 from app.domain.services.manus_registry.errors import (
     LOOP_DETECTED,
+    PERMISSION_DENIED,
     REQUIRES_CONFIRMATION,
     VALIDATION_ERROR,
     failure_payload,
@@ -381,7 +382,10 @@ def test_shell_executor_rejects_bash_c_sh_c_eval():
         payload = asyncio.run(ex.execute(
             "manus-tools", {"executable": "manus-tools", "argv": argv}))
         assert not payload["success"], argv
-        assert payload["error"]["code"] == VALIDATION_ERROR
+        # Contract layer (security.policy.json shell.reject_args) denies the
+        # raw-shell tokens with PERMISSION_DENIED BEFORE the argv-shape
+        # validation (VALIDATION_ERROR) — both mean "never executed".
+        assert payload["error"]["code"] in (PERMISSION_DENIED, VALIDATION_ERROR), argv
 
 
 def test_shell_executor_does_not_use_shell_true(tmp_path, monkeypatch):

@@ -37,6 +37,7 @@ from app.domain.models.tool_result import ToolResult
 from app.domain.services.manus_registry.errors import (
     EXECUTION_ERROR,
     NOT_SUPPORTED,
+    PERMISSION_DENIED,
     TIMEOUT,
     VALIDATION_ERROR,
     failure_payload,
@@ -44,11 +45,21 @@ from app.domain.services.manus_registry.errors import (
     success_payload,
 )
 from app.domain.services.manus_registry.loader import get_tool_def, list_tools
+from app.domain.services.manus_registry.security_policy import (
+    argv_reject_reason,
+    shell_allowlist_check,
+)
 
 logger = logging.getLogger(__name__)
 
-# Deny-list on top of the schema pattern (defense in depth).
-_DENY_EXACT = {"bash", "sh", "-c", "--command", "eval", "exec", "env", "sudo"}
+# Deny-list on top of the schema pattern (defense in depth). The CONTRACT
+# tokens (security.policy.json shell.reject_args) are merged with the
+# deployment's extended deny-list — the union is always enforced.
+from app.domain.services.manus_registry.security_policy import CONTRACT_REJECT_ARGS as _CONTRACT_REJECT
+_DENY_EXACT = set(_CONTRACT_REJECT) | {
+    "bash", "sh", "-c", "--command", "eval", "exec", "env", "sudo",
+    "rm", "mkfs", "dd", "chmod", "chown",
+}
 _DENY_SUBSTR = ("\x00", "\n", "\r", "`", "$(", "${", "&&", "||", ";", "|", "&")
 
 
@@ -166,17 +177,30 @@ class ManusShellExecutor:
                 f"executable must be '{tool_name}' (registry const), "
                 f"got {executable!r}",
             )
+        # 2b) contract security.policy.json: shell.reject_args scan FIRST —
+        #     bash/sh/-c/--command/eval as argv tokens are denied outright
+        #     (raw shell invocation is forbidden, allow_raw_shell_command=false).
+        #     The contract layer runs before the schema-shape validation so a
+        #     token that slips both schemas still dies here with PERMISSION_DENIED.
+        contract_reason = argv_reject_reason(argv or [])
+        if contract_reason:
+            return failure_payload(tool_name, PERMISSION_DENIED, contract_reason)
+
         ok, reason = _validate_argv(argv or [])
         if not ok:
             return failure_payload(tool_name, VALIDATION_ERROR, reason)
 
-        # 3) allowlist + absolute path
+        # 3) allowlist + absolute path — the registry-derived allowlist AND
+        #    the contract /usr/local/bin/manus-* basenames are BOTH enforced.
         allow = shell_allowlist()
         if tool_name not in allow:
             return failure_payload(
                 tool_name, VALIDATION_ERROR,
                 f"'{tool_name}' is not on the shell allowlist {allow}",
             )
+        contract_ok, contract_denial = shell_allowlist_check(tool_name)
+        if not contract_ok:
+            return failure_payload(tool_name, PERMISSION_DENIED, contract_denial)
         bin_path = f"{self._bin_dir}/{tool_name}"
 
         # 4) executor-built command line: absolute allowlisted path +
