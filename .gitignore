@@ -128,3 +128,6 @@ mcp.json
 
 uv.lock
 specs
+
+# Reconstruction evidence (local only)
+.infra/
