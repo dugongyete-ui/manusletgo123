@@ -67,15 +67,43 @@ pkg install -y $PKG_CORE || {
         pkg install -y "$p" >/dev/null 2>&1 || warn "  paket '$p' gagal — dilewati"
     done
 }
-# Verifikasi paket kritis — tanpa ini instalasi tidak mungkin dilanjutkan.
+# Verifikasi paket kritis. PENTING: cek nama BINARI, bukan nama PAKET —
+# paket 'rust' menyediakan binari rustc/cargo (TIDAK ada binari 'rust'),
+# paket 'nodejs' menyediakan binari 'node' (TIDAK ada binari 'nodejs').
+# Cek nama paket membuat verifikasi selalu gagal walau paket sudah terpasang.
 MISSING=""
-for c in python git clang make rust nodejs proot-distro; do
+for c in python git clang make cargo rustc proot-distro; do
     command -v "$c" >/dev/null 2>&1 || MISSING="$MISSING $c"
 done
 python -m pip --version >/dev/null 2>&1 || MISSING="$MISSING pip"
+if [ -n "$MISSING" ]; then
+    warn "Paket kritis kurang:$MISSING — coba sekali lagi (output penuh agar penyebabnya terlihat)…"
+    for p in $MISSING; do
+        # petakan nama binari → nama paket Termux
+        case "$p" in
+            pip)          PKG_NAME="python-pip" ;;
+            cargo|rustc)  PKG_NAME="rust" ;;
+            node)         PKG_NAME="nodejs" ;;
+            *)            PKG_NAME="$p" ;;
+        esac
+        pkg install -y "$PKG_NAME" || warn "  paket '$PKG_NAME' tetap gagal — lihat pesan apt di atas"
+    done
+    # Re-verify setelah percobaan kedua.
+    MISSING=""
+    for c in python git clang make cargo rustc proot-distro; do
+        command -v "$c" >/dev/null 2>&1 || MISSING="$MISSING $c"
+    done
+    python -m pip --version >/dev/null 2>&1 || MISSING="$MISSING pip"
+fi
 [ -z "$MISSING" ] || die "paket kritis belum terpasang:$MISSING
-    Mirror bermasalah? Jalankan: termux-change-repo  (pilih Mirror Group → sembarang)
-    lalu ulangi: bash install_termux.sh"
+    Penyebab umum: (1) storage penuh  — cek: df -h \$PREFIX  (butuh ±3GB bebas)
+    (2) mirror tak sinkron — termux-change-repo → pilih Mirror Group
+    (3) dpkg terputus — jalankan: dpkg --configure -a  lalu ulangi skrip."
+# nodejs: SOFT requirement — tanpa node, build frontend dilewati (backend tetap jalan).
+if ! command -v node >/dev/null 2>&1; then
+    warn "nodejs tidak terpasang — build frontend akan DILEWATI (backend tetap jalan)."
+    SKIP_FE=1
+fi
 ok "Paket inti + paket Python prebuilt Termux terpasang"
 
 step "1b — paket opsional (best-effort, boleh gagal)"
