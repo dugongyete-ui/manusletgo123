@@ -19,7 +19,9 @@ from __future__ import annotations
 import logging
 from typing import Any, Dict, Optional, Set
 
+from app.domain.services.manus_registry.confirmations import confirmation_store
 from app.domain.services.manus_registry.errors import (
+    PERMISSION_DENIED,
     REQUIRES_CONFIRMATION,
     redact_secrets,
 )
@@ -61,9 +63,16 @@ def requires_confirmation(tool_def: Dict[str, Any]) -> bool:
 
 
 class ConfirmationLedger:
-    """Per-run ledger of pending + approved confirmations."""
+    """Per-run ledger of pending + approved confirmations.
 
-    def __init__(self) -> None:
+    Delegates persistence to the GLOBAL ConfirmationStore (contract:
+    "resume same task after approval") — approvals survive the ask_user
+    pause because the store is keyed by (task_id, tool, args_hash) and
+    lives at process level, not per run.
+    """
+
+    def __init__(self, task_id: Optional[str] = None) -> None:
+        self.task_id = task_id or "unknown-task"
         self._pending: Dict[str, Dict[str, Any]] = {}
         self._approved: Set[str] = set()
 
@@ -108,17 +117,28 @@ class ConfirmationLedger:
 
     def register_user_reply(self, user_reply: str) -> Optional[str]:
         """Mark pending confirmations approved when the user's answer is
-        affirmative. Returns the confirmation_id approved (if any)."""
+        affirmative. Returns the confirmation_id approved (if any).
+
+        Guard: only a SHORT deliberate reply (<= 40 chars) may auto-approve
+        — a full task message that merely contains "ya/ok" must never
+        silently approve a consequential action.
+        """
         if not user_reply:
             return None
         norm = user_reply.strip().lower()
+        if len(norm) > 40:
+            return None
         approved_id: Optional[str] = None
         for h in list(self._pending.keys()):
             if h in norm or _is_affirmative(norm):
                 approved_id = h
             if approved_id:
                 self._approved.add(h)
-                self._pending.pop(h, None)
+                pending = self._pending.pop(h, None)
+                if pending:
+                    confirmation_store.approve_hash(
+                        self.task_id, pending["tool"], h
+                    )
                 logger.info("confirmation %s approved by user reply", approved_id)
                 break
         return approved_id
@@ -128,11 +148,43 @@ class ConfirmationLedger:
 
     def is_approved(self, tool_name: str, arguments: Dict[str, Any]) -> bool:
         h = arguments_hash(tool_name, arguments)
+        # Global store first — approvals must survive across runs
+        # (contract: "resume same task after approval").
+        if confirmation_store.is_approved(self.task_id, tool_name, h):
+            return True
         if h in self._approved:
             # one-shot approval: consume it
             self._approved.discard(h)
             return True
         return False
+
+    def rejected_payload(
+        self, tool_name: str, arguments: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        """Terminal payload when the user explicitly REJECTED this action.
+        Non-retryable: the model must change approach, not re-ask."""
+        return {
+            "success": False,
+            "tool": tool_name,
+            "data": None,
+            "error": {
+                "code": PERMISSION_DENIED,
+                "message": (
+                    f"User MENOLAK {tool_name}. Jangan ulangi panggilan ini "
+                    "dengan argumen yang sama — pilih pendekatan lain atau "
+                    "tanyakan alternatif ke user."
+                ),
+                "details": {
+                    "decision": "rejected",
+                    "confirmation_id": arguments_hash(tool_name, arguments),
+                    "guidance": (
+                        "Respect the user's decision. Explain the impact and "
+                        "offer a safer alternative if one exists."
+                    ),
+                },
+            },
+            "retryable": False,
+        }
 
     def reset(self) -> None:
         self._pending.clear()

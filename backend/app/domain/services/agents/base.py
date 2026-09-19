@@ -899,6 +899,30 @@ class BaseAgent(ABC):
 
     async def execute(self, request: Union[str, list], format: Optional[str] = None) -> AsyncGenerator[BaseEvent, None]:
         format = format or self.format
+
+        # ── Agent orchestrator contract v1.0: run bootstrap ─────────────
+        # agent_started event (notification-event-bus) + in-band approval
+        # hook: the user's reply may BE the confirmation answer ("ya") for
+        # a pending consequential action, so the ledger must see it BEFORE
+        # the first tool call of this run (contract: "resume same task
+        # after approval" — this wiring was previously missing entirely).
+        try:
+            _ctx = getattr(self, "task_context", None)
+            if _ctx and get_settings().manus_registry_enabled:
+                from app.domain.services.manus_registry.notify import ensure_run_started
+                ensure_run_started(
+                    str(_ctx.get("session_id") or "unknown"),
+                    str(_ctx.get("task_id")),
+                    _ctx.get("user_id"),
+                    user_message=request if isinstance(request, str) else "",
+                )
+                if isinstance(request, str) and request.strip():
+                    _boot_gate = self._manus_gate_instance()
+                    if _boot_gate is not None:
+                        _boot_gate.confirmations.register_user_reply(request)
+        except Exception:  # noqa: BLE001 — contract glue must never break the loop
+            logger.debug("agent run bootstrap failed", exc_info=True)
+
         message = await self.ask(request, format)
 
         # ── Adaptive-loop instrumentation (ported from browser-use) ──────

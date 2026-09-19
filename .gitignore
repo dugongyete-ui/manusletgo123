@@ -129,5 +129,5 @@ mcp.json
 uv.lock
 specs
 
-# Reconstruction evidence (local only)
+# Reconstruction evidence & local ops artifacts (never publish)
 .infra/

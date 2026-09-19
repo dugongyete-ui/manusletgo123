@@ -101,6 +101,21 @@ class LoopSafety:
     """Detects non-progress tool-call patterns within one agent run."""
 
     def __init__(self) -> None:
+        # Limits are contract-configurable (agent-orchestrator contract:
+        # max_identical_calls=2); settings win, module constants are the
+        # fallback when the settings layer is unavailable (unit tests).
+        try:
+            from app.core.config import get_settings
+            _s = get_settings()
+            self.identical_call_limit = max(
+                2, int(getattr(_s, "manus_max_identical_calls", IDENTICAL_CALL_LIMIT))
+            )
+            self.identical_error_limit = max(
+                2, int(getattr(_s, "manus_max_identical_errors", IDENTICAL_ERROR_LIMIT))
+            )
+        except Exception:  # noqa: BLE001 — tests / early startup
+            self.identical_call_limit = IDENTICAL_CALL_LIMIT
+            self.identical_error_limit = IDENTICAL_ERROR_LIMIT
         # consecutive repetition counts per (tool, args_hash)
         self._streak: Counter = Counter()
         self._last_hash: Optional[str] = None
@@ -117,7 +132,7 @@ class LoopSafety:
             self._streak.clear()
             self._streak[args_hash] = 1
             self._last_hash = args_hash
-        if self._streak[args_hash] >= IDENTICAL_CALL_LIMIT:
+        if self._streak[args_hash] >= self.identical_call_limit:
             self.blocked_message = (
                 f"Identical call repeated {self._streak[args_hash]}x "
                 f"(hash {args_hash})."
@@ -134,7 +149,7 @@ class LoopSafety:
             self._error_streak.clear()
             self._error_streak[sig] = 1
             self._last_error_sig = sig
-        if self._error_streak[sig] >= IDENTICAL_ERROR_LIMIT:
+        if self._error_streak[sig] >= self.identical_error_limit:
             return failure_loop_payload(
                 tool_name,
                 f"Identical error ({error_code}) occurred "

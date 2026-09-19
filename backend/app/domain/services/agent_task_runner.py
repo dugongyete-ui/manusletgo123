@@ -191,6 +191,22 @@ class AgentTaskRunner(TaskRunner):
         for _agent in (self._flow.planner, self._flow.executor):
             _agent.rate_limit_notice = self._emit_rate_limit_notice
 
+        # ── Agent orchestrator contract v1.0: per-run task context ─────
+        # The ManusGate / notification event bus / global confirmation
+        # store key everything by (task_id, session_id, user_id). One chat
+        # message = one contract "task" = one run id, stamped onto BOTH
+        # agents (planner + executor) so the gate can attribute every
+        # tool call, event and confirmation to this run.
+        import uuid as _uuid
+        self._run_task_id = _uuid.uuid4().hex[:12]
+        self._run_failed = False
+        for _agent in (self._flow.planner, self._flow.executor):
+            _agent.task_context = {
+                "task_id": self._run_task_id,
+                "session_id": self._session_id,
+                "user_id": self._user_id,
+            }
+
     async def _emit_rate_limit_notice(self, text: str) -> None:
         """User-facing notice while the agent waits out a provider rate limit.
 
@@ -982,6 +998,7 @@ class AgentTaskRunner(TaskRunner):
         # question) — in that case the sandbox must stay warm for the answer,
         # so the post-run quota-saving pause is skipped.
         waited_for_user = False
+        self._run_failed = False
         try:
             logger.info(f"Agent {self._agent_id} message processing task started")
 
@@ -1112,6 +1129,12 @@ class AgentTaskRunner(TaskRunner):
             logger.info(f"Agent {self._agent_id} task cancelled")
             await self._put_and_add_event(task, DoneEvent())
             await self._session_repository.update_status(self._session_id, SessionStatus.COMPLETED)
+            # Contract: agent_finished event + registry status (cancelled).
+            try:
+                from app.domain.services.manus_registry.notify import run_registry
+                run_registry.finish_run(self._run_task_id, "cancelled")
+            except Exception:
+                pass
         except Exception as e:
             logger.exception(f"Agent {self._agent_id} task encountered exception: {str(e)}")
             
@@ -1128,7 +1151,57 @@ class AgentTaskRunner(TaskRunner):
             # it did not complete. The user sees a clear failed status instead
             # of a "completed" that quietly hides the crash.
             await self._session_repository.update_status(self._session_id, SessionStatus.FAILED)
+            # Contract: agent_error event + registry status (failed).
+            try:
+                from app.domain.services.manus_registry.notify import (
+                    AGENT_ERROR,
+                    make_event,
+                    run_registry,
+                )
+                self._run_failed = True
+                run_registry.finish_run(self._run_task_id, "failed")
+                run_registry.emit(
+                    make_event(
+                        AGENT_ERROR,
+                        self._run_task_id,
+                        message=_friendly_task_error(e),
+                        session_id=self._session_id,
+                        data={"retryable": False, "code": "RUN_ERROR"},
+                    )
+                )
+            except Exception:
+                logger.debug("agent_error event failed", exc_info=True)
         finally:
+            # ── Agent orchestrator contract v1.0: agent_finished ──────────
+            # Emitted exactly once per run, AFTER the terminal state is
+            # known (completed / waiting_confirmation / failed / cancelled
+            # — the latter two already finish the registry above).
+            try:
+                from app.domain.services.manus_registry.notify import (
+                    AGENT_FINISHED,
+                    make_event,
+                    run_registry,
+                )
+                if not self._run_failed:
+                    _final_status = (
+                        "waiting_confirmation" if waited_for_user else "completed"
+                    )
+                    run_registry.finish_run(self._run_task_id, _final_status)
+                    run_registry.emit(
+                        make_event(
+                            AGENT_FINISHED,
+                            self._run_task_id,
+                            message=(
+                                "Run berhenti menunggu jawaban user"
+                                if waited_for_user
+                                else "Run selesai"
+                            ),
+                            session_id=self._session_id,
+                            data={"success": True, "status": _final_status},
+                        )
+                    )
+            except Exception:
+                logger.debug("agent_finished event failed", exc_info=True)
             # ── E2B quota saver ────────────────────────────────────────────
             # The run has fully finished: the final summary was delivered and
             # there are no more queued user messages. Pause the E2B microVM so

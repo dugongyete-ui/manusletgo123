@@ -22,11 +22,14 @@ tools keep their Python schemas. Names never collide (registry wins).
 from __future__ import annotations
 
 import logging
+import time
 from typing import Any, Dict, List, Optional, Tuple
 
 from langchain.messages import ToolMessage
 
 from app.domain.models.tool_result import ToolResult
+from app.domain.services.manus_registry.browser_session import BrowserSessionTracker
+from app.domain.services.manus_registry.confirmations import confirmation_store
 from app.domain.services.manus_registry.errors import (
     TOOL_DISABLED,
     VALIDATION_ERROR,
@@ -40,7 +43,16 @@ from app.domain.services.manus_registry.loader import (
     tool_available,
 )
 from app.domain.services.manus_registry.mcp_executor import ManusMCPExecutor
+from app.domain.services.manus_registry.notify import (
+    CONFIRMATION_REQUIRED,
+    TOOL_CALL_FINISHED,
+    TOOL_CALL_STARTED,
+    ensure_run_started,
+    make_event,
+    run_registry,
+)
 from app.domain.services.manus_registry.policy import ConfirmationLedger, requires_confirmation
+from app.domain.services.manus_registry.retry import run_with_retry
 from app.domain.services.manus_registry.schema_validator import (
     coerce_arguments,
     schema_mentions_brief,
@@ -95,7 +107,25 @@ class ManusGate:
 
         self.trace = TraceRecorder()
         self.safety = LoopSafety()
-        self.confirmations = ConfirmationLedger()
+        # ── Contract context (agent-orchestrator v1.0) ─────────────────
+        # task_id/session_id/user_id are stamped onto the agent by the
+        # AgentTaskRunner; a missing context (unit tests, replays) falls
+        # back to a random task id under the "unknown" session.
+        import uuid as _uuid
+        ctx = getattr(agent, "task_context", None) or {}
+        self.task_id = str(ctx.get("task_id") or _uuid.uuid4().hex[:12])
+        self.session_id = ctx.get("session_id")
+        self.user_id = ctx.get("user_id")
+        try:
+            ensure_run_started(
+                str(self.session_id or "unknown"),
+                self.task_id,
+                self.user_id,
+            )
+        except Exception:  # noqa: BLE001 — events must never break execution
+            logger.debug("ensure_run_started failed", exc_info=True)
+        self.browser_tracker = BrowserSessionTracker(self.task_id)
+        self.confirmations = ConfirmationLedger(task_id=self.task_id)
         self.mcp = ManusMCPExecutor(
             browser=browser,
             sandbox=sandbox,
@@ -134,6 +164,8 @@ class ManusGate:
 
         self._step += 1
         step = self._step
+        self._t0 = time.perf_counter()
+        self._execution_started = False
 
         # 1) enabled / available
         if not tool_available(tool_name):
@@ -190,14 +222,71 @@ class ManusGate:
                 payload = stop
             return self._finish(tool_name, tool_call_id, args_hash, payload, brief)
 
-        # 5) confirmation policy for consequential actions
+        # 5) confirmation policy for consequential actions (contract:
+        #    confirmation-manager — token + expiry + explicit rejection +
+        #    approval that SURVIVES the ask_user pause via the global store)
         if requires_confirmation(tool_def):
-            if not self.confirmations.is_approved(tool_name, arguments):
-                payload = self.confirmations.pending_payload(tool_name, tool_def, arguments)
+            status = confirmation_store.status_for(self.task_id, tool_name, args_hash)
+            if status == "rejected":
+                payload = self.confirmations.rejected_payload(tool_name, arguments)
+                return self._finish(tool_name, tool_call_id, args_hash, payload, brief)
+            if status != "approved" and not self.confirmations.is_approved(
+                tool_name, arguments
+            ):
+                conf = confirmation_store.issue(self.task_id, tool_name, arguments)
+                payload = self.confirmations.pending_payload(
+                    tool_name, tool_def, arguments
+                )
+                err = payload.setdefault("error", {})
+                details = err.setdefault("details", {})
+                details["confirmation_token"] = conf["confirmation_token"]
+                details["expires_at"] = conf["expires_at"]
+                details["approve_via"] = (
+                    "POST /api/v1/sessions/{session_id}/confirmations/"
+                    f"{conf['confirmation_token']} "
+                    "body {\"decision\":\"approved\"|\"rejected\"} — atau "
+                    "balas singkat di chat (mis. 'ya' / 'tidak')."
+                )
+                try:
+                    run_registry.emit(
+                        make_event(
+                            CONFIRMATION_REQUIRED,
+                            self.task_id,
+                            message=(
+                                f"{tool_name} menunggu persetujuan user — "
+                                f"expires {conf['expires_at']}"
+                            ),
+                            step=step,
+                            data={
+                                "tool": tool_name,
+                                "confirmation_token": conf["confirmation_token"],
+                                "expires_at": conf["expires_at"],
+                            },
+                            session_id=self.session_id,
+                        )
+                    )
+                except Exception:  # noqa: BLE001
+                    logger.debug("confirmation event failed", exc_info=True)
                 return self._finish(tool_name, tool_call_id, args_hash, payload, brief)
 
-        # 6) transport routing
+        # 6) transport routing — executor-level retry per the retry-error-
+        #    handler contract: transient failures (timeout/network) are
+        #    retried with exponential backoff BEFORE reaching the model.
         transport = tool_def.get("transport")
+        try:
+            run_registry.emit(
+                make_event(
+                    TOOL_CALL_STARTED,
+                    self.task_id,
+                    message=f"{tool_name} dimulai ({transport})",
+                    step=step,
+                    data={"tool": tool_name, "transport": transport},
+                    session_id=self.session_id,
+                )
+            )
+            self._execution_started = True
+        except Exception:  # noqa: BLE001
+            logger.debug("tool_call_started event failed", exc_info=True)
         if transport == "shell":
             if self.shell is None:
                 payload = failure_payload(
@@ -205,14 +294,51 @@ class ManusGate:
                     "Shell transport unavailable (sandbox not attached).",
                 )
             else:
-                payload = await self.shell.execute(tool_name, arguments)
+                payload = await run_with_retry(
+                    lambda: self.shell.execute(tool_name, arguments),
+                    tool_name=tool_name,
+                )
         else:
-            payload = await self.mcp.execute(tool_name, arguments)
+            payload = await run_with_retry(
+                lambda: self.mcp.execute(tool_name, arguments),
+                tool_name=tool_name,
+            )
             if (
                 payload.get("error", {}) or {}
             ).get("code") == "NOT_SUPPORTED" and self._user_manager is not None:
                 # Maybe the user's own MCP server implements it (mcp.json).
                 payload = await self._try_user_mcp(tool_name, arguments, payload)
+
+        # 6b) browser session state (contract: browser-session-manager) —
+        #     active_url / last_view_hash tracked per task for the trace
+        #     and the /agent-trace endpoint.
+        if tool_name.startswith("browser_"):
+            try:
+                self.browser_tracker.observe(tool_name, arguments, payload)
+            except Exception:  # noqa: BLE001
+                logger.debug("browser tracker observe failed", exc_info=True)
+
+        # 6c) tool_call_finished event (contract notification-event-bus)
+        try:
+            run_registry.emit(
+                make_event(
+                    TOOL_CALL_FINISHED,
+                    self.task_id,
+                    message=(
+                        f"{tool_name} {'sukses' if payload.get('success') else 'gagal'}"
+                    ),
+                    step=step,
+                    data={
+                        "tool": tool_name,
+                        "success": bool(payload.get("success")),
+                        "error_code": (payload.get("error") or {}).get("code"),
+                        "duration_ms": int((time.perf_counter() - self._t0) * 1000),
+                    },
+                    session_id=self.session_id,
+                )
+            )
+        except Exception:  # noqa: BLE001
+            logger.debug("tool_call_finished event failed", exc_info=True)
 
         # 7) bookkeeping
         if payload.get("success"):
@@ -272,7 +398,8 @@ class ManusGate:
 
         success = bool(payload.get("success"))
         err = payload.get("error") or {}
-        duration_ms = 0
+        duration_ms = int((time.perf_counter() - getattr(self, "_t0", time.perf_counter())) * 1000)
+        _tool_def = get_tool_def(tool_name)
         entry = self.trace.record(
             step=self._step,
             tool=tool_name,
@@ -280,8 +407,16 @@ class ManusGate:
             success=success,
             duration_ms=duration_ms,
             error_code=err.get("code"),
-            transport=get_tool_def(tool_name, ).get("transport") if get_tool_def(tool_name) else None,
+            transport=_tool_def.get("transport") if _tool_def else None,
+            task_id=self.task_id,
+            conversation_id=self.session_id,
         )
+        try:
+            run_registry.record_trace(self.task_id, entry)
+        except Exception:  # noqa: BLE001
+            logger.debug("run registry trace failed", exc_info=True)
+        if getattr(self, "_execution_started", False):
+            entry["browser_state"] = self.browser_tracker.snapshot()
         payload.setdefault("trace", {
             "step": entry["step"],
             "arguments_hash": args_hash,

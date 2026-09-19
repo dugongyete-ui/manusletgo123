@@ -19,6 +19,15 @@ _REGISTRY_DIR = os.path.dirname(os.path.abspath(__file__))
 _REGISTRY_PATH = os.path.join(_REGISTRY_DIR, "registry.json")
 _TOOLS_DIR = os.path.join(_REGISTRY_DIR, "tools")
 
+# Layout tolerance: the canonical Manus package ships registry.json at the
+# package root; some deployments (z.ai reconstruction) keep it inside
+# tools/. Accept BOTH — the registry is the single source of truth either
+# way and the integrity checks below still apply.
+if not os.path.exists(_REGISTRY_PATH):
+    _alt = os.path.join(_TOOLS_DIR, "registry.json")
+    if os.path.exists(_alt):
+        _REGISTRY_PATH = _alt
+
 
 class RegistryError(RuntimeError):
     """Raised when registry.json is missing or internally inconsistent."""

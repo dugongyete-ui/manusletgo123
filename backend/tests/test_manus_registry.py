@@ -451,7 +451,9 @@ def test_shell_executor_disabled_tool_unavailable():
 # ── 13–14. loop safety ───────────────────────────────────────────────────────
 
 def test_identical_call_detected_and_stopped():
-    gate = ManusGate(make_agent())
+    # _has_backend: a registry tool is only hijacked when its backing
+    # implementation is attached — give the gate a fake browser toolkit.
+    gate = ManusGate(make_agent([_TK("browser", "browser", FakeBrowser())]))
     args = {"brief": "lihat", "url": "https://x.com", "intent": "informational"}
     for i in range(3):
         msg = asyncio.run(gate.process(

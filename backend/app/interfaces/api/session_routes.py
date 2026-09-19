@@ -1,6 +1,7 @@
 from fastapi import APIRouter, Depends, WebSocket, WebSocketDisconnect, Query
+from pydantic import BaseModel
 from sse_starlette.sse import EventSourceResponse
-from typing import AsyncGenerator, List, Optional
+from typing import AsyncGenerator, List, Literal, Optional
 from sse_starlette.event import ServerSentEvent
 from datetime import datetime
 import asyncio
@@ -123,6 +124,65 @@ async def clear_unread_message_count(
 ) -> APIResponse[None]:
     await agent_service.clear_unread_message_count(session_id, current_user.id)
     return APIResponse.success()
+
+
+# ── Agent orchestrator contract v1.0 ────────────────────────────────────────
+# confirmation-manager | notification-event-bus (polling adapter) |
+# observability-trace-logger (query_task_trace)
+
+class ConfirmationDecisionRequest(BaseModel):
+    """Body for the explicit confirmation decision endpoint."""
+    decision: Literal["approved", "rejected"]
+
+
+@router.post("/{session_id}/confirmations/{token}", response_model=APIResponse[dict])
+async def decide_session_confirmation(
+    session_id: str,
+    token: str,
+    body: ConfirmationDecisionRequest,
+    current_user: User = Depends(get_current_user),
+) -> APIResponse[dict]:
+    """Approve or reject a pending consequential tool call.
+
+    Contract rules implemented by the store: token bound to (task, tool,
+    args hash), TTL expiry, never executes before approval, and the SAME
+    task resumes after the decision.
+    """
+    from app.domain.services.manus_registry.confirmations import confirmation_store
+    result = confirmation_store.decide(token, body.decision)
+    if not result.get("ok"):
+        return APIResponse.error(
+            code=404 if result.get("status") == "not_found" else 409,
+            msg=f"confirmation {token[:6]}… status={result.get('status')}",
+        )
+    return APIResponse.success(data=result)
+
+
+@router.get("/{session_id}/agent-events", response_model=APIResponse[dict])
+async def session_agent_events(
+    session_id: str,
+    since: int = Query(0, ge=0, description="event index cursor"),
+    current_user: User = Depends(get_current_user),
+) -> APIResponse[dict]:
+    """Polling adapter for the notification event bus (contract events:
+    agent_started, tool_call_started/finished, confirmation_required,
+    agent_error, agent_finished — all secret-redacted)."""
+    from app.domain.services.manus_registry.notify import run_registry
+    return APIResponse.success(
+        data=run_registry.get_events(session_id, since=since)
+    )
+
+
+@router.get("/{session_id}/agent-trace", response_model=APIResponse[dict])
+async def session_agent_trace(
+    session_id: str,
+    current_user: User = Depends(get_current_user),
+) -> APIResponse[dict]:
+    """query_task_trace (contract): structured per-tool-call trace entries
+    (step, tool, transport, duration_ms, success, error_code, retry_count,
+    state_changed, browser_state) of the latest run in this session."""
+    from app.domain.services.manus_registry.notify import run_registry
+    return APIResponse.success(data=run_registry.get_trace(session_id))
 
 @router.get("", response_model=APIResponse[ListSessionResponse])
 async def get_all_sessions(

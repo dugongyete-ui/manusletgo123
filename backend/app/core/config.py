@@ -230,6 +230,17 @@ class Settings(BaseSettings):
     manus_shell_timeout_seconds: int = 120
     # Bounded stdout/stderr size (chars) returned from shell tools.
     manus_shell_max_output_chars: int = 8000
+    # ── Agent orchestrator contracts (agent_architecture_json v1.0) ────────
+    # Identical (tool,args) calls allowed before LOOP_DETECTED (contract:
+    # max_identical_calls=2).
+    manus_max_identical_calls: int = 2
+    # Consecutive identical failures before the loop stops with guidance.
+    manus_max_identical_errors: int = 3
+    # Executor-level auto-retries for RETRYABLE failures (timeout/transient)
+    # before the failure reaches the model (contract: max_retries_per_call=2).
+    manus_max_retries_per_call: int = 2
+    # Pending confirmation TTL (contract: expire token rule).
+    manus_confirmation_ttl_seconds: int = 600
 
     # Logging configuration
     log_level: str = "INFO"

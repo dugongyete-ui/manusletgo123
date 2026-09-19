@@ -46,7 +46,7 @@ Jadi error download BUKAN bug sesekali - memang 100% ditolak untuk non-owner.
 - `backend/tests/test_unlimited_loop.py`, `test_manus_skill_import.py`
 - `backend/app/core/config.py` - setting manus_* (bin dir auto-resolve)
 - `backend/.env` - blok MANUS (MAX_STEPS=0 unlimited, REGISTRY_ENABLED=true)
-- `sandbox/manus_tools_bin/` - manus_tool_lib.py + build_bins.sh
+- `sandbox/manus_tools_bin_repo/` - manus_tool_lib.py + build_bins.sh
 - `backend/app/domain/services/agents/base.py` dsb. (patch gate integrasi)
 - `skills/manus_skills_package/` - 38 file skill standar Manus.im
 
