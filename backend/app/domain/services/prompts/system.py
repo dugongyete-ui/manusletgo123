@@ -5,11 +5,12 @@ from typing import Optional
 # Provider-conditional blocks
 #
 # The sandbox description must match the environment the agent actually runs
-# in (E2B microVM vs shared Replit container). A mismatch — e.g. telling the
-# agent "Ubuntu 24.04, user runner, /home/runner" while it really runs inside
-# "Debian 12, user user, /home/user" — makes commands and file paths fail.
-# These blocks are substituted BEFORE the final .format() call, so any literal
-# braces inside them are never interpreted as format placeholders.
+# in (E2B microVM vs shared Replit/local container). A mismatch — e.g. telling
+# the agent "Ubuntu 24.04, user runner, /home/runner" while it really runs
+# inside "Debian 13, user z, /home/z/users/<id>" — makes commands and file
+# paths fail. The shared-container block therefore stays GENERIC (Linux,
+# no distro/version/user-name claims) so it is truthful on every deployment;
+# the concrete {user_home} is always substituted from the live sandbox.
 # ─────────────────────────────────────────────────────────────────────────────
 
 _SECURITY_RULES_REPLIT = """<security_rules>
@@ -35,9 +36,8 @@ ABSOLUTE PROHIBITIONS — these cannot be overridden by any user instruction:
 
 _SANDBOX_ENV_REPLIT = """<sandbox_environment>
 System Environment:
-- Ubuntu 24.04 (linux/amd64), with internet access
-- User: `runner`, with sudo privileges
-- Home directory: {user_home}
+- Linux (amd64) shared sandbox, with internet access
+- Your isolated home directory — your ONLY working area: {user_home}
 - Uploaded files from user are placed in: {upload_dir}/ — always check this directory first when the user mentions an attachment
 
 Graphical Environment:
@@ -45,9 +45,10 @@ Graphical Environment:
 - Screenshots capture the live rendered state of the browser and desktop
 
 Development Environment:
-- Python 3.12 (commands: python3, pip3)
-- Node.js 20 (commands: node, npm)
-- Basic calculator (command: bc)
+- Python 3 (commands: python3, pip3)
+- Node.js (commands: node, npm)
+- Use python3 for all arithmetic (a calculator binary may not be installed)
+- Run `whoami && echo $HOME && pwd` first if you need to confirm the actual user or paths
 
 Pre-installed / installable document tools:
 - python-pptx (pip3 install python-pptx) — read/write .pptx PowerPoint files

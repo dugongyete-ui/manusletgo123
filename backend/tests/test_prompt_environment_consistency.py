@@ -37,6 +37,28 @@ def test_prompt_sources_have_no_provider_paths():
         assert "/home/user" not in src, f"{name} hard-codes /home/user"
 
 
+APP_DIR = Path(__file__).resolve().parent.parent / "app/domain/services"
+
+
+def test_mcp_executor_has_no_hardcoded_provider_paths():
+    """Regression (session fe205b952ea242b3): webdev_init_project hard-coded
+    /home/user/<name> — the E2B layout — so on the shared local sandbox the
+    tool fabricated project_dir /home/user/... and the agent "jumped" to a
+    phantom E2B environment. Every executor-built path must resolve from the
+    live sandbox (sandbox.user_home), never from a literal."""
+    src = (APP_DIR / "manus_registry/mcp_executor.py").read_text()
+    assert '"/home/user"' not in src, (
+        "mcp_executor.py hard-codes /home/user — paths must come from "
+        "_workspace_root() / sandbox.user_home"
+    )
+    assert "/workspace/" not in src, (
+        "mcp_executor.py hard-codes /workspace — foreign provider layout"
+    )
+    # The resolver itself must exist and be the only path source.
+    assert "_workspace_root" in src
+    assert "user_home" in src  # resolver reads sandbox.user_home
+
+
 def test_execution_prompt_formats_with_any_home():
     """EXECUTION_PROMPT renders for E2B and Replit homes alike."""
     e2b = EXECUTION_PROMPT.format(

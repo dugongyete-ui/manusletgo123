@@ -1,8 +1,10 @@
 """Unit tests for the provider-conditional system prompt.
 
 The agent must be told the truth about the sandbox it actually runs in:
-  - "replit" → Ubuntu 24.04, user ``runner``, /home/runner/users/{id},
-    /home/runner/workspace prohibitions, Python 3.12, bc
+  - "replit" → GENERIC Linux shared sandbox (no distro/version/user-name
+    claims — deployments differ: Ubuntu/Debian, runner/z, Node 20/24, bc
+    present or not). The only hard commitment is the {user_home} resolved
+    from the live sandbox + the /home/runner/workspace prohibitions.
   - "e2b"    → Debian 12 microVM, user ``user``, /home/user, no app source
     code inside, Python 3.11, NO bc (python3 for arithmetic), VNC live view
 
@@ -21,10 +23,12 @@ E2B_UPLOAD = "/home/user/upload"
 
 def test_replit_prompt_describes_replit_environment():
     prompt = get_system_prompt(user_home=REPLIT_HOME, upload_dir=REPLIT_UPLOAD)
-    assert "Ubuntu 24.04" in prompt
-    assert "`runner`" in prompt
-    assert "Python 3.12" in prompt
-    assert "Basic calculator (command: bc)" in prompt
+    # Truthful-generic claims only — no deployment-specific lies.
+    assert "Linux (amd64) shared sandbox" in prompt
+    assert "Ubuntu 24.04" not in prompt
+    assert "`runner`" not in prompt
+    assert "Basic calculator" not in prompt
+    assert "Use python3 for all arithmetic" in prompt
     assert "Xvfb virtual display with Chrome browser and VNC server" in prompt
     assert REPLIT_HOME in prompt
     assert REPLIT_UPLOAD in prompt
@@ -86,13 +90,13 @@ def test_default_environment_is_replit():
     # Backwards compatibility: existing callers without `environment` keep
     # getting the Replit prompt.
     prompt = get_system_prompt()
-    assert "Ubuntu 24.04" in prompt
+    assert "Linux (amd64) shared sandbox" in prompt
     assert "/home/runner/workspace" in prompt
 
 
 def test_unknown_environment_falls_back_to_replit():
     prompt = get_system_prompt(environment="something-else")
-    assert "Ubuntu 24.04" in prompt
+    assert "Linux (amd64) shared sandbox" in prompt
 
 
 def test_sandbox_provider_attributes():

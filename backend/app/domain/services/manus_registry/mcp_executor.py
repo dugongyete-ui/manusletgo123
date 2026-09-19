@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from typing import Any, Awaitable, Callable, Dict, Optional
 
 from app.domain.external.browser import Browser
@@ -349,7 +350,7 @@ class ManusMCPExecutor:
         if not tr.success:
             return _data_from_result(tr) | {"_failed": tr.message}
         url = self._extract_image_url(tr)
-        target_path = primary.get("path") or "/workspace/generated_image.png"
+        target_path = primary.get("path") or f"{self._workspace_root()}/generated_image.png"
         saved = await self._download_image(url, target_path)
         return {
             "generated_url": url,
@@ -365,7 +366,7 @@ class ManusMCPExecutor:
         if not tr.success:
             return _data_from_result(tr) | {"_failed": tr.message}
         url = self._extract_image_url(tr)
-        target_path = a.get("path") or "/workspace/image_variation.png"
+        target_path = a.get("path") or f"{self._workspace_root()}/image_variation.png"
         saved = await self._download_image(url, target_path)
         return {"generated_url": url, "saved_path": saved or target_path}
 
@@ -402,20 +403,58 @@ class ManusMCPExecutor:
         return _handler
 
     # ── webdev handlers (executor-built sandbox commands) ────────────────────
-    _WS = "/home/user"  # sandbox working root resolved per exec below
+    # CONSISTENCY RULE: every path this executor builds MUST live inside the
+    # sandbox that is actually serving the session. The gate hands in the
+    # user-scoped wrapper whose .user_home reflects the REAL environment:
+    #     E2B (provider=e2b)   → /home/user
+    #     shared Replit/local  → {USER_HOME_ROOT}/{user_id}  (e.g. /home/z/users/<uid>)
+    # NEVER hardcode /home/user here: that layout belongs to the E2B provider.
+    # When E2B is off (sandbox_provider=local|replit) a hardcoded /home/user
+    # makes the tool scaffold into a directory that does not exist and REPORT
+    # that fake path to the model — the agent then "jumps" to a phantom E2B
+    # environment while the shell prompt shows the real home.
 
     async def _sb_exec(self, command: str, exec_dir: str = "") -> ToolResult:
         sandbox = self._require_sandbox()
         import uuid as _uuid
-        return await sandbox.exec_command(str(_uuid.uuid4()), exec_dir, command)
+        # Default cwd = the resolved workspace root (never "" so commands on
+        # a raw shared sandbox land in the user area, not the process home).
+        return await sandbox.exec_command(
+            str(_uuid.uuid4()), exec_dir or self._workspace_root(), command
+        )
+
+    def _workspace_root(self) -> str:
+        """Resolve the REAL workspace root of the sandbox serving this run.
+
+        Resolution order:
+          1. ``sandbox.user_home`` — set by UserScopedSandbox (per-user
+             isolation wrapper the gate always passes in production)
+          2. ``settings.user_home_root`` — deployment-level users root
+          3. ``/tmp`` — always-writable last resort (NEVER a foreign
+             provider path like /home/user)
+        """
+        home = getattr(self._sandbox, "user_home", None)
+        if isinstance(home, str) and home.startswith("/"):
+            return home.rstrip("/")
+        from app.core.config import get_settings
+
+        root = (getattr(get_settings(), "user_home_root", "") or "").strip()
+        if root.startswith("/"):
+            return root.rstrip("/")
+        return "/tmp"
 
     def _webdev_dir(self, a: Dict[str, Any]) -> str:
-        name = a.get("name") or a.get("project_name") or "webdev-project"
-        return f"/home/user/{name}"
+        raw = str(a.get("name") or a.get("project_name") or "webdev-project")
+        # Project names become directory names — collapse anything outside
+        # [A-Za-z0-9_-] so no traversal or spaces survive.
+        name = re.sub(r"[^A-Za-z0-9_-]+", "-", raw).strip("-") or "webdev-project"
+        return f"{self._workspace_root()}/{name}"
 
     async def _webdev_init_project(self, a: Dict[str, Any]) -> Dict[str, Any]:
         d = self._webdev_dir(a)
         scaffold = a["scaffold"]
+        # The artifact whose existence proves the scaffold landed.
+        artifact = "app.py" if scaffold == "web-db-user" else "index.html"
         if scaffold == "web-db-user":
             cmd = (
                 f"mkdir -p {d}/static && printf '%s\\n' "
@@ -435,6 +474,30 @@ class ManusMCPExecutor:
         tr = await self._sb_exec(cmd)
         if not tr.success:
             return {"_failed": tr.message or "scaffold failed"}
+        # TRANSPORT success ≠ COMMAND success: a failed `mkdir -p` (e.g.
+        # permission denied) still returns success=True from the transport.
+        # Verify the artifact really exists before telling the model where
+        # the project lives — a fabricated project_dir poisons the whole
+        # run (the model keeps cd-ing into a path that never existed).
+        rc = (tr.data or {}).get("returncode") if isinstance(tr.data, dict) else None
+        verify = await self._sb_exec(
+            f"test -f {d}/{artifact} && echo __scaffold_ok__ || echo __scaffold_missing__"
+        )
+        vout = ""
+        if isinstance(verify.data, dict):
+            vout = str(verify.data.get("output") or "")
+        vout = vout or (verify.message or "")
+        if (rc is not None and rc != 0) or "__scaffold_ok__" not in vout:
+            err = ""
+            if isinstance(tr.data, dict):
+                err = str(tr.data.get("output") or "")
+            err = (err or tr.message or "unknown error").strip()[:500]
+            return {
+                "_failed": (
+                    f"Scaffold did not land in {d} (artifact {artifact} missing). "
+                    f"Command output: {err}"
+                )
+            }
         return {
             "project_dir": d,
             "scaffold": scaffold,
@@ -461,7 +524,7 @@ class ManusMCPExecutor:
         if self._browser is None:
             return {"_failed": "Browser engine not attached"}
         url = a.get("url") or "http://localhost:5000/"
-        save_path = a.get("save_path", "/home/user/webdev_screenshot.png")
+        save_path = a.get("save_path") or f"{self._workspace_root()}/webdev_screenshot.png"
         try:
             raw: bytes = await self._browser.screenshot(
                 full_page=bool(a.get("full_page", False))
@@ -485,11 +548,12 @@ class ManusMCPExecutor:
 
     async def _webdev_save_checkpoint(self, a: Dict[str, Any]) -> Dict[str, Any]:
         d = self._webdev_dir(a)
+        root = self._workspace_root()
         import time as _time
         ts = _time.strftime("%Y%m%d-%H%M%S")
         tr = await self._sb_exec(
-            f"mkdir -p /home/user/.webdev/checkpoints && "
-            f"tar -czf /home/user/.webdev/checkpoints/{ts}.tar.gz -C /home/user {d.split('/')[-1]} && "
+            f"mkdir -p {root}/.webdev/checkpoints && "
+            f"tar -czf {root}/.webdev/checkpoints/{ts}.tar.gz -C {root} {d.split('/')[-1]} && "
             f"echo checkpoint:{ts}"
         )
         if not tr.success:
@@ -498,18 +562,19 @@ class ManusMCPExecutor:
 
     async def _webdev_rollback(self, a: Dict[str, Any]) -> Dict[str, Any]:
         d = self._webdev_dir(a)
-        ck = a.get("checkpoint_id", "")
-        path = f"/home/user/.webdev/checkpoints/{ck}.tar.gz" if ck else ""
+        root = self._workspace_root()
+        ck = re.sub(r"[^A-Za-z0-9_-]", "", str(a.get("checkpoint_id", "")))
+        path = f"{root}/.webdev/checkpoints/{ck}.tar.gz" if ck else ""
         if not path:
             return {"_failed": "checkpoint_id is required (list via webdev_debug)."}
         tr = await self._sb_exec(
-            f"tar -xzf {path} -C /home/user && echo rolled_back:{ck}"
+            f"tar -xzf {path} -C {root} && echo rolled_back:{ck}"
         )
         return _data_from_result(tr)
 
     async def _webdev_execute_sql(self, a: Dict[str, Any]) -> Dict[str, Any]:
         query = a["query"].replace("'", "'\\''")
-        db = a.get("database", "/home/user/webdev/data.db")
+        db = a.get("database") or f"{self._workspace_root()}/webdev/data.db"
         tr = await self._sb_exec(
             f"python3 -c \"import sqlite3; con=sqlite3.connect('{db}'); "
             f"cur=con.execute('{query}'); "
