@@ -1,0 +1,33 @@
+{
+  "schema_version": "1.1",
+  "name": "webdev_add_feature",
+  "transport": "mcp",
+  "server": "manus-tools",
+  "description": "Add a full-stack feature.",
+  "input_schema": {
+    "type": "object",
+    "properties": {
+      "brief": {
+        "type": "string",
+        "description": "One-sentence purpose of the operation"
+      },
+      "feature": {
+        "type": "string",
+        "enum": [
+          "web-db-user",
+          "stripe",
+          "shopify"
+        ]
+      }
+    },
+    "required": [
+      "brief",
+      "feature"
+    ]
+  },
+  "policy": {
+    "requires_confirmation": false,
+    "destructive": false,
+    "side_effects": "changes_project"
+  }
+}

@@ -16,6 +16,8 @@
             alt="Browser Screenshot"
             class="cursor-pointer w-full"
             referrerpolicy="no-referrer"
+            decoding="async"
+            loading="lazy"
             :src="imageUrl"
           />
           <div
@@ -58,10 +60,19 @@ const props = defineProps<{
 const { t } = useI18n();
 const imageUrl = ref('');
 
+// PERF: cache signed URL per screenshot id — watch bisa terpicu ulang
+// (re-mount, update lain pada toolContent) tanpa perlu fetch ulang URL.
+const screenshotUrlCache = new Map<string, string>();
+
 watch(
   () => props.toolContent?.content?.screenshot,
   async (screenshotId) => {
     if (!screenshotId) {
+      return;
+    }
+    const cached = screenshotUrlCache.get(screenshotId);
+    if (cached) {
+      imageUrl.value = cached;
       return;
     }
     try {
@@ -69,10 +80,11 @@ watch(
         imageUrl.value = screenshotId.startsWith('http')
           ? screenshotId
           : `${API_CONFIG.host}${screenshotId}`;
-        return;
+      } else {
+        const url = await getFileDownloadUrl({ file_id: screenshotId } as import('@/api/file').FileInfo);
+        imageUrl.value = url;
       }
-      const url = await getFileDownloadUrl({ file_id: screenshotId } as import('@/api/file').FileInfo);
-      imageUrl.value = url;
+      screenshotUrlCache.set(screenshotId, imageUrl.value);
     } catch {
       imageUrl.value = screenshotId;
     }

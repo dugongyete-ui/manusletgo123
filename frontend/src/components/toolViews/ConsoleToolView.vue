@@ -27,7 +27,7 @@
 
     <div v-if="imageUrl" class="px-3 pb-3">
       <div class="text-[10px] text-[var(--text-tertiary)] mb-1 uppercase tracking-wider">Browser state</div>
-      <img :src="imageUrl" alt="Browser state" class="w-full rounded border border-[var(--border-main)] opacity-80" />
+      <img :src="imageUrl" alt="Browser state" decoding="async" loading="lazy" class="w-full rounded border border-[var(--border-main)] opacity-80" />
     </div>
 
   </div>
@@ -71,19 +71,26 @@ const formattedResult = computed(() => {
 
 const imageUrl = ref('');
 
+// PERF: cache signed URL per screenshot id (hindari fetch ulang saat
+// watch terpicu ulang / komponen re-mount).
+const screenshotUrlCache = new Map<string, string>();
+
 watch(
   () => props.toolContent?.content?.screenshot,
   async (screenshotId) => {
     if (!screenshotId) return;
+    const cached = screenshotUrlCache.get(screenshotId);
+    if (cached) { imageUrl.value = cached; return; }
     try {
       if (screenshotId.startsWith('/') || screenshotId.startsWith('http')) {
         imageUrl.value = screenshotId.startsWith('http')
           ? screenshotId
           : `${API_CONFIG.host}${screenshotId}`;
-        return;
+      } else {
+        const url = await getFileDownloadUrl({ file_id: screenshotId } as import('@/api/file').FileInfo);
+        imageUrl.value = url;
       }
-      const url = await getFileDownloadUrl({ file_id: screenshotId } as import('@/api/file').FileInfo);
-      imageUrl.value = url;
+      screenshotUrlCache.set(screenshotId, imageUrl.value);
     } catch {
       imageUrl.value = screenshotId;
     }

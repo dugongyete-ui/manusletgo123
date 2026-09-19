@@ -1,0 +1,74 @@
+{
+  "schema_version": "1.1",
+  "name": "generate_image_variation",
+  "transport": "mcp",
+  "server": "manus-tools",
+  "description": "Edit or refine an existing image.",
+  "input_schema": {
+    "type": "object",
+    "properties": {
+      "brief": {
+        "type": "string",
+        "description": "One-sentence purpose of the operation"
+      },
+      "model": {
+        "type": "string",
+        "enum": [
+          "default",
+          "nano-banana-2",
+          "nano-banana-pro",
+          "gpt-image-2.5"
+        ]
+      },
+      "quality": {
+        "type": "string",
+        "enum": [
+          "low",
+          "medium",
+          "high"
+        ]
+      },
+      "path": {
+        "type": "string",
+        "pattern": "^/.+\\.png$"
+      },
+      "prompt": {
+        "type": "string"
+      },
+      "aspect_ratio": {
+        "type": "string",
+        "enum": [
+          "1:1",
+          "2:3",
+          "3:2",
+          "3:4",
+          "4:3",
+          "4:5",
+          "5:4",
+          "9:16",
+          "16:9",
+          "21:9"
+        ]
+      },
+      "references": {
+        "type": "array",
+        "minItems": 1,
+        "items": {
+          "type": "string"
+        }
+      }
+    },
+    "required": [
+      "brief",
+      "path",
+      "prompt",
+      "model",
+      "references"
+    ]
+  },
+  "policy": {
+    "requires_confirmation": false,
+    "destructive": false,
+    "side_effects": "creates_file"
+  }
+}

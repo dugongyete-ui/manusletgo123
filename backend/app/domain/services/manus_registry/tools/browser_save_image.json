@@ -1,0 +1,48 @@
+{
+  "schema_version": "1.1",
+  "name": "browser_save_image",
+  "transport": "mcp",
+  "server": "manus-tools",
+  "description": "Save image from page.",
+  "input_schema": {
+    "type": "object",
+    "properties": {
+      "brief": {
+        "type": "string",
+        "description": "One-sentence purpose of the operation"
+      },
+      "viewport_width": {
+        "type": "number"
+      },
+      "viewport_height": {
+        "type": "number"
+      },
+      "coordinate_x": {
+        "type": "number"
+      },
+      "coordinate_y": {
+        "type": "number"
+      },
+      "save_dir": {
+        "type": "string"
+      },
+      "base_name": {
+        "type": "string"
+      }
+    },
+    "required": [
+      "brief",
+      "viewport_width",
+      "viewport_height",
+      "coordinate_x",
+      "coordinate_y",
+      "save_dir",
+      "base_name"
+    ]
+  },
+  "policy": {
+    "requires_confirmation": false,
+    "destructive": false,
+    "side_effects": "none"
+  }
+}

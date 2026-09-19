@@ -211,7 +211,26 @@ class Settings(BaseSettings):
 
     # MCP configuration
     mcp_config_path: str = "/home/runner/workspace/mcp.json"
-    
+
+    # ── Manus tool registry (v1.1 standard) ────────────────────────────────
+    # When True, every model tool call is validated against the JSON registry
+    # (backend/app/domain/services/manus_registry/registry.json) before
+    # execution and routed through the MCP or Shell transport executor.
+    # False restores the legacy direct-toolkit dispatch.
+    manus_registry_enabled: bool = True
+    # Directory holding the 16 allowlisted manus-* CLI executables inside the
+    # sandbox (absolute paths enforced by the shell executor).
+    # EMPTY = auto-resolved per host (Replit: /home/runner/manus_tools_bin,
+    # z.ai: /home/z/manus_tools_bin, VPS: sibling of USER_HOME_ROOT) and
+    # auto-deployed from the repo's canonical copy on first use — no
+    # environment-specific default that crashes elsewhere. Set it explicitly
+    # only to pin a nonstandard location.
+    manus_tools_bin_dir: str = ""
+    # Per-call timeout for shell-transport tools (coreutils `timeout`).
+    manus_shell_timeout_seconds: int = 120
+    # Bounded stdout/stderr size (chars) returned from shell tools.
+    manus_shell_max_output_chars: int = 8000
+
     # Logging configuration
     log_level: str = "INFO"
     
@@ -219,6 +238,9 @@ class Settings(BaseSettings):
         env_file = ".env"
         env_file_encoding = "utf-8"
         extra = "ignore"
+
+    # pydantic-settings v2 reads bools from env naturally; keep the legacy
+    # Config class for compatibility with existing deployments.
         
     def check_required_settings(self):
         """Validate configuration settings"""

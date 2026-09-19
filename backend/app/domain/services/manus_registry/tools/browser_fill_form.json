@@ -1,0 +1,39 @@
+{
+  "schema_version": "1.1",
+  "name": "browser_fill_form",
+  "transport": "mcp",
+  "server": "manus-tools",
+  "description": "Fill several form fields.",
+  "input_schema": {
+    "type": "object",
+    "properties": {
+      "brief": {
+        "type": "string",
+        "description": "One-sentence purpose of the operation"
+      },
+      "fields": {
+        "type": "array",
+        "items": {
+          "type": "object",
+          "properties": {
+            "index": {
+              "type": "integer"
+            },
+            "value": {
+              "type": "string"
+            }
+          }
+        }
+      }
+    },
+    "required": [
+      "brief",
+      "fields"
+    ]
+  },
+  "policy": {
+    "requires_confirmation": false,
+    "destructive": false,
+    "side_effects": "none"
+  }
+}

@@ -267,6 +267,10 @@ class BaseAgent(ABC):
         )
         self.toolkits = tools
         self.memory = None
+        # Manus registry gate (v1.1) — created lazily, persists per task run
+        # so loop-safety streaks, trace, and confirmation approvals survive
+        # across plan steps within the same task.
+        self._manus_gate: Optional[Any] = None
         # Fallback provider state — switched on automatically when the primary
         # provider hits rate limits / quota / auth errors.
         self._using_fallback = False
@@ -502,14 +506,84 @@ class BaseAgent(ABC):
         """Get all available tools list"""
         return [tool for toolkit in self.toolkits for tool in toolkit.get_tools()]
 
-    def _tools_with_brief(self) -> List[Any]:
-        """OpenAI tool schemas with the required ``brief`` parameter injected.
+    # ── Manus registry gate helpers (v1.1 standard) ─────────────────────
+    def _manus_gate_instance(self) -> Optional[Any]:
+        """Lazily build the per-agent ManusGate (None when disabled/broken)."""
+        if getattr(self, "_manus_gate", None) is not None:
+            return self._manus_gate
+        try:
+            settings = get_settings()
+            if not settings.manus_registry_enabled:
+                return None
+            from app.domain.services.manus_registry.gate import ManusGate
+            self._manus_gate = ManusGate(self)
+            return self._manus_gate
+        except Exception:
+            logger.exception("ManusGate initialization failed — legacy path active")
+            return None
 
-        The model supplies a short natural-language label with every call; the
-        agent strips it in ``execute()`` before the tool implementation runs.
-        Soft narration tools (message toolkit) are exempt. Returns a mix of
-        dicts and Tools — ``bind_tools`` accepts both.
+    async def _manus_process_call(
+        self,
+        function_name: str,
+        tool_call_id: str,
+        function_args: Dict[str, Any],
+        brief: str,
+    ) -> Optional[ToolMessage]:
+        """Run the registry gate for one tool call.
+
+        Returns a ToolMessage when the registry governs this tool (executed
+        via MCP/Shell transport, or rejected with a structured error the
+        model can repair). Returns None for platform-native tools so the
+        legacy toolkit dispatch runs unchanged.
         """
+        gate = self._manus_gate_instance()
+        if gate is None:
+            return None
+        from app.domain.services.manus_registry.loader import get_tool_def
+        if get_tool_def(function_name) is None:
+            return None
+        try:
+            return await gate.process(
+                tool_name=function_name,
+                tool_call_id=tool_call_id,
+                arguments=function_args or {},
+                brief=brief,
+            )
+        except Exception as exc:  # noqa: BLE001 — gate failure must not kill the loop
+            logger.exception("ManusGate process() failed for %s", function_name)
+            import json as _json
+            payload = {
+                "success": False,
+                "tool": function_name,
+                "data": None,
+                "error": {"code": "EXECUTION_ERROR", "message": str(exc), "details": {}},
+                "retryable": False,
+            }
+            return ToolMessage(
+                tool_call_id=tool_call_id,
+                name=function_name,
+                content=_json.dumps(payload, ensure_ascii=False),
+                artifact=ToolResult(success=False, message=str(exc)),
+            )
+
+    def _tools_with_brief(self) -> List[Any]:
+        """OpenAI tool schemas shown to the model.
+
+        Manus registry mode (default): the 31 MCP + 16 shell tools load
+        DYNAMICALLY from registry.json — their schemas are the registry's
+        input_schema, never a Python decorator. Platform-native tools not
+        governed by the registry keep their Python schemas (with the
+        required ``brief`` parameter injected). Registry names win over
+        Python duplicates, so the surface can never double-define a name.
+        """
+        try:
+            settings = get_settings()
+            if settings.manus_registry_enabled:
+                from app.domain.services.manus_registry.gate import registry_llm_schemas
+                return registry_llm_schemas(self)
+        except Exception:
+            logger.exception("registry schema build failed — legacy schemas active")
+        # ── Legacy path (MANUS_REGISTRY_ENABLED=false) ──
         try:
             from langchain_core.utils.function_calling import convert_to_openai_tool
         except Exception:
@@ -890,7 +964,79 @@ class BaseAgent(ABC):
                 function_name = tool_call["name"]
                 tool_call_id = tool_call["id"] = tool_call["id"] or str(uuid.uuid4())
                 function_args = tool_call["args"]
-                
+
+                # ── Manus registry gate (v1.1) ──────────────────────────
+                # Registry-governed tools (31 MCP + 16 shell) are validated
+                # and executed HERE — before legacy toolkit resolution —
+                # because most of them have no Python Tool instance. The
+                # gate returns a normalized ToolMessage (tool_call_id
+                # preserved) or None for platform-native tools.
+                try:
+                    _gate_brief, _gate_args = _take_brief(dict(function_args or {}))
+                    _gate_message = await self._manus_process_call(
+                        function_name, tool_call_id, _gate_args, _gate_brief or ""
+                    )
+                except Exception:  # noqa: BLE001 — never break the loop from the gate
+                    logger.exception("gate dispatch crashed for %s", function_name)
+                    _gate_message = None
+                if _gate_message is not None:
+                    _event_toolkit = function_name.split("_", 1)[0] \
+                        if function_name.startswith(("browser_", "webdev_")) \
+                        else ("image" if function_name.startswith("generate_") else "mcp")
+                    if function_name.startswith("manus-"):
+                        _event_toolkit = "shell"
+                    yield ToolEvent(
+                        status=ToolStatus.CALLING,
+                        tool_call_id=tool_call_id,
+                        tool_name=_event_toolkit,
+                        function_name=function_name,
+                        function_args=_gate_args,
+                        brief=_gate_brief or "",
+                    )
+                    _gate_artifact = getattr(_gate_message, "artifact", None)
+                    _gate_failed = _gate_artifact is None or (
+                        hasattr(_gate_artifact, "success")
+                        and _gate_artifact.success is False
+                    )
+                    if _gate_failed:
+                        _round_had_failure = True
+                        # Mirror the legacy failure-budget annotation so the
+                        # loop-awareness contract holds on BOTH paths.
+                        if _consecutive_failed_rounds >= 1:
+                            _note = (
+                                f"[SYSTEM NOTE: this action failed. Failed action "
+                                f"rounds so far: {_consecutive_failed_rounds}/"
+                                f"{_failure_budget}. Repeating identical arguments "
+                                f"will not help - change strategy or pick a "
+                                f"different tool.]"
+                            )
+                            try:
+                                import json as _json
+                                _body = _json.loads(_gate_message.content)
+                                _body["system_note"] = _note
+                                _gate_message.content = _json.dumps(
+                                    _body, ensure_ascii=False
+                                )
+                            except Exception:  # noqa: BLE001
+                                _gate_message.content = (
+                                    f"{_gate_message.content}\n\n{_note}"
+                                )
+                    else:
+                        _round_had_success = True
+                    loop_detector.record_action(function_name, _gate_args)
+                    loop_detector.record_result(function_name, _gate_message.content)
+                    yield ToolEvent(
+                        status=ToolStatus.CALLED,
+                        tool_call_id=tool_call_id,
+                        tool_name=_event_toolkit,
+                        function_name=function_name,
+                        function_args=_gate_args,
+                        function_result=_gate_artifact,
+                        brief=_gate_brief or "",
+                    )
+                    tool_responses.append(_gate_message)
+                    continue
+
                 tool = self.get_tool(function_name)
                 if not tool:
                     # The tool could not be resolved even after name

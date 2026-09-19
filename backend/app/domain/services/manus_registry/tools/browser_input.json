@@ -1,0 +1,47 @@
+{
+  "schema_version": "1.1",
+  "name": "browser_input",
+  "transport": "mcp",
+  "server": "manus-tools",
+  "description": "Overwrite an editable field.",
+  "input_schema": {
+    "type": "object",
+    "properties": {
+      "brief": {
+        "type": "string",
+        "description": "One-sentence purpose of the operation"
+      },
+      "index": {
+        "type": "integer"
+      },
+      "text": {
+        "type": "string"
+      },
+      "press_enter": {
+        "type": "boolean"
+      },
+      "viewport_width": {
+        "type": "number"
+      },
+      "viewport_height": {
+        "type": "number"
+      },
+      "coordinate_x": {
+        "type": "number"
+      },
+      "coordinate_y": {
+        "type": "number"
+      }
+    },
+    "required": [
+      "brief",
+      "text",
+      "press_enter"
+    ]
+  },
+  "policy": {
+    "requires_confirmation": false,
+    "destructive": false,
+    "side_effects": "none"
+  }
+}

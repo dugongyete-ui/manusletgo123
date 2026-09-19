@@ -1,0 +1,1987 @@
+{
+  "schema_version": "1.1",
+  "generated_at": "2026-09-19T02:07:00+07:00",
+  "loop_contract": {
+    "model_may": "return final answer or request one or more tool calls",
+    "orchestrator_must": [
+      "validate tool name",
+      "validate args against input_schema",
+      "execute via MCP or Shell transport",
+      "append result with tool_call_id",
+      "repeat until final answer or MAX_STEPS",
+      "enforce policy.requires_confirmation before execution"
+    ],
+    "recommended_max_steps": 20
+  },
+  "tools": [
+    {
+      "schema_version": "1.1",
+      "name": "generate_image",
+      "transport": "mcp",
+      "server": "manus-tools",
+      "description": "Generate images using AI.",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "brief": {
+            "type": "string",
+            "description": "One-sentence purpose of the operation"
+          },
+          "model": {
+            "type": "string",
+            "enum": [
+              "default",
+              "nano-banana-2",
+              "nano-banana-pro",
+              "gpt-image-2.5"
+            ]
+          },
+          "quality": {
+            "type": "string",
+            "enum": [
+              "low",
+              "medium",
+              "high"
+            ]
+          },
+          "images": {
+            "type": "array",
+            "minItems": 1,
+            "maxItems": 5,
+            "items": {
+              "type": "object",
+              "properties": {
+                "path": {
+                  "type": "string",
+                  "description": "Absolute .png or .jpg path"
+                },
+                "prompt": {
+                  "type": "string"
+                },
+                "aspect_ratio": {
+                  "type": "string",
+                  "enum": [
+                    "auto",
+                    "1:1",
+                    "2:3",
+                    "3:2",
+                    "3:4",
+                    "4:3",
+                    "4:5",
+                    "5:4",
+                    "9:16",
+                    "16:9",
+                    "21:9"
+                  ]
+                },
+                "references": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                },
+                "transparent_background": {
+                  "type": "string",
+                  "pattern": "^(#[0-9A-Fa-f]{6})?$"
+                }
+              }
+            }
+          }
+        },
+        "required": [
+          "brief",
+          "model",
+          "images"
+        ]
+      },
+      "policy": {
+        "requires_confirmation": false,
+        "destructive": false,
+        "side_effects": "creates_file"
+      }
+    },
+    {
+      "schema_version": "1.1",
+      "name": "generate_image_variation",
+      "transport": "mcp",
+      "server": "manus-tools",
+      "description": "Edit or refine an existing image.",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "brief": {
+            "type": "string",
+            "description": "One-sentence purpose of the operation"
+          },
+          "model": {
+            "type": "string",
+            "enum": [
+              "default",
+              "nano-banana-2",
+              "nano-banana-pro",
+              "gpt-image-2.5"
+            ]
+          },
+          "quality": {
+            "type": "string",
+            "enum": [
+              "low",
+              "medium",
+              "high"
+            ]
+          },
+          "path": {
+            "type": "string",
+            "pattern": "^/.+\\.png$"
+          },
+          "prompt": {
+            "type": "string"
+          },
+          "aspect_ratio": {
+            "type": "string",
+            "enum": [
+              "1:1",
+              "2:3",
+              "3:2",
+              "3:4",
+              "4:3",
+              "4:5",
+              "5:4",
+              "9:16",
+              "16:9",
+              "21:9"
+            ]
+          },
+          "references": {
+            "type": "array",
+            "minItems": 1,
+            "items": {
+              "type": "string"
+            }
+          }
+        },
+        "required": [
+          "brief",
+          "path",
+          "prompt",
+          "model",
+          "references"
+        ]
+      },
+      "policy": {
+        "requires_confirmation": false,
+        "destructive": false,
+        "side_effects": "creates_file"
+      }
+    },
+    {
+      "schema_version": "1.1",
+      "name": "generate_video",
+      "transport": "mcp",
+      "server": "manus-tools",
+      "description": "Generate a short AI video.",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "brief": {
+            "type": "string",
+            "description": "One-sentence purpose of the operation"
+          },
+          "path": {
+            "type": "string"
+          },
+          "model": {
+            "type": "string",
+            "enum": [
+              "veo3.1-fast",
+              "veo3.1",
+              "gemini-omni-flash-preview"
+            ]
+          },
+          "prompt": {
+            "type": "string"
+          },
+          "aspect_ratio": {
+            "type": "string",
+            "enum": [
+              "landscape",
+              "portrait"
+            ]
+          },
+          "resolution": {
+            "type": "string",
+            "enum": [
+              "720p",
+              "1080p"
+            ]
+          },
+          "references": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "maxItems": 1,
+            "items": {
+              "type": "string"
+            }
+          },
+          "duration_seconds": {
+            "type": "integer",
+            "minimum": 3,
+            "maximum": 10
+          },
+          "generate_audio": {
+            "type": "boolean"
+          },
+          "keyframes": {
+            "type": [
+              "object",
+              "null"
+            ],
+            "properties": {
+              "first": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "last": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              }
+            }
+          }
+        }
+      },
+      "policy": {
+        "requires_confirmation": false,
+        "destructive": false,
+        "side_effects": "creates_file"
+      },
+      "notes": [
+        "Use explicit model. Output must be absolute .mp4 path."
+      ]
+    },
+    {
+      "schema_version": "1.1",
+      "name": "generate_video_variation",
+      "transport": "mcp",
+      "server": "manus-tools",
+      "description": "Modify an existing video.",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "brief": {
+            "type": "string",
+            "description": "One-sentence purpose of the operation"
+          },
+          "path": {
+            "type": "string",
+            "pattern": "^/.+\\.mp4$"
+          },
+          "model": {
+            "type": "string",
+            "enum": [
+              "gemini-omni-flash-preview"
+            ]
+          },
+          "video": {
+            "type": "string"
+          },
+          "prompt": {
+            "type": "string"
+          },
+          "aspect_ratio": {
+            "type": "string",
+            "enum": [
+              "landscape",
+              "portrait"
+            ]
+          },
+          "resolution": {
+            "type": "string",
+            "enum": [
+              "720p"
+            ]
+          },
+          "duration_seconds": {
+            "type": "integer",
+            "minimum": 3,
+            "maximum": 10
+          },
+          "generate_audio": {
+            "type": "boolean"
+          }
+        }
+      },
+      "policy": {
+        "requires_confirmation": false,
+        "destructive": false,
+        "side_effects": "creates_file"
+      },
+      "notes": [
+        "Only gemini-omni-flash-preview is supported."
+      ]
+    },
+    {
+      "schema_version": "1.1",
+      "name": "generate_speech",
+      "transport": "mcp",
+      "server": "manus-tools",
+      "description": "Generate speech audio.",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "brief": {
+            "type": "string",
+            "description": "One-sentence purpose of the operation"
+          },
+          "path": {
+            "type": "string",
+            "pattern": "^/.+\\.wav$"
+          },
+          "prompt": {
+            "type": "string",
+            "maxLength": 6000
+          },
+          "voice_name": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "language_code": {
+            "type": "string"
+          },
+          "speaker_voice_configs": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "minItems": 2,
+            "maxItems": 2,
+            "items": {
+              "type": "object",
+              "properties": {
+                "speaker": {
+                  "type": "string"
+                },
+                "voice_name": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        },
+        "required": [
+          "brief",
+          "path",
+          "prompt",
+          "language_code"
+        ]
+      },
+      "policy": {
+        "requires_confirmation": false,
+        "destructive": false,
+        "side_effects": "creates_file"
+      }
+    },
+    {
+      "schema_version": "1.1",
+      "name": "generate_music",
+      "transport": "mcp",
+      "server": "manus-tools",
+      "description": "Generate music audio.",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "brief": {
+            "type": "string",
+            "description": "One-sentence purpose of the operation"
+          },
+          "path": {
+            "type": "string",
+            "pattern": "^/.+\\.(wav|mp3)$"
+          },
+          "prompt": {
+            "type": "string",
+            "maxLength": 50000
+          }
+        },
+        "required": [
+          "brief",
+          "path",
+          "prompt"
+        ]
+      },
+      "policy": {
+        "requires_confirmation": false,
+        "destructive": false,
+        "side_effects": "creates_file"
+      }
+    },
+    {
+      "schema_version": "1.1",
+      "name": "browser_switch",
+      "transport": "mcp",
+      "server": "manus-tools",
+      "description": "Switch browser routing.",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "brief": {
+            "type": "string",
+            "description": "One-sentence purpose of the operation"
+          },
+          "target": {
+            "type": "string",
+            "enum": [
+              "sandbox",
+              "my_browser"
+            ]
+          }
+        },
+        "required": [
+          "brief",
+          "target"
+        ]
+      },
+      "policy": {
+        "requires_confirmation": false,
+        "destructive": false,
+        "side_effects": "none"
+      }
+    },
+    {
+      "schema_version": "1.1",
+      "name": "browser_navigate",
+      "transport": "mcp",
+      "server": "manus-tools",
+      "description": "Navigate to a URL.",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "brief": {
+            "type": "string",
+            "description": "One-sentence purpose of the operation"
+          },
+          "url": {
+            "type": "string"
+          },
+          "intent": {
+            "type": "string",
+            "enum": [
+              "navigational",
+              "informational",
+              "transactional"
+            ]
+          },
+          "focus": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "brief",
+          "url",
+          "intent"
+        ]
+      },
+      "policy": {
+        "requires_confirmation": false,
+        "destructive": false,
+        "side_effects": "none"
+      }
+    },
+    {
+      "schema_version": "1.1",
+      "name": "browser_view",
+      "transport": "mcp",
+      "server": "manus-tools",
+      "description": "View current page.",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "brief": {
+            "type": "string",
+            "description": "One-sentence purpose of the operation"
+          }
+        },
+        "required": [
+          "brief"
+        ]
+      },
+      "policy": {
+        "requires_confirmation": false,
+        "destructive": false,
+        "side_effects": "none"
+      }
+    },
+    {
+      "schema_version": "1.1",
+      "name": "browser_click",
+      "transport": "mcp",
+      "server": "manus-tools",
+      "description": "Click a page element by index or viewport coordinates.",
+      "input_schema": {
+        "allOf": [
+          {
+            "type": "object",
+            "properties": {
+              "brief": {
+                "type": "string",
+                "description": "One-sentence purpose of the operation"
+              }
+            },
+            "required": [
+              "brief"
+            ]
+          },
+          {
+            "oneOf": [
+              {
+                "required": [
+                  "index"
+                ],
+                "properties": {
+                  "index": {
+                    "type": "integer",
+                    "minimum": 0
+                  }
+                }
+              },
+              {
+                "required": [
+                  "viewport_width",
+                  "viewport_height",
+                  "coordinate_x",
+                  "coordinate_y"
+                ],
+                "properties": {
+                  "viewport_width": {
+                    "type": "number"
+                  },
+                  "viewport_height": {
+                    "type": "number"
+                  },
+                  "coordinate_x": {
+                    "type": "number"
+                  },
+                  "coordinate_y": {
+                    "type": "number"
+                  }
+                }
+              }
+            ]
+          }
+        ]
+      },
+      "policy": {
+        "requires_confirmation": false,
+        "destructive": false,
+        "side_effects": "none"
+      }
+    },
+    {
+      "schema_version": "1.1",
+      "name": "browser_input",
+      "transport": "mcp",
+      "server": "manus-tools",
+      "description": "Overwrite an editable field.",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "brief": {
+            "type": "string",
+            "description": "One-sentence purpose of the operation"
+          },
+          "index": {
+            "type": "integer"
+          },
+          "text": {
+            "type": "string"
+          },
+          "press_enter": {
+            "type": "boolean"
+          },
+          "viewport_width": {
+            "type": "number"
+          },
+          "viewport_height": {
+            "type": "number"
+          },
+          "coordinate_x": {
+            "type": "number"
+          },
+          "coordinate_y": {
+            "type": "number"
+          }
+        },
+        "required": [
+          "brief",
+          "text",
+          "press_enter"
+        ]
+      },
+      "policy": {
+        "requires_confirmation": false,
+        "destructive": false,
+        "side_effects": "none"
+      }
+    },
+    {
+      "schema_version": "1.1",
+      "name": "browser_scroll",
+      "transport": "mcp",
+      "server": "manus-tools",
+      "description": "Scroll page or container.",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "brief": {
+            "type": "string",
+            "description": "One-sentence purpose of the operation"
+          },
+          "target": {
+            "type": "string",
+            "enum": [
+              "page",
+              "container"
+            ]
+          },
+          "direction": {
+            "type": "string",
+            "enum": [
+              "up",
+              "down",
+              "left",
+              "right"
+            ]
+          },
+          "to_end": {
+            "type": "boolean"
+          },
+          "viewport_width": {
+            "type": "number"
+          },
+          "viewport_height": {
+            "type": "number"
+          },
+          "coordinate_x": {
+            "type": "number"
+          },
+          "coordinate_y": {
+            "type": "number"
+          }
+        },
+        "required": [
+          "brief",
+          "target",
+          "direction"
+        ]
+      },
+      "policy": {
+        "requires_confirmation": false,
+        "destructive": false,
+        "side_effects": "none"
+      }
+    },
+    {
+      "schema_version": "1.1",
+      "name": "browser_move_mouse",
+      "transport": "mcp",
+      "server": "manus-tools",
+      "description": "Move cursor.",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "brief": {
+            "type": "string",
+            "description": "One-sentence purpose of the operation"
+          },
+          "viewport_width": {
+            "type": "number"
+          },
+          "viewport_height": {
+            "type": "number"
+          },
+          "coordinate_x": {
+            "type": "number"
+          },
+          "coordinate_y": {
+            "type": "number"
+          }
+        },
+        "required": [
+          "brief",
+          "viewport_width",
+          "viewport_height",
+          "coordinate_x",
+          "coordinate_y"
+        ]
+      },
+      "policy": {
+        "requires_confirmation": false,
+        "destructive": false,
+        "side_effects": "none"
+      }
+    },
+    {
+      "schema_version": "1.1",
+      "name": "browser_press_key",
+      "transport": "mcp",
+      "server": "manus-tools",
+      "description": "Press a browser key.",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "brief": {
+            "type": "string",
+            "description": "One-sentence purpose of the operation"
+          },
+          "key": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "brief",
+          "key"
+        ]
+      },
+      "policy": {
+        "requires_confirmation": false,
+        "destructive": false,
+        "side_effects": "none"
+      }
+    },
+    {
+      "schema_version": "1.1",
+      "name": "browser_select_option",
+      "transport": "mcp",
+      "server": "manus-tools",
+      "description": "Select dropdown option.",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "brief": {
+            "type": "string",
+            "description": "One-sentence purpose of the operation"
+          },
+          "index": {
+            "type": "integer"
+          },
+          "option_index": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "brief",
+          "index",
+          "option_index"
+        ]
+      },
+      "policy": {
+        "requires_confirmation": false,
+        "destructive": false,
+        "side_effects": "none"
+      }
+    },
+    {
+      "schema_version": "1.1",
+      "name": "browser_save_image",
+      "transport": "mcp",
+      "server": "manus-tools",
+      "description": "Save image from page.",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "brief": {
+            "type": "string",
+            "description": "One-sentence purpose of the operation"
+          },
+          "viewport_width": {
+            "type": "number"
+          },
+          "viewport_height": {
+            "type": "number"
+          },
+          "coordinate_x": {
+            "type": "number"
+          },
+          "coordinate_y": {
+            "type": "number"
+          },
+          "save_dir": {
+            "type": "string"
+          },
+          "base_name": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "brief",
+          "viewport_width",
+          "viewport_height",
+          "coordinate_x",
+          "coordinate_y",
+          "save_dir",
+          "base_name"
+        ]
+      },
+      "policy": {
+        "requires_confirmation": false,
+        "destructive": false,
+        "side_effects": "none"
+      }
+    },
+    {
+      "schema_version": "1.1",
+      "name": "browser_upload_file",
+      "transport": "mcp",
+      "server": "manus-tools",
+      "description": "Upload files.",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "brief": {
+            "type": "string",
+            "description": "One-sentence purpose of the operation"
+          },
+          "files": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "index": {
+                  "type": "integer"
+                },
+                "path": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        },
+        "required": [
+          "brief",
+          "files"
+        ]
+      },
+      "policy": {
+        "requires_confirmation": false,
+        "destructive": false,
+        "side_effects": "uploads_files"
+      }
+    },
+    {
+      "schema_version": "1.1",
+      "name": "browser_find_keyword",
+      "transport": "mcp",
+      "server": "manus-tools",
+      "description": "Find text on page.",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "brief": {
+            "type": "string",
+            "description": "One-sentence purpose of the operation"
+          },
+          "keyword": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "brief",
+          "keyword"
+        ]
+      },
+      "policy": {
+        "requires_confirmation": false,
+        "destructive": false,
+        "side_effects": "none"
+      }
+    },
+    {
+      "schema_version": "1.1",
+      "name": "browser_fill_form",
+      "transport": "mcp",
+      "server": "manus-tools",
+      "description": "Fill several form fields.",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "brief": {
+            "type": "string",
+            "description": "One-sentence purpose of the operation"
+          },
+          "fields": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "index": {
+                  "type": "integer"
+                },
+                "value": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        },
+        "required": [
+          "brief",
+          "fields"
+        ]
+      },
+      "policy": {
+        "requires_confirmation": false,
+        "destructive": false,
+        "side_effects": "none"
+      }
+    },
+    {
+      "schema_version": "1.1",
+      "name": "browser_console_exec",
+      "transport": "mcp",
+      "server": "manus-tools",
+      "description": "Execute JavaScript in page context.",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "brief": {
+            "type": "string",
+            "description": "One-sentence purpose of the operation"
+          },
+          "javascript": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "brief",
+          "javascript"
+        ]
+      },
+      "policy": {
+        "requires_confirmation": false,
+        "destructive": false,
+        "side_effects": "executes_page_javascript"
+      }
+    },
+    {
+      "schema_version": "1.1",
+      "name": "browser_console_view",
+      "transport": "mcp",
+      "server": "manus-tools",
+      "description": "View browser console.",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "brief": {
+            "type": "string",
+            "description": "One-sentence purpose of the operation"
+          },
+          "max_lines": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "brief"
+        ]
+      },
+      "policy": {
+        "requires_confirmation": false,
+        "destructive": false,
+        "side_effects": "none"
+      }
+    },
+    {
+      "schema_version": "1.1",
+      "name": "webdev_init_project",
+      "transport": "mcp",
+      "server": "manus-tools",
+      "description": "Initialize a web/mobile project.",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "brief": {
+            "type": "string",
+            "description": "One-sentence purpose of the operation"
+          },
+          "name": {
+            "type": "string"
+          },
+          "title": {
+            "type": "string"
+          },
+          "description": {
+            "type": "string"
+          },
+          "scaffold": {
+            "type": "string",
+            "enum": [
+              "web-static",
+              "web-db-user",
+              "mobile-app"
+            ]
+          },
+          "attached_project_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "brief",
+          "name",
+          "title",
+          "description",
+          "scaffold"
+        ]
+      },
+      "policy": {
+        "requires_confirmation": false,
+        "destructive": false,
+        "side_effects": "creates_project"
+      }
+    },
+    {
+      "schema_version": "1.1",
+      "name": "webdev_take_screenshot",
+      "transport": "mcp",
+      "server": "manus-tools",
+      "description": "Capture project preview screenshots.",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "brief": {
+            "type": "string",
+            "description": "One-sentence purpose of the operation"
+          },
+          "paths": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "full_page": {
+            "type": "boolean"
+          },
+          "viewport_size": {
+            "type": "array",
+            "items": {
+              "type": "integer"
+            }
+          }
+        },
+        "required": [
+          "brief"
+        ]
+      },
+      "policy": {
+        "requires_confirmation": false,
+        "destructive": false,
+        "side_effects": "none"
+      }
+    },
+    {
+      "schema_version": "1.1",
+      "name": "webdev_check_status",
+      "transport": "mcp",
+      "server": "manus-tools",
+      "description": "Check project development status.",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "brief": {
+            "type": "string",
+            "description": "One-sentence purpose of the operation"
+          }
+        },
+        "required": [
+          "brief"
+        ]
+      },
+      "policy": {
+        "requires_confirmation": false,
+        "destructive": false,
+        "side_effects": "none"
+      }
+    },
+    {
+      "schema_version": "1.1",
+      "name": "webdev_restart_server",
+      "transport": "mcp",
+      "server": "manus-tools",
+      "description": "Restart project development services.",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "brief": {
+            "type": "string",
+            "description": "One-sentence purpose of the operation"
+          }
+        },
+        "required": [
+          "brief"
+        ]
+      },
+      "policy": {
+        "requires_confirmation": false,
+        "destructive": false,
+        "side_effects": "restarts_service"
+      }
+    },
+    {
+      "schema_version": "1.1",
+      "name": "webdev_add_feature",
+      "transport": "mcp",
+      "server": "manus-tools",
+      "description": "Add a full-stack feature.",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "brief": {
+            "type": "string",
+            "description": "One-sentence purpose of the operation"
+          },
+          "feature": {
+            "type": "string",
+            "enum": [
+              "web-db-user",
+              "stripe",
+              "shopify"
+            ]
+          }
+        },
+        "required": [
+          "brief",
+          "feature"
+        ]
+      },
+      "policy": {
+        "requires_confirmation": false,
+        "destructive": false,
+        "side_effects": "changes_project"
+      }
+    },
+    {
+      "schema_version": "1.1",
+      "name": "webdev_request_secrets",
+      "transport": "mcp",
+      "server": "manus-tools",
+      "description": "Add or update project secrets.",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "brief": {
+            "type": "string",
+            "description": "One-sentence purpose of the operation"
+          },
+          "message": {
+            "type": "string"
+          },
+          "secrets": {
+            "type": "array",
+            "minItems": 1,
+            "items": {
+              "type": "object",
+              "properties": {
+                "key": {
+                  "type": "string"
+                },
+                "value": {
+                  "type": "string"
+                },
+                "description": {
+                  "type": "string"
+                },
+                "preventMatching": {
+                  "type": "boolean"
+                }
+              }
+            }
+          }
+        },
+        "required": [
+          "brief",
+          "message",
+          "secrets"
+        ]
+      },
+      "policy": {
+        "requires_confirmation": true,
+        "destructive": false,
+        "side_effects": "changes_secrets"
+      }
+    },
+    {
+      "schema_version": "1.1",
+      "name": "webdev_save_checkpoint",
+      "transport": "mcp",
+      "server": "manus-tools",
+      "description": "Save project checkpoint.",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "brief": {
+            "type": "string",
+            "description": "One-sentence purpose of the operation"
+          },
+          "description": {
+            "type": "string"
+          },
+          "timeout": {
+            "type": "number"
+          }
+        },
+        "required": [
+          "brief",
+          "description"
+        ]
+      },
+      "policy": {
+        "requires_confirmation": false,
+        "destructive": false,
+        "side_effects": "creates_checkpoint"
+      }
+    },
+    {
+      "schema_version": "1.1",
+      "name": "webdev_rollback_checkpoint",
+      "transport": "mcp",
+      "server": "manus-tools",
+      "description": "Rollback to a checkpoint.",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "brief": {
+            "type": "string",
+            "description": "One-sentence purpose of the operation"
+          },
+          "version_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "brief",
+          "version_id"
+        ]
+      },
+      "policy": {
+        "requires_confirmation": true,
+        "destructive": true,
+        "side_effects": "reverts_project"
+      }
+    },
+    {
+      "schema_version": "1.1",
+      "name": "webdev_execute_sql",
+      "transport": "mcp",
+      "server": "manus-tools",
+      "description": "Execute SQL query.",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "brief": {
+            "type": "string",
+            "description": "One-sentence purpose of the operation"
+          },
+          "query": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "brief",
+          "query"
+        ]
+      },
+      "policy": {
+        "requires_confirmation": true,
+        "destructive": true,
+        "side_effects": "changes_database"
+      }
+    },
+    {
+      "schema_version": "1.1",
+      "name": "webdev_debug",
+      "transport": "mcp",
+      "server": "manus-tools",
+      "description": "Request independent debugging analysis.",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "brief": {
+            "type": "string",
+            "description": "One-sentence purpose of the operation"
+          },
+          "issue_description": {
+            "type": "string"
+          },
+          "things_tried": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "brief",
+          "issue_description",
+          "things_tried"
+        ]
+      },
+      "policy": {
+        "requires_confirmation": false,
+        "destructive": false,
+        "side_effects": "none"
+      }
+    },
+    {
+      "schema_version": "1.1",
+      "name": "manus-analyze-pptx",
+      "transport": "shell",
+      "server": null,
+      "description": "Shell CLI utility; execute only through an allowlist and pass argv as separate arguments.",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "executable": {
+            "const": "manus-analyze-pptx"
+          },
+          "argv": {
+            "type": "array",
+            "maxItems": 32,
+            "items": {
+              "type": "string",
+              "pattern": "^(?!.*\\x00)(?!bash$)(?!sh$)(?!-c$)(?!--command$).*$"
+            },
+            "description": "Validated argv only; never a raw shell command."
+          }
+        },
+        "required": [
+          "executable",
+          "argv"
+        ]
+      },
+      "policy": {
+        "requires_confirmation": false,
+        "destructive": false,
+        "side_effects": "may_modify_files_or_external_state"
+      },
+      "notes": [
+        "Executor must use absolute allowlisted path, subprocess shell=False, timeout, bounded output, and safe working directory."
+      ]
+    },
+    {
+      "schema_version": "1.1",
+      "name": "manus-analyze-video",
+      "transport": "shell",
+      "server": null,
+      "description": "Shell CLI utility; execute only through an allowlist and pass argv as separate arguments.",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "executable": {
+            "const": "manus-analyze-video"
+          },
+          "argv": {
+            "type": "array",
+            "maxItems": 32,
+            "items": {
+              "type": "string",
+              "pattern": "^(?!.*\\x00)(?!bash$)(?!sh$)(?!-c$)(?!--command$).*$"
+            },
+            "description": "Validated argv only; never a raw shell command."
+          }
+        },
+        "required": [
+          "executable",
+          "argv"
+        ]
+      },
+      "policy": {
+        "requires_confirmation": false,
+        "destructive": false,
+        "side_effects": "may_modify_files_or_external_state"
+      },
+      "notes": [
+        "Executor must use absolute allowlisted path, subprocess shell=False, timeout, bounded output, and safe working directory."
+      ]
+    },
+    {
+      "schema_version": "1.1",
+      "name": "manus-channel",
+      "transport": "shell",
+      "server": null,
+      "description": "Shell CLI utility; execute only through an allowlist and pass argv as separate arguments.",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "executable": {
+            "const": "manus-channel"
+          },
+          "argv": {
+            "type": "array",
+            "maxItems": 32,
+            "items": {
+              "type": "string",
+              "pattern": "^(?!.*\\x00)(?!bash$)(?!sh$)(?!-c$)(?!--command$).*$"
+            },
+            "description": "Validated argv only; never a raw shell command."
+          }
+        },
+        "required": [
+          "executable",
+          "argv"
+        ]
+      },
+      "policy": {
+        "requires_confirmation": true,
+        "destructive": false,
+        "side_effects": "sends_message"
+      },
+      "notes": [
+        "Executor must use absolute allowlisted path, subprocess shell=False, timeout, bounded output, and safe working directory."
+      ]
+    },
+    {
+      "schema_version": "1.1",
+      "name": "manus-config",
+      "transport": "shell",
+      "server": null,
+      "description": "Shell CLI utility; execute only through an allowlist and pass argv as separate arguments.",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "executable": {
+            "const": "manus-config"
+          },
+          "argv": {
+            "type": "array",
+            "maxItems": 32,
+            "items": {
+              "type": "string",
+              "pattern": "^(?!.*\\x00)(?!bash$)(?!sh$)(?!-c$)(?!--command$).*$"
+            },
+            "description": "Validated argv only; never a raw shell command."
+          }
+        },
+        "required": [
+          "executable",
+          "argv"
+        ]
+      },
+      "policy": {
+        "requires_confirmation": true,
+        "destructive": true,
+        "side_effects": "changes_configuration"
+      },
+      "notes": [
+        "Executor must use absolute allowlisted path, subprocess shell=False, timeout, bounded output, and safe working directory."
+      ]
+    },
+    {
+      "schema_version": "1.1",
+      "name": "manus-export-slides",
+      "transport": "shell",
+      "server": null,
+      "description": "Shell CLI utility; execute only through an allowlist and pass argv as separate arguments.",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "executable": {
+            "const": "manus-export-slides"
+          },
+          "argv": {
+            "type": "array",
+            "maxItems": 32,
+            "items": {
+              "type": "string",
+              "pattern": "^(?!.*\\x00)(?!bash$)(?!sh$)(?!-c$)(?!--command$).*$"
+            },
+            "description": "Validated argv only; never a raw shell command."
+          }
+        },
+        "required": [
+          "executable",
+          "argv"
+        ]
+      },
+      "policy": {
+        "requires_confirmation": false,
+        "destructive": false,
+        "side_effects": "may_modify_files_or_external_state"
+      },
+      "notes": [
+        "Executor must use absolute allowlisted path, subprocess shell=False, timeout, bounded output, and safe working directory."
+      ]
+    },
+    {
+      "schema_version": "1.1",
+      "name": "manus-heartbeat",
+      "transport": "shell",
+      "server": null,
+      "description": "Shell CLI utility; execute only through an allowlist and pass argv as separate arguments.",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "executable": {
+            "const": "manus-heartbeat"
+          },
+          "argv": {
+            "type": "array",
+            "maxItems": 32,
+            "items": {
+              "type": "string",
+              "pattern": "^(?!.*\\x00)(?!bash$)(?!sh$)(?!-c$)(?!--command$).*$"
+            },
+            "description": "Validated argv only; never a raw shell command."
+          }
+        },
+        "required": [
+          "executable",
+          "argv"
+        ]
+      },
+      "policy": {
+        "requires_confirmation": true,
+        "destructive": true,
+        "side_effects": "changes_scheduled_jobs"
+      },
+      "notes": [
+        "Executor must use absolute allowlisted path, subprocess shell=False, timeout, bounded output, and safe working directory."
+      ]
+    },
+    {
+      "schema_version": "1.1",
+      "name": "manus-mcp-cli",
+      "transport": "shell",
+      "server": null,
+      "description": "Shell CLI utility; execute only through an allowlist and pass argv as separate arguments.",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "executable": {
+            "const": "manus-mcp-cli"
+          },
+          "argv": {
+            "type": "array",
+            "maxItems": 32,
+            "items": {
+              "type": "string",
+              "pattern": "^(?!.*\\x00)(?!bash$)(?!sh$)(?!-c$)(?!--command$).*$"
+            },
+            "description": "Validated argv only; never a raw shell command."
+          }
+        },
+        "required": [
+          "executable",
+          "argv"
+        ]
+      },
+      "policy": {
+        "requires_confirmation": false,
+        "destructive": false,
+        "side_effects": "may_modify_files_or_external_state"
+      },
+      "notes": [
+        "Executor must use absolute allowlisted path, subprocess shell=False, timeout, bounded output, and safe working directory."
+      ]
+    },
+    {
+      "schema_version": "1.1",
+      "name": "manus-md-to-pdf",
+      "transport": "shell",
+      "server": null,
+      "description": "Shell CLI utility; execute only through an allowlist and pass argv as separate arguments.",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "executable": {
+            "const": "manus-md-to-pdf"
+          },
+          "argv": {
+            "type": "array",
+            "maxItems": 32,
+            "items": {
+              "type": "string",
+              "pattern": "^(?!.*\\x00)(?!bash$)(?!sh$)(?!-c$)(?!--command$).*$"
+            },
+            "description": "Validated argv only; never a raw shell command."
+          }
+        },
+        "required": [
+          "executable",
+          "argv"
+        ]
+      },
+      "policy": {
+        "requires_confirmation": false,
+        "destructive": false,
+        "side_effects": "may_modify_files_or_external_state"
+      },
+      "notes": [
+        "Executor must use absolute allowlisted path, subprocess shell=False, timeout, bounded output, and safe working directory."
+      ]
+    },
+    {
+      "schema_version": "1.1",
+      "name": "manus-render-diagram",
+      "transport": "shell",
+      "server": null,
+      "description": "Shell CLI utility; execute only through an allowlist and pass argv as separate arguments.",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "executable": {
+            "const": "manus-render-diagram"
+          },
+          "argv": {
+            "type": "array",
+            "maxItems": 32,
+            "items": {
+              "type": "string",
+              "pattern": "^(?!.*\\x00)(?!bash$)(?!sh$)(?!-c$)(?!--command$).*$"
+            },
+            "description": "Validated argv only; never a raw shell command."
+          }
+        },
+        "required": [
+          "executable",
+          "argv"
+        ]
+      },
+      "policy": {
+        "requires_confirmation": false,
+        "destructive": false,
+        "side_effects": "may_modify_files_or_external_state"
+      },
+      "notes": [
+        "Executor must use absolute allowlisted path, subprocess shell=False, timeout, bounded output, and safe working directory."
+      ]
+    },
+    {
+      "schema_version": "1.1",
+      "name": "manus-speech-to-text",
+      "transport": "shell",
+      "server": null,
+      "description": "Shell CLI utility; execute only through an allowlist and pass argv as separate arguments.",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "executable": {
+            "const": "manus-speech-to-text"
+          },
+          "argv": {
+            "type": "array",
+            "maxItems": 32,
+            "items": {
+              "type": "string",
+              "pattern": "^(?!.*\\x00)(?!bash$)(?!sh$)(?!-c$)(?!--command$).*$"
+            },
+            "description": "Validated argv only; never a raw shell command."
+          }
+        },
+        "required": [
+          "executable",
+          "argv"
+        ]
+      },
+      "policy": {
+        "requires_confirmation": false,
+        "destructive": false,
+        "side_effects": "may_modify_files_or_external_state"
+      },
+      "notes": [
+        "Executor must use absolute allowlisted path, subprocess shell=False, timeout, bounded output, and safe working directory."
+      ]
+    },
+    {
+      "schema_version": "1.1",
+      "name": "manus-token-local-proxy",
+      "transport": "shell",
+      "server": null,
+      "description": "Shell CLI utility; execute only through an allowlist and pass argv as separate arguments.",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "executable": {
+            "const": "manus-token-local-proxy"
+          },
+          "argv": {
+            "type": "array",
+            "maxItems": 32,
+            "items": {
+              "type": "string",
+              "pattern": "^(?!.*\\x00)(?!bash$)(?!sh$)(?!-c$)(?!--command$).*$"
+            },
+            "description": "Validated argv only; never a raw shell command."
+          }
+        },
+        "required": [
+          "executable",
+          "argv"
+        ]
+      },
+      "policy": {
+        "requires_confirmation": false,
+        "destructive": false,
+        "side_effects": "may_modify_files_or_external_state"
+      },
+      "notes": [
+        "Executor must use absolute allowlisted path, subprocess shell=False, timeout, bounded output, and safe working directory."
+      ]
+    },
+    {
+      "schema_version": "1.1",
+      "name": "manus-tools",
+      "transport": "shell",
+      "server": null,
+      "description": "Shell CLI utility; execute only through an allowlist and pass argv as separate arguments.",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "executable": {
+            "const": "manus-tools"
+          },
+          "argv": {
+            "type": "array",
+            "maxItems": 32,
+            "items": {
+              "type": "string",
+              "pattern": "^(?!.*\\x00)(?!bash$)(?!sh$)(?!-c$)(?!--command$).*$"
+            },
+            "description": "Validated argv only; never a raw shell command."
+          }
+        },
+        "required": [
+          "executable",
+          "argv"
+        ]
+      },
+      "policy": {
+        "requires_confirmation": false,
+        "destructive": false,
+        "side_effects": "may_modify_files_or_external_state"
+      },
+      "notes": [
+        "Executor must use absolute allowlisted path, subprocess shell=False, timeout, bounded output, and safe working directory."
+      ]
+    },
+    {
+      "schema_version": "1.1",
+      "name": "manus-touchpoint",
+      "transport": "shell",
+      "server": null,
+      "description": "Shell CLI utility; execute only through an allowlist and pass argv as separate arguments.",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "executable": {
+            "const": "manus-touchpoint"
+          },
+          "argv": {
+            "type": "array",
+            "maxItems": 32,
+            "items": {
+              "type": "string",
+              "pattern": "^(?!.*\\x00)(?!bash$)(?!sh$)(?!-c$)(?!--command$).*$"
+            },
+            "description": "Validated argv only; never a raw shell command."
+          }
+        },
+        "required": [
+          "executable",
+          "argv"
+        ]
+      },
+      "policy": {
+        "requires_confirmation": false,
+        "destructive": false,
+        "side_effects": "may_modify_files_or_external_state"
+      },
+      "notes": [
+        "Executor must use absolute allowlisted path, subprocess shell=False, timeout, bounded output, and safe working directory."
+      ]
+    },
+    {
+      "schema_version": "1.1",
+      "name": "manus-touchpoint-fuse",
+      "transport": "shell",
+      "server": null,
+      "description": "Shell CLI utility; execute only through an allowlist and pass argv as separate arguments.",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "executable": {
+            "const": "manus-touchpoint-fuse"
+          },
+          "argv": {
+            "type": "array",
+            "maxItems": 32,
+            "items": {
+              "type": "string",
+              "pattern": "^(?!.*\\x00)(?!bash$)(?!sh$)(?!-c$)(?!--command$).*$"
+            },
+            "description": "Validated argv only; never a raw shell command."
+          }
+        },
+        "required": [
+          "executable",
+          "argv"
+        ]
+      },
+      "policy": {
+        "requires_confirmation": false,
+        "destructive": false,
+        "side_effects": "may_modify_files_or_external_state"
+      },
+      "notes": [
+        "Executor must use absolute allowlisted path, subprocess shell=False, timeout, bounded output, and safe working directory."
+      ]
+    },
+    {
+      "schema_version": "1.1",
+      "name": "manus-upload-file",
+      "transport": "shell",
+      "server": null,
+      "description": "Shell CLI utility; execute only through an allowlist and pass argv as separate arguments.",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "executable": {
+            "const": "manus-upload-file"
+          },
+          "argv": {
+            "type": "array",
+            "maxItems": 32,
+            "items": {
+              "type": "string",
+              "pattern": "^(?!.*\\x00)(?!bash$)(?!sh$)(?!-c$)(?!--command$).*$"
+            },
+            "description": "Validated argv only; never a raw shell command."
+          }
+        },
+        "required": [
+          "executable",
+          "argv"
+        ]
+      },
+      "policy": {
+        "requires_confirmation": false,
+        "destructive": false,
+        "side_effects": "uploads_files"
+      },
+      "notes": [
+        "Executor must use absolute allowlisted path, subprocess shell=False, timeout, bounded output, and safe working directory."
+      ]
+    },
+    {
+      "schema_version": "1.1",
+      "name": "manus-webdev-logs",
+      "transport": "shell",
+      "server": null,
+      "description": "Shell CLI utility; execute only through an allowlist and pass argv as separate arguments.",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "executable": {
+            "const": "manus-webdev-logs"
+          },
+          "argv": {
+            "type": "array",
+            "maxItems": 32,
+            "items": {
+              "type": "string",
+              "pattern": "^(?!.*\\x00)(?!bash$)(?!sh$)(?!-c$)(?!--command$).*$"
+            },
+            "description": "Validated argv only; never a raw shell command."
+          }
+        },
+        "required": [
+          "executable",
+          "argv"
+        ]
+      },
+      "policy": {
+        "requires_confirmation": false,
+        "destructive": false,
+        "side_effects": "may_modify_files_or_external_state"
+      },
+      "notes": [
+        "Executor must use absolute allowlisted path, subprocess shell=False, timeout, bounded output, and safe working directory."
+      ]
+    },
+    {
+      "schema_version": "1.1",
+      "name": "manus-create-react-app",
+      "transport": "shell",
+      "server": null,
+      "description": "Documented utility not found on current PATH.",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "executable": {
+            "const": "manus-create-react-app"
+          },
+          "argv": {
+            "type": "array",
+            "maxItems": 32,
+            "items": {
+              "type": "string"
+            }
+          }
+        },
+        "required": [
+          "executable",
+          "argv"
+        ]
+      },
+      "policy": {
+        "requires_confirmation": false,
+        "destructive": false,
+        "side_effects": "may_modify_files_or_external_state"
+      },
+      "notes": [
+        "Unavailable in the inspected Shell PATH."
+      ]
+    },
+    {
+      "schema_version": "1.1",
+      "name": "manus-create-flask-app",
+      "transport": "shell",
+      "server": null,
+      "description": "Documented utility not found on current PATH.",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "executable": {
+            "const": "manus-create-flask-app"
+          },
+          "argv": {
+            "type": "array",
+            "maxItems": 32,
+            "items": {
+              "type": "string"
+            }
+          }
+        },
+        "required": [
+          "executable",
+          "argv"
+        ]
+      },
+      "policy": {
+        "requires_confirmation": false,
+        "destructive": false,
+        "side_effects": "may_modify_files_or_external_state"
+      },
+      "notes": [
+        "Unavailable in the inspected Shell PATH."
+      ]
+    }
+  ],
+  "counts": {
+    "mcp": 31,
+    "shell_available": 16,
+    "shell_documented_unavailable": 2,
+    "total": 49
+  }
+}

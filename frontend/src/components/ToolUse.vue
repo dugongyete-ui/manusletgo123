@@ -96,10 +96,23 @@ renderer.link = ({ href, text }: { href: string; title?: string | null; text: st
   return `<a href="${href}" target="_blank" rel="noopener noreferrer" title="${href}">${cleanLinkText(href, text)}</a>`;
 };
 
+// PERF: memoize hasil marked+DOMPurify — pesan "message" panjang dari agent
+// tidak perlu di-parse ulang setiap re-render timeline (sumber jank saat
+// agent sedang bekerja). Cache LRU kecil, cukup untuk timeline aktif.
+const _mdCache = new Map<string, string>();
+const MD_CACHE_MAX = 50;
 const renderMarkdown = (text: string) => {
   if (typeof text !== 'string') return '';
+  const hit = _mdCache.get(text);
+  if (hit !== undefined) return hit;
   const html = marked(text, { renderer }) as string;
-  return DOMPurify.sanitize(html, { ADD_ATTR: ['target', 'rel'] });
+  const safe = DOMPurify.sanitize(html, { ADD_ATTR: ['target', 'rel'] });
+  if (_mdCache.size >= MD_CACHE_MAX) {
+    const oldest = _mdCache.keys().next().value;
+    if (oldest !== undefined) _mdCache.delete(oldest);
+  }
+  _mdCache.set(text, safe);
+  return safe;
 };
 
 const handleClick = () => {

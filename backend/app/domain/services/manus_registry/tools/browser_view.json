@@ -1,0 +1,24 @@
+{
+  "schema_version": "1.1",
+  "name": "browser_view",
+  "transport": "mcp",
+  "server": "manus-tools",
+  "description": "View current page.",
+  "input_schema": {
+    "type": "object",
+    "properties": {
+      "brief": {
+        "type": "string",
+        "description": "One-sentence purpose of the operation"
+      }
+    },
+    "required": [
+      "brief"
+    ]
+  },
+  "policy": {
+    "requires_confirmation": false,
+    "destructive": false,
+    "side_effects": "none"
+  }
+}

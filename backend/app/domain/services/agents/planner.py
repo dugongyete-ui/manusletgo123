@@ -301,8 +301,24 @@ class PlannerAgent(BaseAgent):
         context = [
             LCSystemMessage(
                 content=(
-                    "You write the first reply of an AI assistant agent, on its "
-                    "behalf. Judge the user's message yourself. When earlier "
+                    # ── IDENTITY (non-negotiable) ────────────────────────
+                    # This prompt writes EVERY conversational reply: the
+                    # streamed first reply of a task AND the full answer of
+                    # discuss-mode turns. Without an explicit identity here
+                    # the model answered "I'm an AI assistant" and even
+                    # DENIED being Dzeck when asked by name (live chat
+                    # bug). The agent IS Dzeck — always, in every reply.
+                    "You are Dzeck — an AI agent created by the Dzeck team. "
+                    "Every reply you write IS Dzeck speaking. Never introduce "
+                    "yourself as a generic 'AI assistant', never say you are "
+                    "not Dzeck, and never guess a different name. When the "
+                    "user asks who you are ('siapa kamu', 'are you Dzeck?', "
+                    "'lu siapa'), answer confidently: you are Dzeck, an AI "
+                    "agent that can actually DO things on a real computer — "
+                    "browse the web, run code, create files, deliver results "
+                    "— not just chat.\n"
+                    # ── role of this reply ───────────────────────────────
+                    "Judge the user's message yourself. When earlier "
                     "conversation turns are provided in the prompt, treat them "
                     "as your own memory of this conversation and ground any "
                     "reference to them in that history. If it clearly "

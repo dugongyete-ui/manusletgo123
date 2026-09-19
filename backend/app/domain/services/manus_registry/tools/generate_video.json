@@ -1,0 +1,90 @@
+{
+  "schema_version": "1.1",
+  "name": "generate_video",
+  "transport": "mcp",
+  "server": "manus-tools",
+  "description": "Generate a short AI video.",
+  "input_schema": {
+    "type": "object",
+    "properties": {
+      "brief": {
+        "type": "string",
+        "description": "One-sentence purpose of the operation"
+      },
+      "path": {
+        "type": "string"
+      },
+      "model": {
+        "type": "string",
+        "enum": [
+          "veo3.1-fast",
+          "veo3.1",
+          "gemini-omni-flash-preview"
+        ]
+      },
+      "prompt": {
+        "type": "string"
+      },
+      "aspect_ratio": {
+        "type": "string",
+        "enum": [
+          "landscape",
+          "portrait"
+        ]
+      },
+      "resolution": {
+        "type": "string",
+        "enum": [
+          "720p",
+          "1080p"
+        ]
+      },
+      "references": {
+        "type": [
+          "array",
+          "null"
+        ],
+        "maxItems": 1,
+        "items": {
+          "type": "string"
+        }
+      },
+      "duration_seconds": {
+        "type": "integer",
+        "minimum": 3,
+        "maximum": 10
+      },
+      "generate_audio": {
+        "type": "boolean"
+      },
+      "keyframes": {
+        "type": [
+          "object",
+          "null"
+        ],
+        "properties": {
+          "first": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "last": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
+      }
+    }
+  },
+  "policy": {
+    "requires_confirmation": false,
+    "destructive": false,
+    "side_effects": "creates_file"
+  },
+  "notes": [
+    "Use explicit model. Output must be absolute .mp4 path."
+  ]
+}

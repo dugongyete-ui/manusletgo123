@@ -1,0 +1,48 @@
+{
+  "schema_version": "1.1",
+  "name": "webdev_init_project",
+  "transport": "mcp",
+  "server": "manus-tools",
+  "description": "Initialize a web/mobile project.",
+  "input_schema": {
+    "type": "object",
+    "properties": {
+      "brief": {
+        "type": "string",
+        "description": "One-sentence purpose of the operation"
+      },
+      "name": {
+        "type": "string"
+      },
+      "title": {
+        "type": "string"
+      },
+      "description": {
+        "type": "string"
+      },
+      "scaffold": {
+        "type": "string",
+        "enum": [
+          "web-static",
+          "web-db-user",
+          "mobile-app"
+        ]
+      },
+      "attached_project_id": {
+        "type": "string"
+      }
+    },
+    "required": [
+      "brief",
+      "name",
+      "title",
+      "description",
+      "scaffold"
+    ]
+  },
+  "policy": {
+    "requires_confirmation": false,
+    "destructive": false,
+    "side_effects": "creates_project"
+  }
+}

@@ -1,0 +1,36 @@
+{
+  "schema_version": "1.1",
+  "name": "manus-token-local-proxy",
+  "transport": "shell",
+  "server": null,
+  "description": "Shell CLI utility; execute only through an allowlist and pass argv as separate arguments.",
+  "input_schema": {
+    "type": "object",
+    "properties": {
+      "executable": {
+        "const": "manus-token-local-proxy"
+      },
+      "argv": {
+        "type": "array",
+        "maxItems": 32,
+        "items": {
+          "type": "string",
+          "pattern": "^(?!.*\\x00)(?!bash$)(?!sh$)(?!-c$)(?!--command$).*$"
+        },
+        "description": "Validated argv only; never a raw shell command."
+      }
+    },
+    "required": [
+      "executable",
+      "argv"
+    ]
+  },
+  "policy": {
+    "requires_confirmation": false,
+    "destructive": false,
+    "side_effects": "may_modify_files_or_external_state"
+  },
+  "notes": [
+    "Executor must use absolute allowlisted path, subprocess shell=False, timeout, bounded output, and safe working directory."
+  ]
+}

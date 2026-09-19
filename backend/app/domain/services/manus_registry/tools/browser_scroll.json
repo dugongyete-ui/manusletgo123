@@ -1,0 +1,57 @@
+{
+  "schema_version": "1.1",
+  "name": "browser_scroll",
+  "transport": "mcp",
+  "server": "manus-tools",
+  "description": "Scroll page or container.",
+  "input_schema": {
+    "type": "object",
+    "properties": {
+      "brief": {
+        "type": "string",
+        "description": "One-sentence purpose of the operation"
+      },
+      "target": {
+        "type": "string",
+        "enum": [
+          "page",
+          "container"
+        ]
+      },
+      "direction": {
+        "type": "string",
+        "enum": [
+          "up",
+          "down",
+          "left",
+          "right"
+        ]
+      },
+      "to_end": {
+        "type": "boolean"
+      },
+      "viewport_width": {
+        "type": "number"
+      },
+      "viewport_height": {
+        "type": "number"
+      },
+      "coordinate_x": {
+        "type": "number"
+      },
+      "coordinate_y": {
+        "type": "number"
+      }
+    },
+    "required": [
+      "brief",
+      "target",
+      "direction"
+    ]
+  },
+  "policy": {
+    "requires_confirmation": false,
+    "destructive": false,
+    "side_effects": "none"
+  }
+}

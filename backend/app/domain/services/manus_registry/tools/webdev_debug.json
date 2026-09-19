@@ -1,0 +1,32 @@
+{
+  "schema_version": "1.1",
+  "name": "webdev_debug",
+  "transport": "mcp",
+  "server": "manus-tools",
+  "description": "Request independent debugging analysis.",
+  "input_schema": {
+    "type": "object",
+    "properties": {
+      "brief": {
+        "type": "string",
+        "description": "One-sentence purpose of the operation"
+      },
+      "issue_description": {
+        "type": "string"
+      },
+      "things_tried": {
+        "type": "string"
+      }
+    },
+    "required": [
+      "brief",
+      "issue_description",
+      "things_tried"
+    ]
+  },
+  "policy": {
+    "requires_confirmation": false,
+    "destructive": false,
+    "side_effects": "none"
+  }
+}

@@ -1,0 +1,28 @@
+{
+  "schema_version": "1.1",
+  "name": "browser_find_keyword",
+  "transport": "mcp",
+  "server": "manus-tools",
+  "description": "Find text on page.",
+  "input_schema": {
+    "type": "object",
+    "properties": {
+      "brief": {
+        "type": "string",
+        "description": "One-sentence purpose of the operation"
+      },
+      "keyword": {
+        "type": "string"
+      }
+    },
+    "required": [
+      "brief",
+      "keyword"
+    ]
+  },
+  "policy": {
+    "requires_confirmation": false,
+    "destructive": false,
+    "side_effects": "none"
+  }
+}

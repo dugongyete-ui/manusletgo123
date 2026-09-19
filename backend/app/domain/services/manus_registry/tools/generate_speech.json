@@ -1,0 +1,63 @@
+{
+  "schema_version": "1.1",
+  "name": "generate_speech",
+  "transport": "mcp",
+  "server": "manus-tools",
+  "description": "Generate speech audio.",
+  "input_schema": {
+    "type": "object",
+    "properties": {
+      "brief": {
+        "type": "string",
+        "description": "One-sentence purpose of the operation"
+      },
+      "path": {
+        "type": "string",
+        "pattern": "^/.+\\.wav$"
+      },
+      "prompt": {
+        "type": "string",
+        "maxLength": 6000
+      },
+      "voice_name": {
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "language_code": {
+        "type": "string"
+      },
+      "speaker_voice_configs": {
+        "type": [
+          "array",
+          "null"
+        ],
+        "minItems": 2,
+        "maxItems": 2,
+        "items": {
+          "type": "object",
+          "properties": {
+            "speaker": {
+              "type": "string"
+            },
+            "voice_name": {
+              "type": "string"
+            }
+          }
+        }
+      }
+    },
+    "required": [
+      "brief",
+      "path",
+      "prompt",
+      "language_code"
+    ]
+  },
+  "policy": {
+    "requires_confirmation": false,
+    "destructive": false,
+    "side_effects": "creates_file"
+  }
+}

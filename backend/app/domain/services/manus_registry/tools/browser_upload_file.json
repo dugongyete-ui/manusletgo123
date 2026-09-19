@@ -1,0 +1,39 @@
+{
+  "schema_version": "1.1",
+  "name": "browser_upload_file",
+  "transport": "mcp",
+  "server": "manus-tools",
+  "description": "Upload files.",
+  "input_schema": {
+    "type": "object",
+    "properties": {
+      "brief": {
+        "type": "string",
+        "description": "One-sentence purpose of the operation"
+      },
+      "files": {
+        "type": "array",
+        "items": {
+          "type": "object",
+          "properties": {
+            "index": {
+              "type": "integer"
+            },
+            "path": {
+              "type": "string"
+            }
+          }
+        }
+      }
+    },
+    "required": [
+      "brief",
+      "files"
+    ]
+  },
+  "policy": {
+    "requires_confirmation": false,
+    "destructive": false,
+    "side_effects": "uploads_files"
+  }
+}

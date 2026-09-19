@@ -1,0 +1,34 @@
+{
+  "schema_version": "1.1",
+  "name": "generate_music",
+  "transport": "mcp",
+  "server": "manus-tools",
+  "description": "Generate music audio.",
+  "input_schema": {
+    "type": "object",
+    "properties": {
+      "brief": {
+        "type": "string",
+        "description": "One-sentence purpose of the operation"
+      },
+      "path": {
+        "type": "string",
+        "pattern": "^/.+\\.(wav|mp3)$"
+      },
+      "prompt": {
+        "type": "string",
+        "maxLength": 50000
+      }
+    },
+    "required": [
+      "brief",
+      "path",
+      "prompt"
+    ]
+  },
+  "policy": {
+    "requires_confirmation": false,
+    "destructive": false,
+    "side_effects": "creates_file"
+  }
+}

@@ -100,8 +100,9 @@ def test_agents_md_skill_count_matches_disk():
         p.parent.name
         for p in (MANUAL / "skills").glob("*/SKILL.md")
     )
-    assert "61 focused playbooks" in text
-    assert len(on_disk) == 61, f"manual claims 61 skills, disk has {len(on_disk)}"
+    # 72 = 61 (wave 1) + 11 Manus skills package wave 2 (2026-09-19)
+    assert "72 focused playbooks" in text
+    assert len(on_disk) == 72, f"manual claims 72 skills, disk has {len(on_disk)}"
 
 
 def test_skills_index_lists_every_skill_on_disk():

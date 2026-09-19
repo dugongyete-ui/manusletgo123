@@ -1,0 +1,65 @@
+{
+  "schema_version": "1.1",
+  "name": "browser_click",
+  "transport": "mcp",
+  "server": "manus-tools",
+  "description": "Click a page element by index or viewport coordinates.",
+  "input_schema": {
+    "allOf": [
+      {
+        "type": "object",
+        "properties": {
+          "brief": {
+            "type": "string",
+            "description": "One-sentence purpose of the operation"
+          }
+        },
+        "required": [
+          "brief"
+        ]
+      },
+      {
+        "oneOf": [
+          {
+            "required": [
+              "index"
+            ],
+            "properties": {
+              "index": {
+                "type": "integer",
+                "minimum": 0
+              }
+            }
+          },
+          {
+            "required": [
+              "viewport_width",
+              "viewport_height",
+              "coordinate_x",
+              "coordinate_y"
+            ],
+            "properties": {
+              "viewport_width": {
+                "type": "number"
+              },
+              "viewport_height": {
+                "type": "number"
+              },
+              "coordinate_x": {
+                "type": "number"
+              },
+              "coordinate_y": {
+                "type": "number"
+              }
+            }
+          }
+        ]
+      }
+    ]
+  },
+  "policy": {
+    "requires_confirmation": false,
+    "destructive": false,
+    "side_effects": "none"
+  }
+}

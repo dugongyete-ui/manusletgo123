@@ -1,0 +1,32 @@
+{
+  "schema_version": "1.1",
+  "name": "browser_switch",
+  "transport": "mcp",
+  "server": "manus-tools",
+  "description": "Switch browser routing.",
+  "input_schema": {
+    "type": "object",
+    "properties": {
+      "brief": {
+        "type": "string",
+        "description": "One-sentence purpose of the operation"
+      },
+      "target": {
+        "type": "string",
+        "enum": [
+          "sandbox",
+          "my_browser"
+        ]
+      }
+    },
+    "required": [
+      "brief",
+      "target"
+    ]
+  },
+  "policy": {
+    "requires_confirmation": false,
+    "destructive": false,
+    "side_effects": "none"
+  }
+}

@@ -46,15 +46,29 @@ def _e2b_available() -> bool:
 
 
 def _classify_failure(exc: Exception) -> str:
-    """Map an E2B failure to a cooldown policy. Returns 'auth' | 'rate' | 'transient'."""
+    """Map an E2B failure to a cooldown policy. Returns 'auth' | 'rate' | 'transient'.
+
+    Kompatibel e2b SDK v1 (exception top-level) DAN v2 (e2b.exceptions.*).
+    ImportError (SDK belum terpasang) sengaja TIDAK dinonaktifkan permanen —
+    kembali 'transient' supaya setelah `install_v2.sh` memasang SDK, E2B
+    langsung dipakai pada sesi berikutnya tanpa restart proses.
+    """
     name = type(exc).__name__
     try:
         import e2b  # noqa: F401
 
-        if isinstance(exc, e2b.AuthenticationException):
-            return "auth"
-        if isinstance(exc, e2b.RateLimitException):
-            return "rate"
+        exc_types = [e2b]
+        try:
+            from e2b import exceptions as _e2b_exceptions  # noqa: F401
+
+            exc_types.append(_e2b_exceptions)
+        except Exception:
+            pass
+        for mod in exc_types:
+            if isinstance(exc, getattr(mod, "AuthenticationException", ())):
+                return "auth"
+            if isinstance(exc, getattr(mod, "RateLimitException", ())):
+                return "rate"
     except Exception:
         pass
     # Quota-exhausted messages sometimes surface as generic SandboxException
@@ -63,6 +77,8 @@ def _classify_failure(exc: Exception) -> str:
         return "rate"
     if "unauthorized" in msg or "invalid api key" in msg or "authentication" in msg:
         return "auth"
+    if isinstance(exc, ImportError) or "no module named" in msg:
+        return "transient"
     return "transient"
 
 
@@ -107,9 +123,12 @@ class HybridSandboxFactory:
                 else:
                     logger.warning(
                         "E2B sandbox unavailable (%s: %s) — falling back to "
-                        "Replit sandbox for this session.",
+                        "Replit sandbox for this session%s.",
                         type(exc).__name__,
                         exc,
+                        " (pasang SDK: install_v2.sh / pip install 'e2b>=2.0.0')"
+                        if isinstance(exc, ImportError)
+                        else "",
                     )
         return await ReplitSandbox.create()
 

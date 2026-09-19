@@ -159,12 +159,20 @@ async def test_finite_loop_still_capped():
 
 
 def test_settings_defaults_unlimited():
-    """Defaults ship UNLIMITED: no arbitrary truncation of healthy work."""
+    """Deployment defaults (updated 2026-09-19): MAX_STEPS=0 → UNLIMITED.
+    The loop runs until the goal is genuinely complete — long-running tasks
+    are never cut short by a counter. MAX_CONSECUTIVE_FAILURES stays the
+    only health guard; sub-agent delegation stays unlimited."""
     settings = get_settings()
     assert settings.max_steps == 0
     assert settings.nested_max_iterations == 0
     # Health guard (failed STEPS, not iterations) stays generous but finite.
     assert settings.max_consecutive_failures == 10
+    # The CODE default is unlimited so deployments share the same contract.
+    import inspect
+    from app.core.config import Settings
+    src = inspect.getsource(Settings)
+    assert "max_steps: int = 0" in src
 
 
 def test_effort_scaling_never_limits_unlimited():

@@ -1,0 +1,31 @@
+{
+  "schema_version": "1.1",
+  "name": "webdev_save_checkpoint",
+  "transport": "mcp",
+  "server": "manus-tools",
+  "description": "Save project checkpoint.",
+  "input_schema": {
+    "type": "object",
+    "properties": {
+      "brief": {
+        "type": "string",
+        "description": "One-sentence purpose of the operation"
+      },
+      "description": {
+        "type": "string"
+      },
+      "timeout": {
+        "type": "number"
+      }
+    },
+    "required": [
+      "brief",
+      "description"
+    ]
+  },
+  "policy": {
+    "requires_confirmation": false,
+    "destructive": false,
+    "side_effects": "creates_checkpoint"
+  }
+}

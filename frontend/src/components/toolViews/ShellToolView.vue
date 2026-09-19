@@ -62,6 +62,39 @@ const shellSessionId = computed(() => {
   return '';
 });
 
+/**
+ * PERF: batasi output yang dirender (innerHTML penuh untuk output shell
+ * puluhan-ribuan baris adalah sumber utama UI "lelet" saat agent bekerja).
+ * Simpan TAIL output + penanda truncation; data penuh tetap di backend.
+ */
+const MAX_RENDER_CHARS = 120_000;
+const MAX_RENDER_LINES = 400;
+const truncateRendered = (s: string): string => {
+  if (s.length <= MAX_RENDER_CHARS && s.split('\n').length <= MAX_RENDER_LINES) return s;
+  const lines = s.split('\n');
+  let tail = lines.slice(-MAX_RENDER_LINES).join('\n');
+  if (tail.length > MAX_RENDER_CHARS) tail = tail.slice(-MAX_RENDER_CHARS);
+  return `[… ${lines.length - MAX_RENDER_LINES} baris lebih awal disembunyikan (output penuh tersimpan di sesi) …]\n` + tail;
+};
+
+let loadPending = false;
+let loadQueued = false;
+/** PERF: debounce trailing — watcher ganda + timer polling tidak menumpuk request. */
+const scheduleLoad = () => {
+  if (loadPending) { loadQueued = true; return; }
+  loadPending = true;
+  setTimeout(async () => {
+    loadPending = false;
+    try { await loadShellContent(); } finally {
+      if (loadQueued) { loadQueued = false; scheduleLoad(); }
+    }
+  }, 250);
+};
+
+/** PERF: jeda polling saat tab tidak terlihat — hemat CPU & request. */
+const documentVisible = ref(true);
+const onVisibility = () => { documentVisible.value = !document.hidden; };
+
 const updateShellContent = (console: any) => {
   if (console == null) return;
   let newShell = '';
@@ -85,7 +118,7 @@ const updateShellContent = (console: any) => {
     newShell = escapeHtml(JSON.stringify(console));
   }
   if (newShell !== shell.value) {
-    shell.value = newShell;
+    shell.value = truncateRendered(newShell);
   }
 }
 
@@ -111,10 +144,13 @@ const startAutoRefresh = () => {
   if (refreshTimer.value) {
     clearInterval(refreshTimer.value);
   }
-  
+
   if (props.live && shellSessionId.value) {
     refreshTimer.value = setInterval(() => {
-      loadShellContent();
+      // PERF: skip polling saat tab hidden / panel tidak aktif —
+      // interval tetap berjalan tapi tanpa request sampai visible lagi.
+      if (document.hidden) return;
+      scheduleLoad();
     }, 5000);
   }
 };
@@ -128,7 +164,7 @@ const stopAutoRefresh = () => {
 };
 
 watch(() => props.toolContent, () => {
-  loadShellContent();
+  scheduleLoad();
 });
 
 // The session id can arrive AFTER mount (tool event transitions from
@@ -136,19 +172,19 @@ watch(() => props.toolContent, () => {
 // polling as soon as it shows up, not only on mount.
 watch(shellSessionId, (newId) => {
   if (newId) {
-    loadShellContent();
+    scheduleLoad();
     startAutoRefresh();
   }
 });
 
 watch(() => props.toolContent.timestamp, () => {
-  loadShellContent();
+  scheduleLoad();
 });
 
 // Watch for live prop changes
 watch(() => props.live, (live: boolean) => {
   if (live) {
-    loadShellContent();
+    scheduleLoad();
     startAutoRefresh();
   } else {
     stopAutoRefresh();
@@ -157,12 +193,14 @@ watch(() => props.live, (live: boolean) => {
 
 // Load content and set up refresh timer when component is mounted
 onMounted(() => {
-  loadShellContent();
+  document.addEventListener('visibilitychange', onVisibility);
+  scheduleLoad();
   startAutoRefresh();
 });
 
 // Clear timer when component is unmounted
 onUnmounted(() => {
+  document.removeEventListener('visibilitychange', onVisibility);
   stopAutoRefresh();
 });
 </script>

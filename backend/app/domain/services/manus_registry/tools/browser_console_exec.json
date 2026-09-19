@@ -1,0 +1,28 @@
+{
+  "schema_version": "1.1",
+  "name": "browser_console_exec",
+  "transport": "mcp",
+  "server": "manus-tools",
+  "description": "Execute JavaScript in page context.",
+  "input_schema": {
+    "type": "object",
+    "properties": {
+      "brief": {
+        "type": "string",
+        "description": "One-sentence purpose of the operation"
+      },
+      "javascript": {
+        "type": "string"
+      }
+    },
+    "required": [
+      "brief",
+      "javascript"
+    ]
+  },
+  "policy": {
+    "requires_confirmation": false,
+    "destructive": false,
+    "side_effects": "executes_page_javascript"
+  }
+}

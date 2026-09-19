@@ -43,10 +43,26 @@ IMPORTED = [
     "webdev-readme-mobile-backend",
     "webdev-ssr-conversion",
     "webdev-voice-transcription",
+    # Manus skills package wave 2 (2026-09-19) — the webdev_*/manus-* tools
+    # these reference are REAL now (Manus registry gate implements them).
+    "automation-and-scheduling",
+    "builtin-llm-models",
+    "data-api",
+    "data-backup-restoration",
+    "gws-best-practices",
+    "manus-config",
+    "music-prompter",
+    "slides",
+    "webdev-custom-dockerfile",
+    "workflow-composer",
 ]
 
 # Tokens that only exist on the Manus platform — their presence in the
 # manual would make the agent call tooling this sandbox does not have.
+# NOTE: webdev_execute_sql / webdev_init_project / webdev_add_feature /
+# webdev_restart_server / webdev_take_screenshot / webdev_save_checkpoint /
+# webdev_request_secrets / manus-upload-file are IMPLEMENTED by the Manus
+# registry gate (mcp_executor / manus_tools_bin) — they are no longer banned.
 PLATFORM_TOKENS = [
     "BUILT_IN_FORGE",
     "VITE_APP_ID",
@@ -54,16 +70,8 @@ PLATFORM_TOKENS = [
     "VITE_OAUTH_PORTAL_URL",
     "OWNER_OPEN_ID",
     "manus-storage",
-    "manus-upload-file",
     "manus-webdev",
     "manus-logs",
-    "webdev_execute_sql",
-    "webdev_init_project",
-    "webdev_add_feature",
-    "webdev_restart_server",
-    "webdev_take_screenshot",
-    "webdev_save_checkpoint",
-    "webdev_request_secrets",
     "manus.space",
     "api.manus.ai",
     "/home/ubuntu/skills",
@@ -71,20 +79,11 @@ PLATFORM_TOKENS = [
 ]
 
 # Skills the import deliberately skipped — nothing may reference them.
+# manus-api + webdev-manus-oauth are 100% Manus-platform services
+# (api.manus.ai OAuth) that cannot exist in this sandbox.
 SKIPPED = [
     "manus-api",
-    "manus-config",
-    "gws-best-practices",
-    "workflow-composer",
-    "webdev-custom-dockerfile",
-    "webdev-data-api",
     "webdev-manus-oauth",
-    "builtin-llm-models",
-    "data-api",
-    "music-prompter",
-    "slides",
-    "automation-and-scheduling",
-    "data-backup-restoration",
 ]
 
 
@@ -104,12 +103,28 @@ def test_imported_skills_exist_with_matching_frontmatter():
 
 
 def test_no_manus_mentions_anywhere_in_manual():
-    """The brand name must never leak into agent-facing manual text."""
-    leaks = [
-        str(p.relative_to(MANUAL))
-        for p in _all_manual_files()
-        if "manus" in p.read_text(encoding="utf-8", errors="replace").lower()
+    """The brand name must never leak into agent-facing manual text.
+
+    Exception: the 16 manus-* tool identifiers are REAL registry tools in
+    this deployment (backend manus_registry + sandbox manus_tools_bin) —
+    they are literal tool names, not brand mentions, and are stripped
+    before the check.
+    """
+    allowed_tools = [
+        "manus-analyze-pptx", "manus-analyze-video", "manus-channel",
+        "manus-config", "manus-export-slides", "manus-heartbeat",
+        "manus-mcp-cli", "manus-md-to-pdf", "manus-render-diagram",
+        "manus-speech-to-text", "manus-token-local-proxy", "manus-tools",
+        "manus-touchpoint-fuse", "manus-touchpoint", "manus-upload-file",
+        "manus-webdev-logs",
     ]
+    leaks = []
+    for p in _all_manual_files():
+        text = p.read_text(encoding="utf-8", errors="replace")
+        for name in allowed_tools:
+            text = text.replace(name, "")
+        if "manus" in text.lower():
+            leaks.append(str(p.relative_to(MANUAL)))
     assert not leaks, f"manus mentions leaked into: {leaks}"
 
 
@@ -167,13 +182,13 @@ def test_mobile_backend_doctrine_matches_sandbox():
 
 def test_index_and_prompt_carry_new_count():
     index = (MANUAL / "SKILLS.md").read_text(encoding="utf-8")
-    assert "61 playbooks" in index
+    assert "72 playbooks" in index
     for name in IMPORTED:
         assert f"| {name} " in index, f"SKILLS.md index missing {name}"
 
     from app.domain.services.prompts.system import SYSTEM_PROMPT
 
-    assert "61 focused playbooks" in SYSTEM_PROMPT
+    assert "72 focused playbooks" in SYSTEM_PROMPT
 
 
 def test_scaffold_version_bumped():
@@ -182,7 +197,7 @@ def test_scaffold_version_bumped():
         collect_manual_files,
     )
 
-    assert MANUAL_VERSION == 16
+    assert MANUAL_VERSION == 17
     files = collect_manual_files()
     for name in IMPORTED:
         assert f"skills/{name}/SKILL.md" in files, f"scaffold missing {name}"

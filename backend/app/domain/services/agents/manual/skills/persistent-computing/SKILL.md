@@ -19,6 +19,8 @@ This sandbox (a Replit container or an E2B microVM) is ephemeral task space: it 
 
 Most of these still start as a build here (the default option) — including always-on bots, background workers, and long-running batch/ETL jobs behind a web UI: you build and verify the code, the user hosts it. The boundary for changing the approach is defined under Hosting Modes below.
 
+**Environment note (no Docker here):** the working sandbox has NO Docker binary — do not attempt `docker build`/`docker run` locally in any environment (Replit, z.ai, or a plain container). Docker is a property of the USER's target host: a VPS/cloud computer they attach later gets it automatically. Until then, build and verify with what the sandbox has (Python/Node/git), keep the app runnable without Docker, and hand the Dockerfile (if genuinely needed) to the user as part of the zip with exact run steps.
+
 
 ## The Default Option: Build Here, Deliver a Zip
 

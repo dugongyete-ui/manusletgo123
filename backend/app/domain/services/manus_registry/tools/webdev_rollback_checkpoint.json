@@ -1,0 +1,28 @@
+{
+  "schema_version": "1.1",
+  "name": "webdev_rollback_checkpoint",
+  "transport": "mcp",
+  "server": "manus-tools",
+  "description": "Rollback to a checkpoint.",
+  "input_schema": {
+    "type": "object",
+    "properties": {
+      "brief": {
+        "type": "string",
+        "description": "One-sentence purpose of the operation"
+      },
+      "version_id": {
+        "type": "string"
+      }
+    },
+    "required": [
+      "brief",
+      "version_id"
+    ]
+  },
+  "policy": {
+    "requires_confirmation": true,
+    "destructive": true,
+    "side_effects": "reverts_project"
+  }
+}
