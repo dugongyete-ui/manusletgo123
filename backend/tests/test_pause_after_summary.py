@@ -88,11 +88,12 @@ async def test_pause_returning_false_is_not_logged_as_success():
 
 
 def test_run_tracks_wait_event_to_skip_pause():
-    """The run() body must declare the waited_for_user flag before the try
-    block and set it on WaitEvent — source-level contract check."""
+    """The run body (now _run_impl, supervised by the wall-clock watchdog
+    wrapper) must declare the waited_for_user flag before the try block and
+    set it on WaitEvent — source-level contract check."""
     import inspect
 
-    src = inspect.getsource(AgentTaskRunner.run)
+    src = inspect.getsource(AgentTaskRunner._run_impl)
     assert "waited_for_user = False" in src
     assert "waited_for_user = True" in src
     # The pause is gated on NOT waiting for the user

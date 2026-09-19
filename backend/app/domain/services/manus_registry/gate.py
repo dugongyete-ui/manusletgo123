@@ -21,6 +21,7 @@ tools keep their Python schemas. Names never collide (registry wins).
 """
 from __future__ import annotations
 
+import asyncio
 import logging
 import time
 from typing import Any, Dict, List, Optional, Tuple
@@ -31,6 +32,7 @@ from app.domain.models.tool_result import ToolResult
 from app.domain.services.manus_registry.browser_session import BrowserSessionTracker
 from app.domain.services.manus_registry.confirmations import confirmation_store
 from app.domain.services.manus_registry.errors import (
+    TIMEOUT,
     TOOL_DISABLED,
     VALIDATION_ERROR,
     failure_payload,
@@ -302,14 +304,20 @@ class ManusGate:
                     "Shell transport unavailable (sandbox not attached).",
                 )
             else:
-                payload = await run_with_retry(
-                    lambda: self.shell.execute(tool_name, arguments),
-                    tool_name=tool_name,
+                payload = await self._bounded_tool_exec(
+                    tool_name,
+                    lambda: run_with_retry(
+                        lambda: self.shell.execute(tool_name, arguments),
+                        tool_name=tool_name,
+                    ),
                 )
         else:
-            payload = await run_with_retry(
-                lambda: self.mcp.execute(tool_name, arguments),
-                tool_name=tool_name,
+            payload = await self._bounded_tool_exec(
+                tool_name,
+                lambda: run_with_retry(
+                    lambda: self.mcp.execute(tool_name, arguments),
+                    tool_name=tool_name,
+                ),
             )
             if (
                 payload.get("error", {}) or {}
@@ -359,6 +367,42 @@ class ManusGate:
             if stop is not None:
                 payload = stop
         return self._finish(tool_name, tool_call_id, args_hash, payload, brief)
+
+    async def _bounded_tool_exec(self, tool_name: str, run) -> Dict[str, Any]:
+        """Execute one tool call under the per-tool wall-clock ceiling.
+
+        A hung tool (wedged browser init, dead MCP server, stuck shell pipe)
+        must fail honestly instead of blocking the agent loop forever — the
+        earlier Persib task sat "thinking" for ~12 minutes on a browser init
+        that never returned while the user watched no progress. The ceiling
+        covers the ENTIRE transport route (executor retries + backoff
+        included); 0 disables it (operator choice).
+        """
+        from app.core.config import get_settings
+
+        timeout_s = float(
+            getattr(get_settings(), "manus_tool_timeout_seconds", 0) or 0
+        )
+        if timeout_s <= 0:
+            return await run()
+        try:
+            return await asyncio.wait_for(run(), timeout=timeout_s)
+        except asyncio.TimeoutError:
+            logger.warning(
+                "Tool %s exceeded the %.0fs per-tool limit — returning "
+                "TIMEOUT failure to the model",
+                tool_name, timeout_s,
+            )
+            return failure_payload(
+                tool_name,
+                TIMEOUT,
+                f"Tool '{tool_name}' exceeded the {int(timeout_s)}s per-tool "
+                "execution limit and was stopped. Try a different approach, "
+                "split the work, or retry once — do NOT retry the exact same "
+                "call more than once. / Tool melebihi batas waktu eksekusi "
+                f"{int(timeout_s)} detik dan dihentikan.",
+                {"timeout_seconds": int(timeout_s)},
+            )
 
     def _has_backend(self, tool_name: str) -> bool:
         """Whether the backing implementation for this tool is attached."""

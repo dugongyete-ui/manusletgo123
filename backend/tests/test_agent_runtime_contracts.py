@@ -418,8 +418,10 @@ async def test_scenario_confirmation_required_pauses():
 
 def test_scenario_max_steps_wall_clock():
     """max_steps → failed_or_stopped: the runtime wall-clock guard map —
-    manus_task_timeout_ms > 0 enables the stop, and the runner treats the
-    breach as FAILED (see _TaskTimeoutError); config contract is enforced."""
+    manus_task_timeout_ms > 0 enables the stop; the breach finalizes the
+    session as an explicit auto-stop (CANCELLED, resumable) with its own
+    message — see _TaskTimeoutError/_finalize_timed_out and the run()
+    watchdog. Config contract is enforced."""
     from app.core.config import get_settings
     ms = int(getattr(get_settings(), "manus_task_timeout_ms", 0) or 0)
     cfg = get_runtime_config()

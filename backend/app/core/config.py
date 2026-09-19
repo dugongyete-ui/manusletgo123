@@ -245,6 +245,11 @@ class Settings(BaseSettings):
     # Wall-clock budget per agent RUN in ms (runtime.config.json
     # agent.task_timeout_ms=900000). 0 disables the wall-clock guard.
     manus_task_timeout_ms: int = 900_000
+    # Hard ceiling for ONE tool execution in seconds (gate level, all
+    # transports). A hung tool (wedged browser init, dead MCP server) must
+    # fail honestly instead of blocking the agent loop forever while the
+    # user watches "thinking" with no progress. 0 disables the ceiling.
+    manus_tool_timeout_seconds: float = 300.0
     # LLM context cap in messages (runtime.config.json
     # agent.context_max_messages=200) — oldest messages roll off first.
     agent_context_max_messages: int = 200

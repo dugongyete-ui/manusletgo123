@@ -217,6 +217,10 @@ class AgentTaskRunner(TaskRunner):
         import uuid as _uuid
         self._run_task_id = _uuid.uuid4().hex[:12]
         self._run_failed = False
+        # Set True by the run-level watchdog (run()) when the wall clock
+        # breaches — the impl's CancelledError handler then finalizes the
+        # session as an auto-stop (resumable) instead of a user stop.
+        self._timed_out = False
         for _agent in (self._flow.planner, self._flow.executor):
             _agent.task_context = {
                 "task_id": self._run_task_id,
@@ -1009,6 +1013,105 @@ class AgentTaskRunner(TaskRunner):
         return synced_file
 
     async def run(self, task: Task) -> None:
+        """Process the agent's message queue with a wall-clock WATCHDOG.
+
+        The impl (_run_impl) checks the runtime wall clock only BETWEEN
+        events — a tool call that never returns (wedged browser init, dead
+        MCP server) blocks the pump and no checkpoint ever fires, so the
+        user stares at "thinking" forever (the Persib-session incident:
+        ~12 silent minutes). This wrapper runs the impl as a supervised
+        task: a watchdog loop cancels it the moment the budget is exceeded,
+        the impl finalizes the session as an auto-stop (resumable, like the
+        STOP button) with an explicit overtime message.
+        """
+        import time as _time_mod
+
+        timeout_ms = int(
+            getattr(get_settings(), "manus_task_timeout_ms", 0) or 0
+        )
+        if timeout_ms <= 0:
+            await self._run_impl(task)
+            return
+
+        self._timed_out = False
+        impl = asyncio.ensure_future(self._run_impl(task))
+        started = _time_mod.monotonic()
+
+        async def _watchdog() -> None:
+            while not impl.done():
+                await asyncio.sleep(5.0)
+                if impl.done():
+                    return
+                elapsed_ms = (_time_mod.monotonic() - started) * 1000.0
+                if elapsed_ms >= timeout_ms:
+                    self._timed_out = True
+                    logger.warning(
+                        "Agent %s wall-clock watchdog fired after %.0fs — "
+                        "cancelling stuck run (session %s)",
+                        self._agent_id, elapsed_ms / 1000.0, self._session_id,
+                    )
+                    impl.cancel()
+                    return
+
+        watchdog = asyncio.ensure_future(_watchdog())
+        try:
+            # shield: run()'s own cancellation (user STOP) must not kill the
+            # impl before it can finalize the session — we forward it below.
+            await asyncio.shield(impl)
+        except asyncio.CancelledError:
+            # Either the watchdog fired (impl already cancelling) or the user
+            # pressed STOP (forward the cancel so the impl's handler emits
+            # the notice and flips the status).
+            impl.cancel()
+            try:
+                await impl
+            except asyncio.CancelledError:
+                # impl died before its handler could finalize (e.g. cancelled
+                # during teardown); finalize here so the session never stays
+                # RUNNING forever.
+                if self._timed_out:
+                    await self._finalize_timed_out(task)
+                else:
+                    raise
+        finally:
+            watchdog.cancel()
+
+    async def _finalize_timed_out(self, task: Task) -> None:
+        """Close a wall-clock-breached run as an explicit auto-stop.
+
+        Resumable (CANCELLED) like the user STOP path — the next user
+        message continues the plan from the last stopping point — but with
+        its own honest message saying the time limit ended this run.
+        """
+        minutes = int(
+            int(getattr(get_settings(), "manus_task_timeout_ms", 0) or 0) // 60000
+        )
+        await self._put_and_add_event(
+            task,
+            MessageEvent(
+                role="assistant",
+                message=(
+                    f"⏱️ Dzeck menghentikan tugas ini karena melebihi batas "
+                    f"waktu {minutes} menit tanpa kemajuan yang selesai. "
+                    f"Kirim pesan baru untuk melanjutkan dari titik terakhir." 
+                    f"/ The task hit the {minutes}-minute wall-clock limit and "
+                    f"was stopped — send a new message to continue where it "
+                    f"left off."
+                ),
+                is_final=True,
+            ),
+        )
+        await self._put_and_add_event(task, DoneEvent())
+        await self._session_repository.update_status(
+            self._session_id, SessionStatus.CANCELLED
+        )
+        try:
+            from app.domain.services.manus_registry.notify import run_registry
+            run_registry.finish_run(self._run_task_id, "cancelled")
+        except Exception:
+            logger.debug("registry finish for timed-out run failed", exc_info=True)
+
+    async def _run_impl(self, task: Task) -> None:
         """Process agent's message queue and run the agent's flow"""
         self._active_task = task
         # True when the run ended with a WaitEvent (agent asked the user a
@@ -1247,6 +1350,13 @@ class AgentTaskRunner(TaskRunner):
 
             await self._session_repository.update_status(self._session_id, SessionStatus.COMPLETED)
         except asyncio.CancelledError:
+            if self._timed_out:
+                # The run-level watchdog cancelled us (wall clock breached):
+                # auto-stop with the overtime notice, resumable like a user
+                # stop — NOT the "stopped by button" text.
+                logger.info(f"Agent {self._agent_id} task timed out (watchdog)")
+                await self._finalize_timed_out(task)
+                return
             logger.info(f"Agent {self._agent_id} task cancelled")
             # User pressed STOP: say it plainly, keep the plan untouched so
             # the next user message resumes from the stopping point, and
@@ -1270,6 +1380,12 @@ class AgentTaskRunner(TaskRunner):
                 run_registry.finish_run(self._run_task_id, "cancelled")
             except Exception:
                 pass
+        except _TaskTimeoutError:
+            # In-band wall-clock checkpoint fired between events (the pump
+            # was alive enough to reach one). Same graceful auto-stop as the
+            # watchdog path — never the generic FAILED crash treatment.
+            logger.info(f"Agent {self._agent_id} task timed out (in-band guard)")
+            await self._finalize_timed_out(task)
         except Exception as e:
             logger.exception(f"Agent {self._agent_id} task encountered exception: {str(e)}")
             

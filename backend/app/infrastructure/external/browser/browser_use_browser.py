@@ -1,6 +1,8 @@
 from typing import Any, Optional, List
 import asyncio
+import json
 import logging
+import urllib.request
 
 from browser_use.browser.session import BrowserSession, CDPSession
 from browser_use.dom.views import EnhancedDOMTreeNode
@@ -405,9 +407,25 @@ class BrowserUseBrowser:
         max_retries = 15
         retry_delay = 2.0
         last_error: Exception = RuntimeError("Unknown error")
+        # A single start() must NEVER hang forever: browser_use fans out
+        # per-target event handlers and, with stale tabs (or a wedged
+        # Chrome), its internal watchdogs can deadlock — the agent loop then
+        # sits "thinking" for many minutes with zero progress. 45 s bounds
+        # one attempt; the retry loop below handles the rest.
+        _START_TIMEOUT = 45.0
 
         for attempt in range(max_retries):
+            session: Optional[BrowserSession] = None
             try:
+                # Stale-tab hygiene: a Chrome that survived earlier runs
+                # accumulates tabs (dead localhost pages, heavy sites from
+                # past tasks). browser_use's start() fans handlers across
+                # EVERY target — too many stale targets starves its init
+                # watchdog ("0/N sessions ready" → 30 s handler timeouts).
+                # Keep only blank tabs so init is deterministic. Never runs
+                # mid-task: _ensure_session only executes when no session
+                # is attached (first browser call after connect/reconnect).
+                await self._close_stale_tabs()
                 session = BrowserSession(
                     cdp_url=self.cdp_url,
                     minimum_wait_page_load_time=0.5,
@@ -422,7 +440,14 @@ class BrowserUseBrowser:
                     headless=False,
                     no_viewport=True,
                 )
-                await session.start()
+                try:
+                    await asyncio.wait_for(session.start(), timeout=_START_TIMEOUT)
+                except BaseException:
+                    # start() failed or was cancelled (gate tool-timeout):
+                    # stop the half-open session so its CDP websocket/tasks
+                    # don't leak. self._session was never assigned.
+                    await self._safe_stop_session(session)
+                    raise
                 self._session = session
                 logger.info("BrowserSession connected to CDP: %s", self.cdp_url)
                 # No window manager in the sandbox: force the window to cover
@@ -457,14 +482,22 @@ class BrowserUseBrowser:
                         "Chrome may still be starting. Retrying in %.0fs…",
                         attempt + 1, max_retries, retry_delay,
                     )
-                elif ("502" in exc_str or "rejected" in exc_str.lower()) and self._heal_hook is not None:
-                    # HTTP 502 / WS rejected = the proxy is alive but the browser
-                    # process behind it is DEAD (crashed mid-task, OOM, etc.).
-                    # Plain retries can never fix that — ask the sandbox layer to
-                    # relaunch the browser, then reconnect.
+                elif (
+                    # 502/WS-rejected = browser process DEAD behind the proxy.
+                    ("502" in exc_str or "rejected" in exc_str.lower())
+                    # Event-handler watchdog timeouts ("timed out after 30.0s")
+                    # and stalled init ("0/N sessions ready") = browser process
+                    # WEDGED. Both are unfixable by plain retries — the earlier
+                    # Persib task hung ~12 min retrying a wedged Chrome while
+                    # the user watched eternal "thinking".
+                    or "timed out after" in exc_str
+                    or "sessions ready" in exc_str
+                ) and self._heal_hook is not None:
+                    # Ask the sandbox layer to relaunch the browser, then
+                    # reconnect. Heal has its own generous timeout.
                     retry_delay = min(retry_delay * 1.5, 15.0)
                     logger.warning(
-                        "CDP endpoint refuses connections (attempt %d/%d) — "
+                        "CDP endpoint dead or wedged (attempt %d/%d) — "
                         "invoking browser heal hook to relaunch it: %s",
                         attempt + 1, max_retries, exc_str[:120],
                     )
@@ -482,15 +515,73 @@ class BrowserUseBrowser:
 
         raise last_error
 
+    async def _safe_stop_session(self, session: BrowserSession) -> None:
+        """stop() a session object without ever hanging or raising.
+
+        browser_use's stop() can itself stall in reconnect loops when the
+        CDP peer is gone; bound it and swallow everything.
+        """
+        try:
+            await asyncio.wait_for(session.stop(), timeout=15.0)
+        except Exception:  # noqa: BLE001 — best effort by contract
+            logger.debug("session stop during cleanup failed", exc_info=True)
+
+    async def _close_stale_tabs(self) -> int:
+        """Best-effort: close leftover page tabs before session init.
+
+        Uses the CDP HTTP endpoints (/json/list, /json/close/<id>) — no
+        browser_use session needed. Keeps only blank pages; browser_ui
+        targets (omnibox, toolbar) are not pages and are left alone.
+        Returns the number of tabs closed (0 also on any failure — hygiene
+        must never block init).
+        """
+        base = (self.cdp_url or "").strip().rstrip("/")
+        if base.startswith("ws://"):
+            base = "http://" + base[5:]
+        elif base.startswith("wss://"):
+            base = "https://" + base[6:]
+        if not base.startswith(("http://", "https://")):
+            return 0
+        try:
+            loop = asyncio.get_running_loop()
+
+            def _fetch(path: str):
+                with urllib.request.urlopen(base + path, timeout=4) as resp:
+                    return json.loads(resp.read() or b"[]")
+
+            targets = await asyncio.wait_for(
+                loop.run_in_executor(None, _fetch, "/json/list"), timeout=6.0
+            )
+            keep = ("about:blank", "chrome://newtab/", "chrome://new-tab-page/")
+            closed = 0
+            for t in targets or []:
+                if t.get("type") != "page":
+                    continue
+                if (t.get("url") or "").strip().lower() in keep:
+                    continue
+                try:
+                    await asyncio.wait_for(
+                        loop.run_in_executor(None, _fetch, f"/json/close/{t.get('id')}"),
+                        timeout=4.0,
+                    )
+                    closed += 1
+                except Exception:  # noqa: BLE001 — per-tab best effort
+                    pass
+            if closed:
+                logger.info(
+                    "Closed %d stale tab(s) before BrowserSession init", closed
+                )
+                await asyncio.sleep(0.5)  # let Chrome settle
+            return closed
+        except Exception:  # noqa: BLE001 — hygiene is strictly optional
+            logger.debug("stale-tab cleanup skipped", exc_info=True)
+            return 0
+
     async def cleanup(self) -> None:
         """Stop the browser session and release resources."""
         if self._session is not None:
-            try:
-                await self._session.stop()
-            except Exception as exc:
-                logger.error("Error stopping BrowserSession: %s", exc)
-            finally:
-                self._session = None
+            session, self._session = self._session, None
+            await self._safe_stop_session(session)
         self._cached_page = None
         self._console_capture_targets.clear()
 
