@@ -7,6 +7,14 @@ Selection rules (sandbox_provider setting):
   - "replit" / "local" → skip E2B entirely and use the shared local sandbox
     ("local" alias for the z.ai deployment — E2B turned off by request).
 
+Host guard (environment consistency):
+  - When the process itself runs ON a real Replit host (detected via Replit's
+    well-known environment markers), E2B is NEVER consulted unless the
+    operator explicitly forces SANDBOX_PROVIDER="e2b". Requirement: "kalau di
+    lingkungan Replit ya 100% di lingkungan Replit, tidak loncat ke E2B" —
+    the agent's paths, prompt and sandbox must match the deployment host
+    (/home/runner layout), never a surprise cloud microVM.
+
 Additional safety:
   - An AuthenticationException (bad key) disables E2B for the process
     lifetime — no per-session retry storm.
@@ -18,6 +26,7 @@ Additional safety:
 
 import asyncio
 import logging
+import os
 import time
 from typing import Optional
 
@@ -31,6 +40,22 @@ _AUTH_DISABLED = {"disabled": False}
 _RATE_LIMIT_COOLDOWN: dict[str, float] = {"until": 0.0}
 _COOLDOWN_SECONDS = 600  # 10 minutes
 
+# Replit sets these in BOTH the workspace (development) and Deployments
+# (production). Any one of them proves the process is on a Replit host.
+_REPLIT_HOST_MARKERS = (
+    "REPLIT_ENVIRONMENT",
+    "REPLIT_DEVBOX_ID",
+    "REPLIT_DEPLOYMENT",
+    "REPL_ID",
+    "REPL_SLUG",
+    "REPL_OWNER",
+)
+
+
+def _running_on_replit() -> bool:
+    """True when the process runs on a real Replit host (workspace or deploy)."""
+    return any(os.environ.get(marker) for marker in _REPLIT_HOST_MARKERS)
+
 
 def _e2b_available() -> bool:
     """Check config + cached failure states without touching the network."""
@@ -40,6 +65,11 @@ def _e2b_available() -> bool:
     if time.time() < _RATE_LIMIT_COOLDOWN["until"]:
         return False
     if settings.sandbox_provider in ("replit", "local"):
+        return False
+    # Host guard: on a real Replit host, E2B is never touched unless the
+    # operator EXPLICITLY sets SANDBOX_PROVIDER="e2b" (documented escape
+    # hatch — everything else, including "auto", stays 100% Replit-local).
+    if _running_on_replit() and settings.sandbox_provider != "e2b":
         return False
     if not settings.e2b_api_key:
         return False
@@ -141,6 +171,10 @@ class HybridSandboxFactory:
         expired/removed, quota), the domain service's own fallback creates a
         fresh sandbox via create().
         """
+        # Host guard also covers reconnects: _e2b_available() already embeds
+        # the Replit-host check, so an "e2b:..." session id on a Replit host
+        # is never reconnected (E2B untouched); the domain service catches
+        # the RuntimeError below and creates a fresh local sandbox.
         if id and id.startswith("e2b:") and _e2b_available():
             try:
                 from app.infrastructure.external.sandbox.e2b_sandbox import E2BSandbox

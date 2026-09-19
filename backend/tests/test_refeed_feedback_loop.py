@@ -343,12 +343,15 @@ async def test_dedup_uses_user_timestamp_not_narration_timestamp():
 
 
 async def test_true_reconnect_is_still_deduped():
-    """fetchEventSource retry of the SAME message within 10 s while RUNNING
-    is still skipped (the original purpose of the dedup)."""
+    """Re-submission of the SAME message text while the session is RUNNING
+    is treated as a reconnect (the content-based duplicate guard) — the
+    message is never re-queued into the live task."""
     now = datetime.now(UTC)
     session = _session([], status=SessionStatus.RUNNING)
     session.latest_message_at = now - timedelta(seconds=2)
     session.latest_user_message_at = now - timedelta(seconds=2)
+    # Content-based guard: the session remembers the last GENUINE user text.
+    session.latest_user_message = "pesan yang sama"
     repo = _make_repo(session)
     svc = _make_service(repo)
     fake_task = _FakeTask()
