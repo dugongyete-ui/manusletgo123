@@ -4,7 +4,8 @@ Selection rules (sandbox_provider setting):
   - "auto" / "e2b" → try E2B when an API key is configured; on ANY failure
     (quota exhausted, invalid key, network, bootstrap timeout) transparently
     fall back to the shared Replit-local sandbox so user tasks never die.
-  - "replit" → skip E2B entirely.
+  - "replit" / "local" → skip E2B entirely and use the shared local sandbox
+    ("local" alias for the z.ai deployment — E2B turned off by request).
 
 Additional safety:
   - An AuthenticationException (bad key) disables E2B for the process
@@ -38,7 +39,7 @@ def _e2b_available() -> bool:
         return False
     if time.time() < _RATE_LIMIT_COOLDOWN["until"]:
         return False
-    if settings.sandbox_provider == "replit":
+    if settings.sandbox_provider in ("replit", "local"):
         return False
     if not settings.e2b_api_key:
         return False

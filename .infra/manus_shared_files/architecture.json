@@ -1,0 +1,36 @@
+{
+  "schema_version": "1.0",
+  "name": "agent-orchestrator-architecture",
+  "components": [
+    "agent-orchestrator",
+    "browser-session-manager",
+    "confirmation-manager",
+    "llm-model-adapter",
+    "mcp-executor",
+    "memory-conversation-state",
+    "notification-event-bus",
+    "observability-trace-logger",
+    "policy-permission-manager",
+    "retry-error-handler",
+    "schema-validator",
+    "shell-executor",
+    "tool-registry"
+  ],
+  "execution_flow": [
+    "frontend",
+    "agent_api",
+    "task_manager",
+    "agent_orchestrator",
+    "llm_model_adapter",
+    "tool_registry",
+    "schema_validator",
+    "policy_permission_manager",
+    "confirmation_manager",
+    "mcp_or_shell_executor",
+    "memory_conversation_state",
+    "notification_event_bus",
+    "observability_trace_logger",
+    "final_response"
+  ],
+  "existing_tool_registry": "../manus_tool_registry/registry.json"
+}

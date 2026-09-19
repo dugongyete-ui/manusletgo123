@@ -1,0 +1,41 @@
+{
+  "schema_version": "1.1",
+  "name": "agent_user_notifications",
+  "type": "internal_orchestrator_capability",
+  "transport": "project_event_bus",
+  "description": "Kontrak event untuk mengirim status agent kepada user melalui SSE, WebSocket, polling, atau mekanisme event project.",
+  "not_a_manus_mcp_tool": true,
+  "events": {
+    "agent_started": {
+      "required": ["task_id", "message"],
+      "payload": {"type": "object", "properties": {"task_id": {"type": "string"}, "message": {"type": "string"}}}
+    },
+    "tool_call_started": {
+      "required": ["task_id", "step", "tool", "message"],
+      "payload": {"type": "object", "properties": {"task_id": {"type": "string"}, "step": {"type": "integer"}, "tool": {"type": "string"}, "message": {"type": "string"}, "transport": {"type": "string", "enum": ["mcp", "shell"]}}}
+    },
+    "tool_call_finished": {
+      "required": ["task_id", "step", "tool", "success", "message"],
+      "payload": {"type": "object", "properties": {"task_id": {"type": "string"}, "step": {"type": "integer"}, "tool": {"type": "string"}, "success": {"type": "boolean"}, "message": {"type": "string"}, "duration_ms": {"type": "integer"}}}
+    },
+    "confirmation_required": {
+      "required": ["task_id", "tool", "message", "confirmation_token"],
+      "payload": {"type": "object", "properties": {"task_id": {"type": "string"}, "tool": {"type": "string"}, "message": {"type": "string"}, "confirmation_token": {"type": "string"}, "expires_at": {"type": "string"}, "arguments_preview": {"type": "object"}}}
+    },
+    "agent_error": {
+      "required": ["task_id", "message", "retryable"],
+      "payload": {"type": "object", "properties": {"task_id": {"type": "string"}, "message": {"type": "string"}, "code": {"type": "string"}, "retryable": {"type": "boolean"}}}
+    },
+    "agent_finished": {
+      "required": ["task_id", "message", "success"],
+      "payload": {"type": "object", "properties": {"task_id": {"type": "string"}, "message": {"type": "string"}, "success": {"type": "boolean"}, "result": {"type": ["object", "string", "null"]}}}
+    }
+  },
+  "security": {
+    "never_expose": ["api_key", "access_token", "cookie", "password", "secret", "raw_stack_trace"],
+    "arguments_preview": "Redact secrets and truncate long values before publishing to the user.",
+    "confirmation": "Do not execute a tool with requires_confirmation=true until the matching confirmation_token is approved."
+  },
+  "delivery_adapters": ["sse", "websocket", "polling", "database_event_log"],
+  "implementation_rule": "Publish agent_started, tool_call_started, tool_call_finished, confirmation_required, agent_error, and agent_finished from the orchestrator; do not expose MCP credentials or Shell execution details to the frontend."
+}
