@@ -45,6 +45,7 @@ IMPORTED = [
     "webdev-voice-transcription",
     # Manus skills package wave 2 (2026-09-19) — the webdev_*/manus-* tools
     # these reference are REAL now (Manus registry gate implements them).
+    # 11 skills: 61 (wave 1) + 11 = 72 total.
     "automation-and-scheduling",
     "builtin-llm-models",
     "data-api",
@@ -55,6 +56,8 @@ IMPORTED = [
     "slides",
     "webdev-custom-dockerfile",
     "workflow-composer",
+    # api-hub completes the wave-2 package (third-party API selection hub).
+    "api-hub",
 ]
 
 # Tokens that only exist on the Manus platform — their presence in the

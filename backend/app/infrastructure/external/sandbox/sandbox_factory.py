@@ -14,6 +14,9 @@ Host guard (environment consistency):
     lingkungan Replit ya 100% di lingkungan Replit, tidak loncat ke E2B" —
     the agent's paths, prompt and sandbox must match the deployment host
     (/home/runner layout), never a surprise cloud microVM.
+  - Same policy for Termux (Android) hosts: SANDBOX_PROVIDER="auto"/"local"
+    routes to the Termux-local sandbox (TermuxSandbox, provider="termux"),
+    and E2B is only touched when the operator explicitly sets "e2b".
 
 Additional safety:
   - An AuthenticationException (bad key) disables E2B for the process
@@ -33,6 +36,7 @@ from typing import Optional
 from app.core.config import get_settings
 from app.domain.external.sandbox import Sandbox
 from app.infrastructure.external.sandbox.replit_sandbox import ReplitSandbox
+from app.domain.services.mcp.environment import _running_on_termux
 
 logger = logging.getLogger(__name__)
 
@@ -57,6 +61,21 @@ def _running_on_replit() -> bool:
     return any(os.environ.get(marker) for marker in _REPLIT_HOST_MARKERS)
 
 
+def _local_sandbox_cls() -> type[ReplitSandbox]:
+    """Pick the local sandbox class that matches the deployment host.
+
+    Replit/z.ai keep the historic ReplitSandbox (id "replit-local",
+    provider "replit"); a real Termux host gets TermuxSandbox so the
+    sandbox id ("termux-local") and the agent-facing prompt (provider
+    "termux") describe reality — no path/OS mismatch.
+    """
+    if _running_on_termux():
+        from app.infrastructure.external.sandbox.termux_sandbox import TermuxSandbox
+
+        return TermuxSandbox
+    return ReplitSandbox
+
+
 def _e2b_available() -> bool:
     """Check config + cached failure states without touching the network."""
     settings = get_settings()
@@ -70,6 +89,10 @@ def _e2b_available() -> bool:
     # operator EXPLICITLY sets SANDBOX_PROVIDER="e2b" (documented escape
     # hatch — everything else, including "auto", stays 100% Replit-local).
     if _running_on_replit() and settings.sandbox_provider != "e2b":
+        return False
+    # Host guard (Termux): identical policy — on an Android/Termux host the
+    # local sandbox is the default; E2B only via explicit "e2b".
+    if _running_on_termux() and settings.sandbox_provider != "e2b":
         return False
     if not settings.e2b_api_key:
         return False
@@ -161,7 +184,7 @@ class HybridSandboxFactory:
                         if isinstance(exc, ImportError)
                         else "",
                     )
-        return await ReplitSandbox.create()
+        return await _local_sandbox_cls().create()
 
     @classmethod
     async def get(cls, id: str) -> Sandbox:
@@ -205,7 +228,7 @@ class HybridSandboxFactory:
                     "The next task in this session will automatically continue "
                     "in the shared local sandbox."
                 ) from exc
-        return await ReplitSandbox.get(id)
+        return await _local_sandbox_cls().get(id)
 
 
 def reset_failure_state_for_tests() -> None:

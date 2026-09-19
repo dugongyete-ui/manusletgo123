@@ -57,13 +57,28 @@ _REPLIT_MARKERS = (
 # E2B runtime markers.
 _E2B_MARKERS = ("E2B_SANDBOX_ID", "E2B_RUNTIME", "E2B_SANDBOX")
 
+# Termux (Android) markers. TERMUX_VERSION is exported by every Termux
+# session; $PREFIX ending in com.termux is the belt-and-braces check for
+# minimal setups where only the prefix betrays the platform.
+_TERMUX_MARKERS = ("TERMUX_VERSION", "TERMUX_MAIN_PACKAGE_FORMAT")
+
+
+def _running_on_termux() -> bool:
+    """True when the process runs inside a Termux (Android) environment."""
+    if any(os.environ.get(marker) for marker in _TERMUX_MARKERS):
+        return True
+    prefix = os.environ.get("PREFIX", "")
+    return prefix.endswith("com.termux.files/usr")
+
 
 def detect_environment() -> str:
-    """Classify the deployment host: ``replit`` | ``e2b`` | ``zai``."""
+    """Classify the deployment host: ``replit`` | ``e2b`` | ``zai`` | ``termux``."""
     if any(os.environ.get(marker) for marker in _REPLIT_MARKERS):
         return "replit"
     if any(os.environ.get(marker) for marker in _E2B_MARKERS):
         return "e2b"
+    if _running_on_termux():
+        return "termux"
     return "zai"
 
 

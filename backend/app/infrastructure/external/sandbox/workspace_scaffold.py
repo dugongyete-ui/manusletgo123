@@ -46,7 +46,7 @@ _MANUAL_DIR = (
     / "manual"
 )
 
-MANUAL_VERSION = 16
+MANUAL_VERSION = 17
 _VERSION_FILE = ".manual-version"          # hidden — never visible manual text
 _VERSION_VALUE = str(MANUAL_VERSION)
 _SCRIPT_PATH = "/tmp/dzeck_ws_manual_scaffold.py"

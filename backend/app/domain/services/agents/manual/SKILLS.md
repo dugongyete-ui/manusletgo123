@@ -1,6 +1,6 @@
 # SKILLS.md
 
-Index of the 61 playbooks in `project/skills/`. This file lives at
+Index of the 72 playbooks in `project/skills/`. This file lives at
 `project/SKILLS.md` (top level of project/, next to AGENTS.md) with an
 identical copy at `project/skills/SKILLS.md` — both are the same index.
 Each skill is a folder with a SKILL.md (read that first). Open one BEFORE
@@ -31,6 +31,8 @@ between "ran once" and "actually works".
 | webdev-readme-mobile | Expo mobile app (React Native): the complete template guide — screens, theming, branding, and where the backend guide lives |
 | webdev-readme-mobile-backend | mobile-app backend: session auth, Drizzle database, tRPC API, env, testing, integrations — read before ANY backend/server/database feature in a mobile app |
 | game-dev | playable browser games (Babylon.js) end-to-end via the godogen staged pipeline — visual target, risk slices, generated art, screenshot verification |
+| webdev-custom-dockerfile | dockerizing a built web app — production Dockerfile, .dockerignore, compose, run docs |
+| slides | building or editing slide decks — html2pptx pipeline, slide export tools, diagram-on-slide rules |
 | python-api-service | REST API in Python (FastAPI/Flask) |
 | browser-automation | form filling, scraping, logged-in flows via CDP |
 | data-analysis | CSV/data → cleaning → charts → written report |
@@ -47,6 +49,10 @@ between "ran once" and "actually works".
 | webdev-maps-integration | maps, geocoding, directions, places |
 | webdev-owner-notifications | pushing operational alerts to the app owner |
 | webdev-periodic-updates | ANY scheduled work — recurring jobs, end-user-scheduled cron, periodic notifications. Read FIRST before planning or coding anything that runs on a schedule |
+| builtin-llm-models | wiring an LLM API into a built app — OpenAI-compatible calling pattern, key hygiene, streaming |
+| data-api | consuming data from public/authenticated web APIs — timeouts, retries, caching, validation |
+| api-hub | choosing a third-party API ("is there an API for X") — comparison, free-tier reality, integration checklist |
+| gws-best-practices | working with Google Docs/Sheets/Drive content — export/import paths without a browser, app integrations with user-supplied credentials |
 
 ## Research & analysis skills — on demand
 
@@ -71,6 +77,9 @@ between "ran once" and "actually works".
 |---|---|
 | file-organizer | organizing files/folders, deduplication, cleanup |
 | invoice-organizer | parsing and organizing invoices/receipts |
+| automation-and-scheduling | automating recurring tasks or scheduled jobs — in-session loops, portable scripts, crontab lines |
+| data-backup-restoration | backing up and restoring databases/projects — snapshots, manifests, tested restore |
+| music-prompter | song lyrics and generation-ready prompts for AI music tools — no audio rendering in-sandbox |
 | image-enhancer | upscaling/restoring images |
 | image-processing | deterministic image operations — inspect, describe, crop, resize, convert, compress, classical computer vision |
 | read-special-images | reading/OCR of screenshots, panoramas, dense documents — tiling strategy when whole-image display fails |
@@ -95,6 +104,8 @@ between "ran once" and "actually works".
 | imagegen | visual-deliverable routing + prompt crafting before image generation/editing tasks (also upscale/restore recipes) |
 | build-verification | proving what you built actually runs |
 | environment-troubleshooting | sandbox/network/tool failures |
+| manus-config | reading/writing project runtime configuration via the manus-config registry tool |
+| workflow-composer | composing multi-phase workflows that chain tools and skills with checkpoints |
 | persistent-computing | needs beyond this sandbox: always-on services, Docker, fixed IP — build-vs-deploy guidance |
 | packaging-delivery | zipping and delivering the final archive (structure rules, exclusions) |
 
