@@ -165,13 +165,16 @@ def _take_brief(args: Optional[Dict[str, Any]]) -> tuple:
     return (text or None), clean
 
 
-def _build_chat_model(prefer_fallback: bool = False):
-    """Create the chat model for an agent.
+def _build_existing_chat_model(prefer_fallback: bool = False):
+    """Create the chat model via the ORIGINAL OpenAI-compatible path.
 
     prefer_fallback=False → the primary provider from settings.
     prefer_fallback=True  → the fallback provider (z.ai internal API or
                             FALLBACK_* env config); returns None when no
                             fallback is configured.
+
+    Kept verbatim behind the provider seam (``AGENT_PROVIDER=existing``,
+    the default) so the existing behaviour is preserved byte-for-byte.
     """
     settings = get_settings()
     if prefer_fallback:
@@ -209,6 +212,63 @@ def _build_chat_model(prefer_fallback: bool = False):
         kwargs["http_client"] = httpx.Client(verify=verify)
         kwargs["http_async_client"] = httpx.AsyncClient(verify=verify)
     return init_chat_model(**kwargs)
+
+
+def _build_chat_model(prefer_fallback: bool = False):
+    """Create the chat model through the configured AGENT_PROVIDER adapter.
+
+    The provider abstraction keeps the existing runtime (flows, agents,
+    tools, events) untouched — only the model layer is swapped:
+    - ``existing``  (default) → the original OpenAI-compatible path above.
+    - ``anthropic``           → Anthropic Messages API (langchain-anthropic,
+                                server-side; NEVER a CLI subprocess).
+    Falls back to the existing path when the selected provider is not
+    usable (e.g. missing ANTHROPIC_API_KEY) so chat can never break.
+    """
+    from app.domain.services.agents.provider_factory import get_agent_provider
+
+    provider = get_agent_provider()
+    model = provider.build_chat_model(prefer_fallback=prefer_fallback)
+    if model is not None:
+        return model
+    if prefer_fallback:
+        return None  # no fallback configured — original contract preserved
+    logger.warning(
+        "Provider %r returned no model — falling back to 'existing' path",
+        provider.name,
+    )
+    from app.domain.services.agents.providers import OpenAICompatProvider
+
+    return OpenAICompatProvider().build_chat_model(prefer_fallback=False)
+
+
+def _provider_history(messages) -> list:
+    """Project stored LangChain history into the provider's protocol shape
+    (no-op for the default OpenAI-compatible path)."""
+    from app.domain.services.agents.history_adapter import (
+        convert_history_for_provider,
+    )
+    from app.domain.services.agents.provider_factory import get_agent_provider
+
+    return convert_history_for_provider(get_agent_provider().name, messages)
+
+
+def _provider_bind_kwargs(response_format, tool_choice) -> dict:
+    """Bind kwargs filtered by the provider's capability contract.
+
+    ``response_format`` is an OpenAI-only concept — the Anthropic adapter
+    (supports_response_format=False) must never receive it or the SDK
+    rejects the request. ``tool_choice`` is provider-portable.
+    """
+    from app.domain.services.agents.provider_factory import get_agent_provider
+
+    provider = get_agent_provider()
+    kwargs: dict = {}
+    if response_format is not None and provider.supports_response_format:
+        kwargs["response_format"] = response_format
+    if tool_choice:
+        kwargs["tool_choice"] = tool_choice
+    return kwargs
 
 
 logger = logging.getLogger(__name__)
@@ -1499,22 +1559,29 @@ class BaseAgent(ABC):
         def _build_chain():
             return (
                 self._model
-                .bind(response_format=response_format, tool_choice=self.tool_choice)
+                .bind(**_provider_bind_kwargs(response_format, self.tool_choice))
                 .bind_tools(self._tools_with_brief())
                 | RobustJsonParser.from_llm(self._model)
             )
 
         chain = _build_chain()
 
-        # Transient API errors that are safe to retry (5xx, network blips, rate limits).
-        _TRANSIENT_API_ERRORS = (
-            openai.InternalServerError,   # 500/502/503 from the provider
-            openai.APIConnectionError,    # network-level failure
-            openai.APITimeoutError,       # request timed out
-            openai.RateLimitError,        # 429 – back off and retry
-        )
+        # Provider-neutral error vocabulary (providers.ProviderErrorKind).
+        # The OpenAI-compatible adapter returns the original openai.* types,
+        # the Anthropic adapter returns anthropic.* types — the ladder below
+        # (auth → fallback swap, transient → back-off, rate limit → patient
+        # rotation, status → compaction/rotation) keeps identical semantics
+        # for both. anthropic.NotFoundError intentionally lands in the status
+        # branch (fatal unless limit-like) — the "No endpoints found" pool
+        # recycling quirk is OpenRouter-specific.
+        from app.domain.services.agents.provider_factory import get_agent_provider
 
-        context = list(self.memory.get_messages())
+        _turn_provider = get_agent_provider()
+        _TRANSIENT_API_ERRORS = _turn_provider.transient_error_types()
+        _AUTH_API_ERRORS = _turn_provider.auth_error_types()
+        _STATUS_API_ERRORS = _turn_provider.status_error_types()
+
+        context = _provider_history(self.memory.get_messages())
         attempt = 0
         _overflow_recoveries = 0
         while True:
@@ -1532,7 +1599,7 @@ class BaseAgent(ABC):
                     # Stage 5 (RetryWithErrorOutputParser style): add error feedback.
                     context = e.make_retry_context(context)
                 attempt += 1
-            except (openai.AuthenticationError, openai.PermissionDeniedError) as e:
+            except _AUTH_API_ERRORS as e:
                 # Invalid / exhausted primary key — retrying the same provider
                 # is pointless. Switch to the fallback provider when one is
                 # configured; otherwise surface the error immediately.
@@ -1594,7 +1661,7 @@ class BaseAgent(ABC):
                     await self._emergency_context_reduction(
                         escalate=_overflow_recoveries > 1
                     )
-                    context = list(self.memory.get_messages())
+                    context = _provider_history(self.memory.get_messages())
                     continue
                 _is_limit = self._is_limit_error(e)
                 if not (_is_limit or self._transient_provider_error(e)):
@@ -1642,7 +1709,7 @@ class BaseAgent(ABC):
                 )
                 attempt += 1
                 await asyncio.sleep(wait)
-            except openai.APIStatusError as e:
+            except _STATUS_API_ERRORS as e:
                 # Prompt-limit errors (NVIDIA 400/1261 "Prompt exceeds max
                 # length", OpenAI "maximum context length", Anthropic
                 # "prompt is too long") used to fall through every clause
@@ -1665,7 +1732,7 @@ class BaseAgent(ABC):
                     )
                     # Re-snapshot: compaction mutates/removes messages in
                     # memory; the local `context` list must reflect that.
-                    context = list(self.memory.get_messages())
+                    context = _provider_history(self.memory.get_messages())
                     logger.warning(
                         "Context overflow (attempt %d/%d) — compacted, "
                         "retrying with %d messages",
@@ -1727,10 +1794,15 @@ class BaseAgent(ABC):
         """
         attempt = 0
         _overflow_recoveries = 0
+        # Provider-neutral vocabulary for this streaming loop (mirrors the
+        # ask_with_messages ladder) + protocol-safe history projection.
+        from app.domain.services.agents.provider_factory import get_agent_provider
+
+        _turn_provider = get_agent_provider()
         while True:
             emitted = False
             try:
-                async for chunk in self._model.astream(messages):
+                async for chunk in self._model.astream(_provider_history(messages)):
                     text = chunk.content if isinstance(chunk.content, str) else ""
                     if text:
                         emitted = True
@@ -1779,9 +1851,7 @@ class BaseAgent(ABC):
                     continue
                 # Transient non-limit errors (5xx / network) — short retry.
                 _transient = isinstance(
-                    e,
-                    (openai.InternalServerError, openai.APIConnectionError,
-                     openai.APITimeoutError),
+                    e, _turn_provider.transient_error_types()
                 ) or self._transient_provider_error(e)
                 if _transient:
                     wait = self.retry_interval * (2 ** attempt)

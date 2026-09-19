@@ -113,6 +113,25 @@ async def lifespan(app: FastAPI):
     # fixes). Rebuild in a background thread; fail-open, never blocks startup.
     ensure_fresh_frontend()
 
+    # ── MCP activation (best-effort, fail-open) ──────────────────────────
+    # Materialise a per-environment mcp.json (Replit / E2B runtime / z.ai)
+    # when the configured file is missing so MCP servers are genuinely
+    # ACTIVE from startup. An existing user config is always respected.
+    try:
+        from app.domain.services.mcp.environment import (
+            detect_environment,
+            ensure_mcp_config,
+        )
+
+        if ensure_mcp_config() is None:
+            logger.info(
+                "MCP: using existing config at %s (environment=%s)",
+                get_settings().mcp_config_path,
+                detect_environment(),
+            )
+    except Exception:  # noqa: BLE001 — MCP must never kill boot
+        logger.warning("MCP bootstrap skipped (non-fatal)", exc_info=True)
+
     # Kick off DB init as a background task so the server starts immediately
     # and Replit's healthcheck can reach /health right away.
     asyncio.create_task(_init_databases())

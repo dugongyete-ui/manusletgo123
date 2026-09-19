@@ -58,7 +58,6 @@ Run `install.sh` from the project root — it installs all Python and frontend d
 ```bash
 pip install -e .
 ```
-
 Or using uv:
 ```bash
 uv sync
@@ -113,6 +112,90 @@ python3 -m uvicorn app.main:app --host 0.0.0.0 --port 3000 --reload
 ```
 
 The service will start at http://localhost:3000.
+
+## Agent Providers (AGENT_PROVIDER)
+
+The runtime supports swappable **model-provider adapters** behind a stable
+seam. The agent loop, tools, sandbox, permission gate, SSE event contract and
+cancellation are all provider-agnostic and remain untouched — only the LLM
+client layer is swapped.
+
+| `AGENT_PROVIDER` | Adapter | Transport | Default |
+|---|---|---|---|
+| `existing` | `OpenAICompatProvider` — the original gateway (OpenAI-compatible APIs: NVIDIA NIM, OpenRouter, vLLM, z.ai fallback, …) | server-side HTTP | ✅ default |
+| `anthropic` | `AnthropicProvider` — Anthropic Messages API via `langchain-anthropic` (ChatAnthropic) | server-side HTTP (`/v1/messages`) | opt-in |
+
+**The Anthropic adapter never spawns the Claude Code CLI** (or any CLI
+subprocess) per request — the web backend requires a programmatically
+controlled server-side API. This is enforced by a test
+(`tests/test_provider_binding_and_contract.py`).
+
+### Running with the existing provider (default)
+
+```bash
+AGENT_PROVIDER=existing   # or simply unset — identical behaviour
+```
+
+### Running with the Anthropic provider
+
+```bash
+AGENT_PROVIDER=anthropic
+ANTHROPIC_API_KEY=sk-ant-...        # never logged, never sent to the browser
+ANTHROPIC_MODEL=claude-sonnet-4-5   # optional, default claude-sonnet-4-5
+# ANTHROPIC_BASE_URL=...            # optional gateway/proxy
+# ANTHROPIC_MAX_TOKENS=8192         # optional output budget
+# ANTHROPIC_TEMPERATURE=            # optional; defaults to TEMPERATURE
+```
+
+Behaviour notes:
+
+- Missing `ANTHROPIC_API_KEY` → the factory **falls back to `existing`**
+  with a warning (chat never breaks).
+- `response_format` (OpenAI JSON mode) is automatically dropped for the
+  Anthropic adapter (`supports_response_format=False`).
+- Provider errors are classified into a neutral vocabulary
+  (`ProviderErrorKind`: AUTH / RATE_LIMIT / TRANSIENT / CONTEXT_OVERFLOW /
+  FATAL) so the existing retry ladder — fallback rotation, patient 429
+  waiting, context-overflow emergency compaction — works identically.
+- The secondary (fallback) provider pool remains the OpenAI-compatible one
+  for both adapters.
+- Session history is projected to the provider's protocol shape
+  (`history_adapter.py`): a passthrough for `existing`, protocol-safe
+  sanitisation for `anthropic`.
+- **Rollback**: flip `AGENT_PROVIDER=existing` and restart. No code change.
+
+## MCP (Model Context Protocol) — active by default
+
+MCP servers are configured in `MCP_CONFIG_PATH` (default:
+`/home/runner/workspace/mcp.json`; format: see `mcp.json.example` — stdio /
+sse / streamable-http, mirroring the official `mcpServers` layout).
+
+**Bootstrap**: when the config file is missing, the backend materialises a
+per-environment default config automatically (at startup and before each
+run):
+
+| Environment detection | Generated config |
+|---|---|
+| Replit host (`REPLIT_*` markers) | `dzeck-fs` stdio server, user root `/home/runner/users` |
+| E2B runtime markers (`E2B_*`) | `dzeck-fs` stdio server, E2B layout paths |
+| z.ai container / local dev | `dzeck-fs` stdio server, user root `USER_HOME_ROOT` |
+
+The bundled server `backend/mcp_servers/filesystem_server.py` is a
+self-contained stdio MCP server running on the backend interpreter (no npm
+download needed) exposing sandbox-scoped file tools: `list_dir`,
+`read_text_file`, `write_text_file`, `create_directory`, `search_files`,
+`get_system_info`, `http_get` (SSRF-guarded). Security:
+
+- every path is confined to `DZECK_MCP_USER_ROOT` (per-user home root);
+- `DZECK_MCP_PROTECTED` paths (project source) are refused;
+- an existing user-owned `mcp.json` is **always respected** — the bootstrap
+  never overwrites it;
+- bootstrap failures are logged and swallowed — MCP never breaks chat.
+
+Tool calls issued by the model still flow through the Manus registry gate
+(`ManusGate` → schema validation → policy/confirmation → MCP/shell
+executor), so registry, permissions, timeouts, loop protection and audit
+logging stay fully in force for MCP tools.
 
 ## API Documentation
 

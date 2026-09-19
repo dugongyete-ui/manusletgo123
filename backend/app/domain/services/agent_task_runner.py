@@ -1153,6 +1153,13 @@ class AgentTaskRunner(TaskRunner):
             # The planner only needs the LLM, so we can stream the initial
             # acknowledgment response to the user in < 1 s while the sandbox
             # warms up, exactly like Dzeck does.
+            # MCP bootstrap (best-effort): materialise a per-environment
+            # mcp.json (Replit / E2B runtime / z.ai) when the configured file
+            # is missing so the MCP toolkit is genuinely ACTIVE. An existing
+            # user config is always respected; failures never break the run.
+            from app.domain.services.mcp.environment import ensure_mcp_config
+
+            ensure_mcp_config()
             mcp_config = await self._mcp_repository.get_mcp_config()
             sandbox_task = asyncio.create_task(self._sandbox.ensure_sandbox())
             mcp_task = asyncio.create_task(self._mcp_tool.initialized(mcp_config))

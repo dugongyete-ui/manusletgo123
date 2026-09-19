@@ -1,5 +1,25 @@
 {
+  "_comment": [
+    "Format konfigurasi MCP user (di-load dari MCP_CONFIG_PATH).",
+    "Bootstrap runtime (backend/app/domain/services/mcp/environment.py)",
+    "otomatis men-generate mcp.json dengan server built-in 'dzeck-fs'",
+    "per lingkungan (Replit / E2B runtime / z.ai) bila file ini tidak ada.",
+    "File yang sudah ada SELALU diutamakan — edit bebas di sini.",
+    "Format mengikuti layout resmi 'mcpServers' (stdio / sse / streamable-http)."
+  ],
   "mcpServers": {
+    "dzeck-fs": {
+      "transport": "stdio",
+      "command": "python3",
+      "args": ["backend/mcp_servers/filesystem_server.py"],
+      "env": {
+        "DZECK_MCP_USER_ROOT": "/home/runner/users",
+        "DZECK_MCP_PROTECTED": "/home/runner/workspace",
+        "DZECK_MCP_MAX_BYTES": "2000000"
+      },
+      "enabled": true,
+      "description": "Server MCP filesystem built-in (stdio) — operasi file ter-scope sandbox user, tanpa unduhan npm, aktif di semua lingkungan"
+    },
     "filesystem": {
       "command": "npx",
       "args": [
@@ -8,8 +28,8 @@
         "/tmp"
       ],
       "transport": "stdio",
-      "enabled": true,
-      "description": "Access to local filesystem"
+      "enabled": false,
+      "description": "Access to local filesystem (butuh npm registry)"
     },
     "github": {
       "command": "npx",
@@ -18,7 +38,7 @@
         "@modelcontextprotocol/server-github"
       ],
       "transport": "stdio",
-      "enabled": true,
+      "enabled": false,
       "description": "GitHub API integration",
       "env": {
         "GITHUB_TOKEN": "your-github-token"
@@ -27,7 +47,7 @@
     "example-http": {
       "url": "http://localhost:8080/mcp",
       "transport": "sse",
-      "enabled": true,
+      "enabled": false,
       "description": "Example HTTP MCP server",
       "headers": {
         "Authorization": "Bearer your-token"
@@ -36,8 +56,8 @@
     "example-streamable": {
       "url": "http://localhost:9090/mcp",
       "transport": "streamable-http",
-      "enabled": true,
+      "enabled": false,
       "description": "Example streamable HTTP MCP server"
     }
   }
-} 
+}

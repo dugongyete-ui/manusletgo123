@@ -131,3 +131,8 @@ specs
 
 # Reconstruction evidence & local ops artifacts (never publish)
 .infra/
+
+# Runtime-generated MCP config (per-environment bootstrap writes this;
+# absolute paths are machine-specific). The example stays committed.
+mcp.json
+backend/mcp.json
