@@ -47,7 +47,7 @@ ensure_installed() {
     # Belum ada → pasang proot-distro + ubuntu + unduh tarball resmi.
     command -v proot-distro >/dev/null 2>&1 || pkg install -y proot-distro >/dev/null 2>&1
     command -v proot-distro >/dev/null 2>&1 || { echo "[!] proot-distro tidak tersedia" >&2; return 1; }
-    if ! proot-distro list 2>/dev/null | grep -q "ubuntu.*: installed"; then
+    if ! ls -d "$PREFIX"/var/lib/proot-distro/installed-rootfs/ubuntu* >/dev/null 2>&1; then
         echo "[==] proot-distro install ubuntu…" >&2
         proot-distro install ubuntu >&2 || return 1
     fi
@@ -80,6 +80,15 @@ cmd_start() {
         local rootfs
         rootfs="$(find_rootfs)"
         echo "[==] Menjalankan mongod di dalam proot (ubuntu)…"
+        # Pastikan lib runtime lengkap (mongod butuh libcurl.so.4 dsb. yang
+        # tidak ada di rootfs minimal) — bila kurang, pasang sekali best-effort.
+        if proot-distro login ubuntu -- sh -c \
+            'ldd /opt/mongodb/bin/mongod 2>/dev/null | grep -q "not found"' 2>/dev/null; then
+            echo "[==] Library rootfs kurang → apt install (sekali, best-effort)…" >&2
+            proot-distro login ubuntu -- bash -c \
+                "apt-get update -qq; apt-get install -y -qq libcurl4 libcurl4t64 2>/dev/null; true" \
+                >/dev/null 2>&1 || true
+        fi
         proot-distro login ubuntu -- bash -c \
             "mkdir -p /data/db /var/log/mongodb && nohup /opt/mongodb/bin/mongod \
              --bind_ip 127.0.0.1 --port 27017 --dbpath /data/db \

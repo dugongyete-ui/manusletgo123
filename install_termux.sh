@@ -57,11 +57,25 @@ command -v termux-wake-lock >/dev/null 2>&1 && termux-wake-lock 2>/dev/null && o
 # ── 1. Paket dasar Termux ──────────────────────────────────────────────────
 step "1/8 — pkg update + paket dasar (toolchain build, runtime)"
 yes | pkg update -y >/dev/null 2>&1 || warn "pkg update gagal (jaringan/mirror) — lanjut"
-PKG_CORE="python python-pip git clang make cmake ninja binutils pkg-config \
+PKG_CORE="python python-pip git curl clang make cmake ninja binutils pkg-config \
 libffi openssl rust nodejs redis proot-distro brotli libcurl \
 python-numpy python-cryptography python-psutil python-pillow python-lxml"
 ok "Memasang: $PKG_CORE (beberapa menit)"
-pkg install -y $PKG_CORE || die "pkg install paket inti gagal — periksa koneksi/mirror lalu jalankan ulang."
+pkg install -y $PKG_CORE || {
+    warn "pkg install massal gagal — ulangi satu per satu (yang gagal dilewati)…"
+    for p in $PKG_CORE; do
+        pkg install -y "$p" >/dev/null 2>&1 || warn "  paket '$p' gagal — dilewati"
+    done
+}
+# Verifikasi paket kritis — tanpa ini instalasi tidak mungkin dilanjutkan.
+MISSING=""
+for c in python git clang make rust nodejs proot-distro; do
+    command -v "$c" >/dev/null 2>&1 || MISSING="$MISSING $c"
+done
+python -m pip --version >/dev/null 2>&1 || MISSING="$MISSING pip"
+[ -z "$MISSING" ] || die "paket kritis belum terpasang:$MISSING
+    Mirror bermasalah? Jalankan: termux-change-repo  (pilih Mirror Group → sembarang)
+    lalu ulangi: bash install_termux.sh"
 ok "Paket inti + paket Python prebuilt Termux terpasang"
 
 step "1b — paket opsional (best-effort, boleh gagal)"
@@ -80,8 +94,10 @@ fi
 # shellcheck disable=SC1091
 source "$VENV/bin/activate"
 pip install -q --upgrade pip setuptools wheel || warn "upgrade pip gagal — lanjut"
-# Build-backend murni-Python yang dibutuhkan build dari sumber tanpa isolasi.
-pip install -q cython meson meson-python ninja versioningit scikit-build-core cffi \
+# Build-backend murni-Python untuk build dari sumber tanpa isolasi.
+# CATATAN: 'ninja' PyPI sengaja TIDAK dipasang — wheel-nya manylinux (tak valid
+# di Termux) dan binary ninja dari pkg sudah tersedia di PATH (tahap 1).
+pip install -q cython meson meson-python versioningit scikit-build-core cffi \
     || warn "beberapa build-backend gagal dipasang"
 ok "venv siap: python $(python -V 2>&1 | awk '{print $2}')"
 
@@ -90,22 +106,52 @@ step "3/8 — pydantic + pydantic-core (build Rust — 5-15 menit)"
 if python -c "import pydantic, pydantic_core" >/dev/null 2>&1; then
     ok "pydantic sudah ada — lewati"
 else
-    export PATH="$HOME/.cargo/bin:$PATH"
+    # maturin: coba biner resmi repo Termux dulu (detik), fallback cargo (menit).
     if ! command -v maturin >/dev/null 2>&1; then
+        ok "mencoba pkg install maturin (biner resmi Termux)…"
+        pkg install -y maturin >/dev/null 2>&1 || true
+    fi
+    if ! command -v maturin >/dev/null 2>&1; then
+        export PATH="$HOME/.cargo/bin:$PATH"
         ok "maturin belum ada → cargo install maturin (sekali saja, sabar…)"
         cargo install maturin --locked || die "cargo install maturin gagal — cek log Rust di atas."
     fi
     ok "maturin $(maturin --version 2>/dev/null | awk '{print $2}') siap"
-    # Pasang pydantic dulu tanpa deps supaya versi pydantic-core yang DIBUTUHKAN
-    # bisa dibaca persis, lalu bangun pydantic-core itu dari sumber.
+    # Pasang pydantic TANPA deps (wheel pydantic-core di PyPI manylinux — tak
+    # valid di Termux), TERMASUK deps murni yang wajib ada:
     pip install -q --no-deps pydantic pydantic-settings typing-inspection \
+        annotated-types typing-extensions \
         || die "pip install pydantic gagal"
-    CORE_VER="$(python -c "from importlib.metadata import requires; print([r.split('==')[1] for r in requires('pydantic') if r.startswith('pydantic-core==')][0])")"
-    ok "Membangun pydantic-core $CORE_VER dari sumber…"
-    pip install --no-build-isolation "pydantic-core==$CORE_VER" \
-        || die "build pydantic-core gagal (butuh RAM ~2GB; tutup aplikasi lain dan ulangi)."
+    # Versi pydantic-core yang dibutuhkan dibaca dari metadata pydantic.
+    # FIX BUG: pydantic versi baru menulis nama dep sebagai "pydantic_core"
+    # (underscore) dan/atau format "(==x.y.z)" berkurung + env marker —
+    # parser lama (startswith 'pydantic-core==') jadi tidak cocok → versi
+    # kosong → 'pip install pydantic-core==' error. Normalisasi dulu:
+    CORE_VER="$(python -c '
+from importlib.metadata import requires
+for r in (requires("pydantic") or []):
+    spec = r.split(";")[0].strip()                 # buang env marker
+    spec = spec.replace("(", " ").replace(")", " ")  # buang kurung
+    name = spec.replace("_", "-").lower().split("==")[0].strip()
+    if name == "pydantic-core" and "==" in spec:
+        print(spec.split("==", 1)[1].strip())
+        break
+' 2>/dev/null || true)"
+    if [ -n "$CORE_VER" ]; then
+        ok "Membangun pydantic-core $CORE_VER dari sumber…"
+        pip install --no-build-isolation "pydantic-core==$CORE_VER" \
+            || die "build pydantic-core gagal (butuh RAM ~2GB; tutup aplikasi lain dan ulangi)."
+    else
+        # Fallback aman: pydantic terbaru selalu seiring dengan pydantic-core
+        # terbaru (rilis lockstep) — pasang tanpa pin.
+        warn "Versi pydantic-core tidak terbaca dari metadata — pasang pydantic-core terbaru (padanan lockstep)."
+        pip install --no-build-isolation --no-deps pydantic-core \
+            || die "build pydantic-core gagal (butuh RAM ~2GB; tutup aplikasi lain dan ulangi)."
+    fi
 fi
-python -c "import pydantic, pydantic_core" && ok "pydantic OK ($(python -c 'import pydantic;print(pydantic.VERSION)'))"
+python -c "import pydantic, pydantic_core" >/dev/null 2>&1 \
+    && ok "pydantic OK ($(python -c 'import pydantic;print(pydantic.VERSION)' 2>/dev/null))" \
+    || die "pydantic/pydantic-core masih gagal diimpor — jalankan ulang install_termux.sh."
 
 # ── 4. Paket berat: pandas & curl-cffi (boleh gagal → degradasi) ──────────
 step "4/8 — pandas & curl-cffi (build berat; gagal = degradasi fungsional)"
@@ -166,7 +212,10 @@ MONGO_TARBALL="https://fastdl.mongodb.org/linux/mongodb-linux-aarch64-ubuntu2204
 if command -v mongod >/dev/null 2>&1; then
     ok "mongod sudah tersedia di PATH — lewati"
 else
-    if ! proot-distro list 2>/dev/null | grep -q "ubuntu.*: installed"; then
+    # Deteksi rootfs langsung dari direktori — output `proot-distro list`
+    # peka spasi/baris sehingga grep "ubuntu.*: installed" sering false-negative
+    # (memicu reinstall ulang yang gagal pada run kedua).
+    if ! ls -d "$PREFIX"/var/lib/proot-distro/installed-rootfs/ubuntu* >/dev/null 2>&1; then
         ok "proot-distro install ubuntu (rootfs ~30MB)…"
         proot-distro install ubuntu || die "proot-distro install ubuntu gagal"
     fi
@@ -219,7 +268,7 @@ API_BASE=https://integrate.api.nvidia.com/v1
 MODEL_NAME=nvidia/nemotron-3-super-120b-a12b
 MODEL_PROVIDER=openai
 TEMPERATURE=0.7
-MAX_TOKENS=2000
+MAX_TOKENS=8000
 
 SANDBOX_PROVIDER=local
 USER_HOME_ROOT=$USER_ROOT

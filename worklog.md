@@ -81,3 +81,29 @@ Stage Summary:
 - MCP kini BENAR-BENAR AKTIF: bootstrap per-lingkungan (Replit/E2B/z.ai) + server stdio built-in ter-scope sandbox user; config user selalu menang; semua tool MCP tetap lewat ManusGate/policy/timeout/loop-guard.
 - Tidak ada source Claude Code yang disalin (LICENSE all-rights-reserved dihormati); tidak ada CLI subprocess per request (test AST menegakkan); tidak ada secret di log/event/browser.
 - Hasil test dilaporkan lengkap di laporan akhir; live test Anthropic (butuh ANTHROPIC_API_KEY asli) tidak dijalankan — key tidak tersedia, hanya unit/mock.
+
+---
+Task ID: 16
+Agent: Super Z (main agent)
+Task: Fix install_termux.sh error — pydantic-core version parser IndexError (laporan user dari Termux)
+
+Work Log:
+- User melaporkan error saat menjalankan install_termux.sh: IndexError pada parser versi
+  pydantic-core → CORE_VER kosong → "pip install pydantic-core==" invalid requirement.
+- Akar masalah: pydantic versi baru menulis nama dep "pydantic_core" (underscore) dan/atau
+  format "(==x.y.z)" + env marker; parser lama startswith('pydantic-core==') tidak cocok.
+- Fix install_termux.sh tahap 3: parser metadata di-robustkan (normalisasi underscore/hyphen,
+  buang kurung & marker, fallback aman pasang pydantic-core terbaru lockstep bila pin tak terbaca).
+- Fix tambahan installer: deps murni pydantic (annotated-types, typing-extensions) ikut dipasang;
+  maturin dicoba dari pkg resmi Termux dulu (detik) sebelum cargo build (menit); pkg install
+  massal gagal → retry satu per satu + verifikasi paket kritis + hint termux-change-repo;
+  'ninja' PyPI dibuang (wheel manylinux tak valid, pakai ninja pkg); deteksi rootfs proot-distro
+  via direktori (grep list false-negative → reinstall gagal di run kedua); MAX_TOKENS .env default 8000.
+- Fix scripts/termux_mongo.sh: deteksi rootfs via direktori; auto-install libcurl4/libcurl4t64
+  di dalam proot bila ldd mongod menunjukkan "not found".
+- Uji: bash -n OK; parser diuji 7 kasus metadata (semua format) — 7/7 PASS
+  (scripts/test_corever_parser.py di luar repo).
+
+Stage Summary:
+- install_termux.sh & scripts/termux_mongo.sh diperbaiki dan siap di-pull ulang dari GitHub.
+- Pengguna cukup: cd ~/manusletgo123 && git pull && bash install_termux.sh (idempotent).
