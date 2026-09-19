@@ -20,6 +20,10 @@ class SessionStatus(str, Enum):
     # The run terminated through an unrecoverable error instead of a normal
     # summary — surfaced honestly instead of masquerading as COMPLETED.
     FAILED = "failed"
+    # The user pressed STOP: the run was cancelled mid-work. Resumable —
+    # the next user message continues the stored plan from the first
+    # unfinished step (matches the orchestrator contract's "cancelled").
+    CANCELLED = "cancelled"
 
 
 class SessionSummary(BaseModel):

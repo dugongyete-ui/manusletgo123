@@ -336,6 +336,19 @@ class PlanActFlow(BaseFlow):
             return False
         if "<file name=" in (message.message or ""):
             return False
+        # Deterministic lock: a request to SEE something real is always
+        # agent work — never let the semantic classifier downgrade it to
+        # chat (observed: "Coba contohkan saya ingin melihat nya" got
+        # discuss 0.98 on one run and agent 0.95 on the next).
+        from app.domain.services.agents.intent import (
+            looks_like_demonstration_request,
+        )
+        if looks_like_demonstration_request(message.message or ""):
+            logger.info(
+                "Agent %s demonstration request — forcing agent mode",
+                self._agent_id,
+            )
+            return False
         from app.domain.services.agents.intent import (
             CHAT_MODE_DISCUSS,
             classify_chat_mode,
@@ -359,19 +372,44 @@ class PlanActFlow(BaseFlow):
         completely (warm, direct, grounded in the session transcript), so
         discuss mode simply makes that reply the FINAL answer of the turn
         instead of a preamble to a plan.
+
+        Safety net (misfire recovery): when the reply turns out to be a
+        SHORT unfulfilled promise ("Baik, saya akan siapkan contohnya "
+        "untuk Anda.") instead of a real answer, the classifier clearly
+        sent a work request to discuss mode. In that case the text is kept
+        as a non-final acknowledgement line and ``self._discuss_consumed``
+        is set False so run() falls through to the normal agent flow — the
+        plan is created and the work actually runs (reported bug: "Coba
+        contohkan saya ingin melihat nya" ended with a bare promise).
         """
-        delivered = False
+        self._discuss_consumed = True
+        delivered_text = ""
         async for event in self.planner.acknowledge_stream(message, conversation_history):
             if isinstance(event, MessageEvent) and (event.message or "").strip():
+                delivered_text = event.message
+            else:
+                yield event
+        if delivered_text.strip():
+            from app.domain.services.agents.intent import is_unfulfilled_promise
+
+            if is_unfulfilled_promise(delivered_text):
+                logger.info(
+                    "Agent %s discuss reply was an unfulfilled promise "
+                    "(%d chars) — falling through to agent mode",
+                    self._agent_id, len(delivered_text),
+                )
+                self._discuss_consumed = False
+                # Keep the streamed text as the normal (non-final)
+                # acknowledgement — identical to the agent-mode ack shape —
+                # then let the plan take over.
+                yield MessageEvent(role="assistant", message=delivered_text)
+            else:
                 # The authoritative final message of this discuss turn —
                 # persisted, replayable, and final (files never attach here).
                 yield MessageEvent(
-                    role="assistant", message=event.message, is_final=True
+                    role="assistant", message=delivered_text, is_final=True
                 )
-                delivered = True
-            else:
-                yield event
-        if not delivered:
+        elif self._discuss_consumed:
             yield MessageEvent(
                 role="assistant",
                 message=self._fallback_ack_text(None, message.message),
@@ -389,6 +427,30 @@ class PlanActFlow(BaseFlow):
                 logger.debug("discuss-mode title generation failed", exc_info=True)
 
     # ── Effort budget scaling (AgentTaskMode standard vs HIGH_EFFORT) ──
+
+    @staticmethod
+    def _demonstration_step(message: Message):
+        """A rescue step for mis-planned demonstration requests.
+
+        Fires only when the planner returned 0 steps AND the reply it
+        prepared is an unfulfilled promise ("Baik, saya akan siapkan…") —
+        the model itself admitted work was expected. The executor then
+        produces a REAL visible example instead of the turn ending on
+        words.
+        """
+        from app.domain.models.plan import Step as PlanStep
+        return PlanStep(
+            id="1",
+            description=(
+                "The user asked to actually SEE an example — words alone are "
+                f"not acceptable for this request: \"{(message.message or '')[:300]}\". "
+                "Produce a real, visible demonstration: pick a fitting example, "
+                "create or run it with the tools (e.g. a small script with its real "
+                "output, a live browser lookup, a generated file), verify the "
+                "result, and report what you actually produced. Do not reply with "
+                "promises — show the result."
+            ),
+        )
 
     def _effective_step_budget(self, base_steps: int, base_failures: int):
         """Scale the execution budget when the planner judged high effort.
@@ -461,13 +523,21 @@ class PlanActFlow(BaseFlow):
                     "Agent %s discuss mode — answering directly without tools",
                     self._agent_id,
                 )
+                self._discuss_consumed = True
                 async for event in self._run_discuss(
                     message, conversation_history, session.title
                 ):
                     yield event
-                yield DoneEvent()
-                logger.info(f"Agent {self._agent_id} discuss turn completed")
-                return
+                if self._discuss_consumed:
+                    yield DoneEvent()
+                    logger.info(f"Agent {self._agent_id} discuss turn completed")
+                    return
+                # Misfire: the "discuss" reply was only a promise of work —
+                # fall through to the normal agent flow (plan + execute).
+                logger.info(
+                    "Agent %s discuss misfire — continuing as agent mode",
+                    self._agent_id,
+                )
         except Exception:
             # Classifier problems must never trap a real task — fall through
             # to the normal agent flow.
@@ -477,6 +547,67 @@ class PlanActFlow(BaseFlow):
                 self._agent_id,
                 exc_info=True,
             )
+
+        # ── RESUME path: the previous run was stopped by the user ──────
+        # A CANCELLED session that still holds a plan with unfinished steps
+        # resumes that plan from the first pending step — the user sends any
+        # message ("lanjutkan") and the work continues to the goal without
+        # re-planning from scratch.
+        if (
+            entry_status == SessionStatus.CANCELLED
+            and self.plan is not None
+            and self.plan.steps
+            and any(not s.is_done() for s in self.plan.steps)
+        ):
+            resume_plan = self.plan
+            done_steps = [s for s in resume_plan.steps if s.is_done()]
+            pending_steps = [s for s in resume_plan.steps if not s.is_done()]
+            logger.info(
+                "Agent %s resuming stopped plan: %d/%d steps done, "
+                "continuing from step '%s'",
+                self._agent_id, len(done_steps), len(resume_plan.steps),
+                (pending_steps[0].description or "")[:60],
+            )
+            # Enrich the message with a continuation brief so the (fresh)
+            # executor memory knows exactly what already happened.
+            from copy import deepcopy as _deepcopy
+
+            done_lines = "\n".join(
+                f"{i}. {s.description}" + (f"\n   Result: {s.result}" if s.result else "")
+                for i, s in enumerate(done_steps, 1)
+            ) or "(none yet)"
+            pending_lines = "\n".join(
+                f"{s.id}. {s.description}" for s in pending_steps
+            )
+            resume_brief = (
+                "[RESUME CONTEXT — the previous run of this task was stopped "
+                "by the user and is now resuming from where it stopped]\n"
+                f"Task: {resume_plan.title or ''}\n"
+                f"Steps already completed (do NOT redo them):\n{done_lines}\n\n"
+                f"Remaining steps to finish the task:\n{pending_lines}\n\n"
+                "Continue with the first remaining step and work until the "
+                "whole task is done. Reuse (do not repeat) the completed "
+                "work listed above.\n\n"
+                f"[User message]\n{message.message}"
+            )
+            enriched = _deepcopy(message)
+            enriched.message = resume_brief
+            message = enriched
+
+            _u = (enriched.message or "").lower()
+            _indonesian = any(
+                w in _u for w in ("lanjut", "saya", "tolong", "ya", "oke", "baik")
+            )
+            yield MessageEvent(
+                role="assistant",
+                message=(
+                    "Baik, saya lanjutkan tugasnya dari titik terakhir."
+                    if _indonesian
+                    else "Okay — picking the task back up from where it stopped."
+                ),
+            )
+            yield PlanEvent(status=PlanStatus.UPDATED, plan=resume_plan)
+            self.status = AgentStatus.EXECUTING
 
         settings = get_settings()
         _max_steps = settings.max_steps
@@ -542,6 +673,7 @@ class PlanActFlow(BaseFlow):
                 # all those cases the user would otherwise see NO first
                 # response before the plan appears.
                 ack_message_delivered = False
+                ack_text_delivered = ""
 
                 while not (plan_finished and acknowledgement_finished):
                     kind, event = await event_queue.get()
@@ -596,6 +728,7 @@ class PlanActFlow(BaseFlow):
                             and (event.message or "").strip()
                         ):
                             ack_message_delivered = True
+                            ack_text_delivered = event.message
                     elif kind == "plan_error":
                         if ack_task:
                             ack_task.cancel()
@@ -613,6 +746,28 @@ class PlanActFlow(BaseFlow):
                 # Emit the plan only after its JSON is complete.  At this point
                 # the acknowledgement stream has also ended, so the next event
                 # is the plan followed immediately by execution.
+                if len(self.plan.steps) == 0:
+                    # Safety net C (planner misfire): the planner answered a
+                    # WORK request with 0 steps and a promise-style line —
+                    # the model itself said it would prepare something. Give
+                    # the turn a real demonstration step instead of ending
+                    # on a promise (reported bug).
+                    from app.domain.services.agents.intent import (
+                        is_unfulfilled_promise,
+                        looks_like_demonstration_request,
+                    )
+
+                    if is_unfulfilled_promise(
+                        ack_text_delivered or self.plan.message or ""
+                    ) or looks_like_demonstration_request(message.message or ""):
+                        logger.warning(
+                            "Agent %s: planner returned 0 steps for a "
+                            "demonstration/promise reply — injecting "
+                            "demonstration step",
+                            self._agent_id,
+                        )
+                        self.plan.steps = [self._demonstration_step(message)]
+
                 if len(self.plan.steps) == 0:
                     # Simple / conversational query.  When the streamed first
                     # reply already answered (the reply model answers

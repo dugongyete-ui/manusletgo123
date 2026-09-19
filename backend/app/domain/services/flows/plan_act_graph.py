@@ -133,13 +133,21 @@ class PlanActGraphFlow(PlanActFlow):
                     "Agent %s discuss mode — answering directly without tools",
                     self._agent_id,
                 )
+                self._discuss_consumed = True
                 async for event in self._run_discuss(
                     message, conversation_history, session.title
                 ):
                     yield event
-                yield DoneEvent()
-                logger.info(f"Agent {self._agent_id} discuss turn completed")
-                return
+                if self._discuss_consumed:
+                    yield DoneEvent()
+                    logger.info(f"Agent {self._agent_id} discuss turn completed")
+                    return
+                # Misfire: the "discuss" reply was only a promise of work —
+                # fall through to the normal agent flow (plan + execute).
+                logger.info(
+                    "Agent %s discuss misfire — continuing as agent mode",
+                    self._agent_id,
+                )
         except Exception:
             logger.warning(
                 "Agent %s discuss-mode classification failed — continuing "
@@ -147,6 +155,64 @@ class PlanActGraphFlow(PlanActFlow):
                 self._agent_id,
                 exc_info=True,
             )
+
+        # ── RESUME path: the previous run was stopped by the user ──────
+        # Engine parity with PlanActFlow: a CANCELLED session holding a plan
+        # with unfinished steps resumes from the first pending step instead
+        # of re-planning from scratch.
+        if (
+            entry_status == SessionStatus.CANCELLED
+            and self.plan is not None
+            and self.plan.steps
+            and any(not s.is_done() for s in self.plan.steps)
+        ):
+            resume_plan = self.plan
+            done_steps = [s for s in resume_plan.steps if s.is_done()]
+            pending_steps = [s for s in resume_plan.steps if not s.is_done()]
+            logger.info(
+                "Agent %s resuming stopped plan: %d/%d steps done, "
+                "continuing from step '%s'",
+                self._agent_id, len(done_steps), len(resume_plan.steps),
+                (pending_steps[0].description or "")[:60],
+            )
+            from copy import deepcopy as _deepcopy
+
+            done_lines = "\n".join(
+                f"{i}. {s.description}" + (f"\n   Result: {s.result}" if s.result else "")
+                for i, s in enumerate(done_steps, 1)
+            ) or "(none yet)"
+            pending_lines = "\n".join(
+                f"{s.id}. {s.description}" for s in pending_steps
+            )
+            resume_brief = (
+                "[RESUME CONTEXT — the previous run of this task was stopped "
+                "by the user and is now resuming from where it stopped]\n"
+                f"Task: {resume_plan.title or ''}\n"
+                f"Steps already completed (do NOT redo them):\n{done_lines}\n\n"
+                f"Remaining steps to finish the task:\n{pending_lines}\n\n"
+                "Continue with the first remaining step and work until the "
+                "whole task is done. Reuse (do not repeat) the completed "
+                "work listed above.\n\n"
+                f"[User message]\n{message.message}"
+            )
+            enriched = _deepcopy(message)
+            enriched.message = resume_brief
+            message = enriched
+
+            _u = (enriched.message or "").lower()
+            _indonesian = any(
+                w in _u for w in ("lanjut", "saya", "tolong", "ya", "oke", "baik")
+            )
+            yield MessageEvent(
+                role="assistant",
+                message=(
+                    "Baik, saya lanjutkan tugasnya dari titik terakhir."
+                    if _indonesian
+                    else "Okay — picking the task back up from where it stopped."
+                ),
+            )
+            yield PlanEvent(status=PlanStatus.UPDATED, plan=resume_plan)
+            self.status = AgentStatus.EXECUTING
 
         settings = get_settings()
         _max_steps = settings.max_steps
@@ -216,6 +282,7 @@ class PlanActGraphFlow(PlanActFlow):
             # Whether the first reply actually DELIVERED a user-visible
             # assistant message (see PlanActFlow for the rationale).
             ack_message_delivered = False
+            ack_text_delivered = ""
 
             while not (plan_finished and acknowledgement_finished):
                 kind, event = await event_queue.get()
@@ -270,6 +337,7 @@ class PlanActGraphFlow(PlanActFlow):
                         and (event.message or "").strip()
                     ):
                         ack_message_delivered = True
+                        ack_text_delivered = event.message
                 elif kind == "plan_error":
                     if ack_task:
                         ack_task.cancel()
@@ -285,6 +353,27 @@ class PlanActGraphFlow(PlanActFlow):
             )
 
             # Emit the plan only after its JSON is complete (see PlanActFlow).
+            if len(self.plan.steps) == 0:
+                # Safety net C (planner misfire) — engine parity with
+                # PlanActFlow: 0 steps + a promise-style reply or a demo
+                # request means a work request was mis-planned; inject a
+                # demonstration step.
+                from app.domain.services.agents.intent import (
+                    is_unfulfilled_promise,
+                    looks_like_demonstration_request,
+                )
+
+                if is_unfulfilled_promise(
+                    ack_text_delivered or self.plan.message or ""
+                ) or looks_like_demonstration_request(message.message or ""):
+                    logger.warning(
+                        "Agent %s: planner returned 0 steps for a "
+                        "demonstration/promise reply — injecting "
+                        "demonstration step",
+                        self._agent_id,
+                    )
+                    self.plan.steps = [self._demonstration_step(message)]
+
             if len(self.plan.steps) == 0:
                 # Simple / conversational query — the streamed first reply
                 # IS the answer; plan.message only fires when it failed.

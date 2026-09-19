@@ -49,6 +49,12 @@ from app.domain.external.task import TaskRunner, Task
 from app.domain.repositories.session_repository import SessionRepository
 from app.domain.repositories.mcp_repository import MCPRepository
 from app.domain.models.session import SessionStatus
+from app.domain.models.plan import ExecutionStatus
+from app.domain.services.agents.intent import (
+    looks_like_stop_request,
+    stop_acknowledgement,
+    stopped_by_button_notice,
+)
 from app.domain.models.file import FileInfo
 from app.domain.services.tools.mcp import MCPToolkit
 from app.domain.models.tool_result import ToolResult
@@ -1036,6 +1042,9 @@ class AgentTaskRunner(TaskRunner):
 
         try:
             logger.info(f"Agent {self._agent_id} message processing task started")
+            # Stop-by-text interception activates from the SECOND message of
+            # this run onward (the first one starts the work).
+            _intercept_stop_requests = False
 
             # Kick off sandbox + MCP init concurrently in the background.
             # The planner only needs the LLM, so we can stream the initial
@@ -1045,12 +1054,84 @@ class AgentTaskRunner(TaskRunner):
             sandbox_task = asyncio.create_task(self._sandbox.ensure_sandbox())
             mcp_task = asyncio.create_task(self._mcp_tool.initialized(mcp_config))
 
-            while not await task.input_stream.is_empty():
+            # Grace drain: an interjection can land between the last
+            # is_empty() check and the task teardown — queueing it into a
+            # dead task orphaned it forever (message sent right as the
+            # previous turn finished never ran). Wait a short grace window
+            # and re-check before declaring the task finished.
+            _drained = False
+            while not _drained:
+                if await task.input_stream.is_empty():
+                    await asyncio.sleep(1.0)
+                    if await task.input_stream.is_empty():
+                        _drained = True
+                        continue
                 _check_task_timeout()
                 event = await self._pop_event(task)
                 message = ""
                 if isinstance(event, MessageEvent):
                     message = event.message or ""
+
+                    # ── Stop-by-text (mid-run interjection) ───────────────
+                    # The agent is working and the user sends a short,
+                    # explicit stop command ("stop", "berhenti", "jangan
+                    # dilanjutkan"). End the run gracefully: acknowledge,
+                    # mark every plan step completed, close the plan — and
+                    # NEVER feed the stop text to the executor as work.
+                    # Only applies AFTER the first message of this run (a
+                    # bare "stop" as a session's first message has nothing
+                    # to stop and is answered conversationally).
+                    if _intercept_stop_requests and looks_like_stop_request(message):
+                        logger.info(
+                            "Agent %s stop-by-text request — finalizing task "
+                            "without executing it",
+                            self._agent_id,
+                        )
+                        await self._put_and_add_event(
+                            task,
+                            MessageEvent(
+                                role="assistant",
+                                message=stop_acknowledgement(message),
+                                is_final=True,
+                            ),
+                        )
+                        try:
+                            _session = await self._session_repository.find_by_id(
+                                self._session_id
+                            )
+                            _plan = _session.get_last_plan() if _session else None
+                            if _plan is not None and _plan.steps:
+                                for _s in _plan.steps:
+                                    if not _s.is_done():
+                                        _s.status = ExecutionStatus.COMPLETED
+                                        _s.success = True
+                                        if not (_s.result or "").strip():
+                                            _s.result = (
+                                                "Closed when the user stopped the "
+                                                "task — progress up to this point "
+                                                "was kept."
+                                            )
+                                _plan.status = ExecutionStatus.COMPLETED
+                                await self._put_and_add_event(
+                                    task,
+                                    PlanEvent(
+                                        status=PlanStatus.COMPLETED, plan=_plan
+                                    ),
+                                )
+                        except Exception:
+                            logger.warning(
+                                "Agent %s plan finalization on stop failed",
+                                self._agent_id,
+                                exc_info=True,
+                            )
+                        await self._put_and_add_event(task, DoneEvent())
+                        await self._session_repository.update_status(
+                            self._session_id, SessionStatus.COMPLETED
+                        )
+                        break
+
+                    _intercept_stop_requests = True
+
                     # File attachments require an active sandbox; wait only when needed
                     if event.attachments:
                         await sandbox_task
@@ -1167,8 +1248,22 @@ class AgentTaskRunner(TaskRunner):
             await self._session_repository.update_status(self._session_id, SessionStatus.COMPLETED)
         except asyncio.CancelledError:
             logger.info(f"Agent {self._agent_id} task cancelled")
+            # User pressed STOP: say it plainly, keep the plan untouched so
+            # the next user message resumes from the stopping point, and
+            # mark the session CANCELLED (resumable) — not COMPLETED, which
+            # lied about the run's real end.
+            await self._put_and_add_event(
+                task,
+                MessageEvent(
+                    role="assistant",
+                    message=stopped_by_button_notice(),
+                    is_final=True,
+                ),
+            )
             await self._put_and_add_event(task, DoneEvent())
-            await self._session_repository.update_status(self._session_id, SessionStatus.COMPLETED)
+            await self._session_repository.update_status(
+                self._session_id, SessionStatus.CANCELLED
+            )
             # Contract: agent_finished event + registry status (cancelled).
             try:
                 from app.domain.services.manus_registry.notify import run_registry

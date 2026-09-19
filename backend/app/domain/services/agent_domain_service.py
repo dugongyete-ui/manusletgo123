@@ -337,7 +337,13 @@ class AgentDomainService:
         return self._task_cls.get(task_id)
 
     async def stop_session(self, session_id: str) -> None:
-        """Stop a session"""
+        """Stop a session (user pressed the STOP button).
+
+        The task runner's CancelledError handler emits the user-facing
+        "stopped" notice and flips the session to CANCELLED (resumable).
+        We only set CANCELLED here as a fallback when no live task exists
+        (e.g. the stop raced the task teardown).
+        """
         session = await self._session_repository.find_by_id(session_id)
         if not session:
             logger.error(f"Attempted to stop non-existent Session {session_id}")
@@ -345,7 +351,15 @@ class AgentDomainService:
         task = await self._get_task(session)
         if task:
             task.cancel()
-        await self._session_repository.update_status(session_id, SessionStatus.COMPLETED)
+        elif session.status in (
+            SessionStatus.PENDING,
+            SessionStatus.IN_QUEUE,
+            SessionStatus.RUNNING,
+            SessionStatus.WAITING,
+        ):
+            await self._session_repository.update_status(
+                session_id, SessionStatus.CANCELLED
+            )
 
     async def chat(
         self,
@@ -433,6 +447,10 @@ class AgentDomainService:
                 )
                 task_finished = bool(getattr(task, "done", False)) if task else False
                 last_turn_failed = session.status == SessionStatus.FAILED
+                # A STOPPED (cancelled) turn is always resumable: the user
+                # pressing send again — even with the SAME text — means
+                # "continue the work", never "reconnect to the dead run".
+                last_turn_cancelled = session.status == SessionStatus.CANCELLED
                 ask_user_resume = session.status == SessionStatus.WAITING
 
                 # When the identical message exists but no live task holds it,
@@ -448,6 +466,7 @@ class AgentDomainService:
                 is_reconnect = (
                     same_content
                     and not last_turn_failed
+                    and not last_turn_cancelled
                     and not ask_user_resume
                     and (
                         (task is not None and (in_flight or task_finished))
@@ -532,9 +551,14 @@ class AgentDomainService:
                     # discuss gate keeps WAITING in agent mode — flipping it
                     # to IN_QUEUE here broke both (the resume branch was dead
                     # code and answers could be misrouted to discuss mode).
+                    # CANCELLED is EXEMPT too: the next message resumes the
+                    # stopped plan — the flow must still SEE the cancelled
+                    # status to take the resume path (it flips the status to
+                    # RUNNING itself once the run actually starts).
                     if session.status not in (
                         SessionStatus.RUNNING,
                         SessionStatus.WAITING,
+                        SessionStatus.CANCELLED,
                     ):
                         await self._session_repository.update_status(
                             session_id, SessionStatus.IN_QUEUE
@@ -574,7 +598,24 @@ class AgentDomainService:
                         """
                         nonlocal task
                         try:
-                            if session.status != SessionStatus.RUNNING or task is None:
+                            # Re-check task freshness against the LIVE task
+                            # object AND the session's CURRENT status: a stale
+                            # snapshot (loaded while the previous turn was
+                            # still finishing) may point at a task that just
+                            # completed — queueing into a done task orphans
+                            # the message forever (observed: a message sent
+                            # right as the previous turn finished never ran
+                            # and never replied).
+                            fresh_session = await self._session_repository.find_by_id(
+                                session_id
+                            )
+                            fresh_status = fresh_session.status if fresh_session else session.status
+                            task_live = (
+                                task is not None
+                                and not getattr(task, "done", False)
+                                and fresh_status == SessionStatus.RUNNING
+                            )
+                            if fresh_status != SessionStatus.RUNNING or not task_live:
                                 task = await self._create_task(session)
                                 if not task:
                                     raise RuntimeError("Failed to create task")

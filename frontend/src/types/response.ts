@@ -8,7 +8,9 @@ export enum SessionStatus {
     WAITING = "waiting",
     COMPLETED = "completed",
     /** The run ended with an unrecoverable error — shown honestly. */
-    FAILED = "failed"
+    FAILED = "failed",
+    /** The user pressed STOP. Resumable: the next message continues the plan. */
+    CANCELLED = "cancelled"
 }
 
 export interface CreateSessionResponse {

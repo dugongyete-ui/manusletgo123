@@ -27,6 +27,10 @@
       <template v-else-if="session.status === SessionStatus.FAILED">
         <AlertCircle class="size-[18px] text-[var(--function-warning)]" />
       </template>
+      <!-- Cancelled (user pressed STOP): resumable — distinct stop icon. -->
+      <template v-else-if="session.status === SessionStatus.CANCELLED">
+        <CircleSlash class="size-[18px] text-[var(--icon-tertiary)]" />
+      </template>
       <template v-else>
         <MessageCircle class="size-[18px] text-[var(--icon-tertiary)]" />
       </template>
@@ -54,7 +58,7 @@
 </template>
 
 <script setup lang="ts">
-import { Ellipsis, MessageCircle, FolderInput, Trash, AlertCircle } from 'lucide-vue-next';
+import { Ellipsis, MessageCircle, FolderInput, Trash, AlertCircle, CircleSlash } from 'lucide-vue-next';
 import { computed, ref } from 'vue';
 import { useI18n } from 'vue-i18n';
 import { useRoute, useRouter } from 'vue-router';

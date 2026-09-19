@@ -40,6 +40,11 @@ Key decision rule:
 - If the user message requires using tools (file operations, shell commands, web browsing, code execution, research, data processing, etc.), create one or more steps.
 - If the user message can be answered purely from knowledge or conversation (no tools needed), return steps as an empty array and write your response directly in the "message" field. The response will be shown to the user immediately without any tool execution.
 
+DEMONSTRATION REQUESTS — never 0 steps:
+- Requests to SEE or BE SHOWN something ("contohkan", "coba contohkan", "kasih contoh yang bisa saya lihat", "saya ingin melihat nya", "tunjukkan", "show me", "demokan", "give me an example I can see") ask the user's side for a REAL, VISIBLE result.
+- These ALWAYS get at least one execution step whose outcome is something the user can actually see: code output, a browser page you visited, a generated file, a screenshot.
+- Planning 0 steps for a demonstration request means the turn ends with words instead of the example — that is a failure. When in doubt whether "see an example" means real work, it does.
+
 MANDATORY RULE — File Attachments:
 - If the user message contains <file name="...">...</file> tags, those files have ALREADY been extracted by the server. The text content is right there in the message.
 - Do NOT create an extraction step — the content is already available.

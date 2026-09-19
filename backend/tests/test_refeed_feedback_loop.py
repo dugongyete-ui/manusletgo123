@@ -331,14 +331,19 @@ async def test_dedup_uses_user_timestamp_not_narration_timestamp():
     session.latest_user_message_at = now - timedelta(minutes=5)
     repo = _make_repo(session)
     svc = _make_service(repo)
-    fake_task = _FakeTask()
-    svc._get_task = AsyncMock(return_value=fake_task)
-    fake_task.done = True  # drain loop breaks immediately
+    finished_task = _FakeTask()
+    finished_task.done = True  # previous turn's task already finished
+    fresh_task = _FakeTask()
+    svc._get_task = AsyncMock(return_value=finished_task)
+    # A done task can never process queued input — the freshness guard must
+    # create a FRESH task and queue the message THERE (anti-orphan race).
+    svc._create_task = AsyncMock(return_value=fresh_task)
 
     _ = [e async for e in svc.chat("s1", "u1", message="tambahkan juga harga sahamnya", timestamp=now)]
 
     # NOT treated as a reconnect duplicate — the message must be queued.
-    assert len(fake_task.input_stream.put_calls) == 1
+    assert len(finished_task.input_stream.put_calls) == 0
+    assert len(fresh_task.input_stream.put_calls) == 1
     assert repo.update_latest_user_message.await_count == 1
 
 
