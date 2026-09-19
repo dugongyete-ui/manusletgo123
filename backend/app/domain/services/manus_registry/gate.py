@@ -22,6 +22,7 @@ tools keep their Python schemas. Names never collide (registry wins).
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import time
 from typing import Any, Dict, List, Optional, Tuple
@@ -200,12 +201,15 @@ class ManusGate:
 
         args_hash = arguments_hash(tool_name, arguments)
 
-        # 3) loop safety — identical (tool, args) streak. Runs BEFORE
-        #    validation: a model stuck re-sending the same broken call is
-        #    exactly the pattern this guard exists for (live session: the
-        #    same failing browser_click returned 4x because validation
-        #    failures previously bypassed all loop accounting).
-        loop_block = self.safety.check_before_execute(tool_name, args_hash)
+        # 3) loop safety — mutation-aware non-progress guards (blind repeat
+        #    + command-family failure memory). Runs BEFORE validation: a
+        #    model stuck re-sending the same broken call is exactly the
+        #    pattern this guard exists for (live session 126051f9d15848b3:
+        #    `npx tailwindcss init -p` failed 4x while interleaved `ls`
+        #    probes kept resetting the old consecutive counter).
+        loop_block = self.safety.check_before_execute(
+            tool_name, args_hash, arguments
+        )
         if loop_block is not None:
             return self._finish(tool_name, tool_call_id, args_hash, loop_block, brief)
 
@@ -218,7 +222,8 @@ class ManusGate:
             payload = failure_payload(tool_name, **error)
             err = payload.get("error") or {}
             stop = self.safety.record_error(
-                tool_name, err.get("code", VALIDATION_ERROR), str(err.get("message", ""))
+                tool_name, err.get("code", VALIDATION_ERROR), str(err.get("message", "")),
+                args_hash=args_hash, arguments=arguments,
             )
             if stop is not None:
                 payload = stop
@@ -356,13 +361,24 @@ class ManusGate:
         except Exception:  # noqa: BLE001
             logger.debug("tool_call_finished event failed", exc_info=True)
 
-        # 7) bookkeeping
+        # 7) bookkeeping — windowed outcome memory (mutation-aware)
         if payload.get("success"):
-            self.safety.record_success()
+            data = payload.get("data")
+            try:
+                _excerpt = json.dumps(data, ensure_ascii=False, default=str)[:300]
+            except Exception:  # noqa: BLE001
+                _excerpt = str(data)[:300]
+            self.safety.record_result(
+                tool_name, args_hash, True,
+                output_excerpt=_excerpt, arguments=arguments,
+            )
         else:
             err = payload.get("error") or {}
-            stop = self.safety.record_error(
-                tool_name, err.get("code", "EXECUTION_ERROR"), str(err.get("message", ""))
+            stop = self.safety.record_result(
+                tool_name, args_hash, False,
+                error_code=str(err.get("code", "EXECUTION_ERROR")),
+                error_message=str(err.get("message", "")),
+                arguments=arguments,
             )
             if stop is not None:
                 payload = stop

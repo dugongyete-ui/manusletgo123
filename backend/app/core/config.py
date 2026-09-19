@@ -236,6 +236,13 @@ class Settings(BaseSettings):
     manus_max_identical_calls: int = 2
     # Consecutive identical failures before the loop stops with guidance.
     manus_max_identical_errors: int = 3
+    # Failures of one shell COMMAND FAMILY (same leading binary after
+    # cd-chain/wrapper stripping: npx X ≈ ./node_modules/.bin/X ≈ X) allowed
+    # before ANY new call in that family is blocked with the last error
+    # excerpt attached. Mutation-aware: a real state change between
+    # attempts (npm install, file edit) resets the budget — that is a
+    # legit fix-and-retry, not a loop.
+    manus_family_failure_limit: int = 3
     # Executor-level auto-retries for RETRYABLE failures (timeout/transient)
     # before the failure reaches the model (contract: max_retries_per_call=2).
     manus_max_retries_per_call: int = 2

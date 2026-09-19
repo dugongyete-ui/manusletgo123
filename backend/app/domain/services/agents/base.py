@@ -28,6 +28,7 @@ from app.domain.services.tools.base import Tool
 from app.domain.utils.robust_json_parser import RobustJsonParser, ToolCallParseError
 import openai
 import copy
+import json
 import re as _re
 import json as _json
 
@@ -937,6 +938,25 @@ class BaseAgent(ABC):
         from app.domain.services.agents.loop_detector import ActionLoopDetector
 
         loop_detector = ActionLoopDetector()
+        # ── Hard loop guard (Codex/Claude-Code-style harness discipline) ──
+        # The soft nudges above ask the model to self-correct; weak models
+        # ignore them (observed live: `npx tailwindcss init -p` failed 4x
+        # with interleaved `ls` probes resetting the old consecutive-only
+        # counter — ~25 minutes burned on one dead approach). The HARD
+        # guard denies execution of known non-progress calls: blind
+        # repeats (same call + same outcome + nothing changed in between)
+        # and command families that keep failing without any state change.
+        # Blocked calls return a diagnostic payload with the last error
+        # excerpt + pivot checklist, so the model is FORCED to read the
+        # error and change method — exactly how a coding-agent harness
+        # keeps the loop productive. Applies to BOTH dispatch paths
+        # (registry gate and legacy toolkits) via the shared window below.
+        from app.domain.services.manus_registry.trace import (
+            LoopSafety,
+            arguments_hash as _guard_args_hash,
+        )
+
+        hard_guard = LoopSafety()
         _consecutive_failed_rounds = 0
         _settings = get_settings()
         # Display-only budget for the failure annotations (browser-use uses
@@ -988,6 +1008,66 @@ class BaseAgent(ABC):
                 function_name = tool_call["name"]
                 tool_call_id = tool_call["id"] = tool_call["id"] or str(uuid.uuid4())
                 function_args = tool_call["args"]
+
+                # ── Hard loop guard (pre-dispatch, BOTH paths) ─────────
+                # Known non-progress calls never reach an executor: they
+                # get a diagnostic LOOP_DETECTED payload with the last
+                # error excerpt + pivot checklist instead.
+                _guard_args = dict(function_args or {})
+                try:
+                    _guard_hash = _guard_args_hash(function_name, _guard_args)
+                    _guard_block = hard_guard.check_before_execute(
+                        function_name, _guard_hash, _guard_args
+                    )
+                except Exception:  # noqa: BLE001 — guard must never break dispatch
+                    logger.debug("hard guard check failed", exc_info=True)
+                    _guard_hash = ""
+                    _guard_block = None
+                if _guard_block is not None:
+                    _guard_err = (_guard_block.get("error") or {}).get("message", "")
+                    _guard_artifact = ToolResult(
+                        success=False,
+                        message=f"Loop guard: {_guard_err}",
+                    )
+                    yield ToolEvent(
+                        status=ToolStatus.CALLING,
+                        tool_call_id=tool_call_id,
+                        tool_name=function_name.split("_", 1)[0],
+                        function_name=function_name,
+                        function_args=_guard_args,
+                    )
+                    _round_had_failure = True
+                    yield MessageEvent(
+                        message=(
+                            "Terdeteksi aksi berulang yang gagal terus — "
+                            "guard memblokirnya dan memaksa strategi baru."
+                        ),
+                        is_progress=True,
+                        role="assistant",
+                    )
+                    yield ToolEvent(
+                        status=ToolStatus.CALLED,
+                        tool_call_id=tool_call_id,
+                        tool_name=function_name.split("_", 1)[0],
+                        function_name=function_name,
+                        function_args=_guard_args,
+                        function_result=_guard_artifact,
+                    )
+                    tool_responses.append(ToolMessage(
+                        tool_call_id=tool_call_id,
+                        name=function_name,
+                        content=json.dumps(_guard_block, ensure_ascii=False),
+                        artifact=_guard_artifact,
+                    ))
+                    loop_detector.record_action(function_name, _guard_args)
+                    loop_detector.record_result(
+                        function_name, json.dumps(_guard_block)
+                    )
+                    logger.warning(
+                        "Hard loop guard BLOCKED %s: %s",
+                        function_name, _guard_err[:160],
+                    )
+                    continue
 
                 # ── Manus registry gate (v1.1) ──────────────────────────
                 # Registry-governed tools (31 MCP + 16 shell) are validated
@@ -1049,6 +1129,26 @@ class BaseAgent(ABC):
                         _round_had_success = True
                     loop_detector.record_action(function_name, _gate_args)
                     loop_detector.record_result(function_name, _gate_message.content)
+                    # Hard-guard outcome memory (gate path) — same window
+                    # as the legacy path so dispatch route is irrelevant.
+                    try:
+                        _gp = json.loads(_gate_message.content)
+                        _g_ok = bool(_gp.get("success"))
+                        _g_err = _gp.get("error") or {}
+                        _g_excerpt = ""
+                        if _g_ok:
+                            _g_excerpt = json.dumps(
+                                _gp.get("data"), ensure_ascii=False, default=str
+                            )[:300]
+                        hard_guard.record_result(
+                            function_name, _guard_hash, _g_ok,
+                            error_code=str(_g_err.get("code", "")),
+                            error_message=str(_g_err.get("message", ""))[:300],
+                            output_excerpt=_g_excerpt,
+                            arguments=_gate_args,
+                        )
+                    except Exception:  # noqa: BLE001
+                        logger.debug("hard guard gate-path record failed", exc_info=True)
                     yield ToolEvent(
                         status=ToolStatus.CALLED,
                         tool_call_id=tool_call_id,
@@ -1117,6 +1217,46 @@ class BaseAgent(ABC):
 
                 tool_result = await self.invoke_tool(tool, tool_call)
 
+                # ── Command-level honesty (transport ≠ command success) ──
+                # The sandbox transport reports success=True as long as the
+                # shell session executed; the COMMAND inside may have exited
+                # non-zero ("npm error could not determine executable to
+                # run", rc=1). Observed live on session deeadb25: the model
+                # read success:true and every downstream guard (failure
+                # budget, loop guard, ghost-success detection) saw "ok" for
+                # a dead command. Codex/Claude-Code rule: a non-zero exit
+                # IS a failure — surface it to the model, the UI, and the
+                # guards alike.
+                _artifact = getattr(tool_result, "artifact", None)
+                if function_name.startswith("shell_") and isinstance(
+                    getattr(_artifact, "data", None), dict
+                ):
+                    try:
+                        _rc = int(_artifact.data.get("returncode"))
+                    except (TypeError, ValueError):
+                        _rc = None
+                    if _rc is not None and _rc != 0 and getattr(_artifact, "success", True):
+                        _out = str(
+                            _artifact.data.get("output")
+                            or _artifact.data.get("stderr")
+                            or ""
+                        )
+                        _fail_note = (
+                            f"Command failed with exit code {_rc}. "
+                            + (_out[:200] if _out else "")
+                        ).strip()
+                        try:
+                            _artifact.success = False
+                            _artifact.message = _fail_note
+                            _tr_obj = json.loads(tool_result.content)
+                            _tr_obj["success"] = False
+                            _tr_obj["message"] = _fail_note
+                            tool_result.content = json.dumps(
+                                _tr_obj, ensure_ascii=False
+                            )
+                        except Exception:  # noqa: BLE001 — honesty best-effort
+                            logger.debug("exit-code honesty rewrite failed", exc_info=True)
+
                 # ── Adaptive-loop bookkeeping ──────────────────────────
                 # A call "failed" when its ToolResult carries success=False
                 # or when invoke_tool returned an exception payload (no
@@ -1146,6 +1286,40 @@ class BaseAgent(ABC):
                     _round_had_success = True
                 loop_detector.record_action(function_name, function_args)
                 loop_detector.record_result(function_name, _content_signature)
+                # Hard-guard outcome memory (legacy path).
+                try:
+                    _hg_excerpt = ""
+                    if _artifact is not None and getattr(_artifact, "data", None) is not None:
+                        _hg_excerpt = json.dumps(
+                            _artifact.data, ensure_ascii=False, default=str
+                        )[:300]
+                    _hg_stop = hard_guard.record_result(
+                        function_name, _guard_hash, not _call_failed,
+                        error_code=("EXECUTION_ERROR" if _call_failed else ""),
+                        error_message=(
+                            str(getattr(_artifact, "message", "") or "")[:300]
+                            if _call_failed else ""
+                        ),
+                        output_excerpt=_hg_excerpt,
+                        arguments=function_args,
+                    )
+                    if _hg_stop is not None:
+                        # Same call keeps failing with the same error: turn
+                        # THIS result into the structured stop payload so the
+                        # model reads the diagnosis, not a stale error again.
+                        _hg_artifact = ToolResult(
+                            success=False,
+                            message=(
+                                "Loop guard: "
+                                + str((_hg_stop.get("error") or {}).get("message", ""))
+                            ),
+                        )
+                        tool_result.content = json.dumps(
+                            _hg_stop, ensure_ascii=False
+                        )
+                        tool_result.artifact = _hg_artifact
+                except Exception:  # noqa: BLE001
+                    logger.debug("hard guard legacy-path record failed", exc_info=True)
 
                 # Generate event after tool call
                 yield ToolEvent(

@@ -115,7 +115,7 @@ def test_leading_binary_collapses_wrapper_and_path_variants():
 def test_command_variant_spiral_triggers_focus_warning():
     """Every command string is DIFFERENT (so exact-hash detection stays
     quiet) yet all revolve around the same failing binary — the coarse
-    key must still escalate: WARNING at 6, ALERT at 10."""
+    key must still escalate: WARNING at 5, ALERT at 8."""
     d = ActionLoopDetector()
     variants = [
         "npx prisma migrate dev --name init",

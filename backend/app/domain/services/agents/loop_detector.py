@@ -116,6 +116,8 @@ class ActionLoopDetector:
         self.window_size = window_size
         self.recent_action_hashes: list[str] = []
         self.recent_command_keys: list[str] = []
+        self.recent_result_hashes: list[str] = []
+        self.recent_shell_calls: list[tuple] = []
         self.consecutive_identical_results: int = 0
         self._last_result_hash: Optional[str] = None
         # Cache of counts so get_nudge_message() is pure.
@@ -140,13 +142,22 @@ class ActionLoopDetector:
                 self.recent_command_keys.append(key)
                 if len(self.recent_command_keys) > self.window_size:
                     self.recent_command_keys = self.recent_command_keys[-self.window_size:]
+            self.recent_shell_calls.append((tool_name, dict(params or {})))
+            if len(self.recent_shell_calls) > self.window_size:
+                self.recent_shell_calls = self.recent_shell_calls[-self.window_size:]
         self._recompute()
 
     def record_result(self, tool_name: str, result_content: Any) -> None:
         """Record the outcome signature of one tool call (stagnation check).
 
-        Only meaningful for non-exempt tools: identical consecutive results
-        mean the repeated action is having no observable effect.
+        Two layers:
+        - consecutive identical results (upstream browser-use behaviour), and
+        - WINDOW-scoped identical results: the same output occurring
+          repeatedly across the window even when read-only probes are
+          interleaved between attempts. The consecutive-only version was
+          blind to exactly the observed failure mode (failing command → ls
+          probe → failing command → …). Both feed the nudges; the HARD
+          guard lives in manus_registry.trace.LoopSafety.
         """
         if tool_name in EXEMPT_TOOLS:
             return
@@ -158,6 +169,10 @@ class ActionLoopDetector:
         else:
             self.consecutive_identical_results = 0
             self._last_result_hash = digest
+        self.recent_result_hashes.append(digest)
+        if len(self.recent_result_hashes) > self.window_size:
+            self.recent_result_hashes = self.recent_result_hashes[-self.window_size:]
+        self._recompute()
 
     def _recompute(self) -> None:
         counts: Dict[str, int] = {}
@@ -178,6 +193,31 @@ class ActionLoopDetector:
         else:
             self.focus_binary = None
             self.max_command_focus = 0
+        result_counts: Dict[str, int] = {}
+        for r in self.recent_result_hashes:
+            result_counts[r] = result_counts.get(r, 0) + 1
+        if result_counts:
+            self.most_repeated_result = max(result_counts, key=lambda k: result_counts[k])
+            self.max_identical_results = result_counts[self.most_repeated_result]
+        else:
+            self.most_repeated_result = None
+            self.max_identical_results = 0
+        # Exploration-spam signal: how many of the recent shell commands
+        # were read-only (ls/cat/find/...) vs anything that changes state.
+        self.readonly_command_count = 0
+        self.mutating_command_count = 0
+        try:
+            from app.domain.services.manus_registry.trace import (
+                shell_command_read_only as _ro,
+            )
+            for tool_name, params in self.recent_shell_calls:
+                raw = str(params.get("command") or params.get("cmd") or "")
+                if _ro(raw):
+                    self.readonly_command_count += 1
+                else:
+                    self.mutating_command_count += 1
+        except Exception:  # noqa: BLE001 — nudge layer must never crash
+            pass
 
     # ── nudges ─────────────────────────────────────────────────────────
 
@@ -238,7 +278,7 @@ class ActionLoopDetector:
         # Coarse command-family focus: syntactic variants of the same
         # failing binary (the prisma-style spiral) never trip the exact
         # hash counter — this catches them anyway.
-        if self.max_command_focus >= 10:
+        if self.max_command_focus >= 8:
             messages.append(
                 f"COMMAND-FOCUS ALERT: {self.max_command_focus} of your "
                 f"last {len(self.recent_command_keys)} shell commands are "
@@ -248,7 +288,7 @@ class ActionLoopDetector:
                 "retrying; re-read the skill's prescribed approach, switch "
                 "method, or conclude and report the blocker honestly."
             )
-        elif self.max_command_focus >= 6:
+        elif self.max_command_focus >= 5:
             messages.append(
                 f"COMMAND-FOCUS WARNING: {self.max_command_focus} of your "
                 f"last {len(self.recent_command_keys)} shell commands are "
@@ -257,6 +297,37 @@ class ActionLoopDetector:
                 "server, missing daemon, wrong stack for this sandbox), no "
                 "variant of the command will fix it — check the skill's "
                 "prescribed approach or report the blocker."
+            )
+
+        # Window-scoped result stagnation: the same output keeps coming
+        # back even when read-only probes sit between the attempts.
+        if (
+            self.max_identical_results >= 4
+            and self.max_identical_results > self.consecutive_identical_results + 1
+        ):
+            messages.append(
+                f"OUTPUT STAGNATION: {self.max_identical_results} of your "
+                f"last {len(self.recent_result_hashes)} tool results are "
+                "identical — the interleaved commands in between produced "
+                "no new information either. You are circling, not "
+                "progressing. Act on what you already have: make a "
+                "decision, change the world (write/install/build), or "
+                "conclude the step."
+            )
+
+        # Exploration spam: long run of read-only shell commands with no
+        # mutating action between them (the ls/find/cat treadmill).
+        if (
+            self.readonly_command_count >= 10
+            and self.mutating_command_count == 0
+            and len(self.recent_shell_calls) >= 10
+        ):
+            messages.append(
+                f"EXPLORATION SPAM: your last {len(self.recent_shell_calls)} "
+                "shell commands were ALL read-only (ls/find/cat/...). "
+                "Re-observing the same state cannot advance the goal — you "
+                "already have the map. Use it: write the code, run the "
+                "build, make the change the step actually asks for."
             )
 
         if messages:

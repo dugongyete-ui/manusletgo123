@@ -434,11 +434,24 @@ def test_scenario_max_steps_wall_clock():
 
 def test_scenario_repeated_call_loop_guard():
     """repeated_call → loop_guard_stop: the same (tool,args) hash beyond
-    max_identical_tool_calls produces a LOOP_DETECTED stop payload."""
+    max_identical_tool_calls produces a LOOP_DETECTED stop payload.
+
+    Updated semantics (Codex/Claude-Code harness discipline): the guard is
+    outcome-aware and mutation-aware — two identical calls with the SAME
+    outcome are allowed, the third is blocked; browser_view is exempt
+    (observation legitimately repeats)."""
     safety = LoopSafety()
-    h = arguments_hash("browser_view", {"brief": "b"})
-    first = safety.check_before_execute("browser_view", h)
-    assert first is None  # 1st call allowed (streak=1 < limit=2)
-    second = safety.check_before_execute("browser_view", h)
-    assert second is not None  # 2nd identical call hits the limit → stop
-    assert (second.get("error") or {}).get("code") == LOOP_DETECTED
+    args = {"brief": "b", "index": 1}
+    h = arguments_hash("browser_click", args)
+    assert safety.check_before_execute("browser_click", h, args) is None  # 1st
+    safety.record_result("browser_click", h, False, "EXECUTION_ERROR", "stale index", arguments=args)
+    assert safety.check_before_execute("browser_click", h, args) is None  # 2nd allowed
+    safety.record_result("browser_click", h, False, "EXECUTION_ERROR", "stale index", arguments=args)
+    third = safety.check_before_execute("browser_click", h, args)         # 3rd blocked
+    assert third is not None
+    assert (third.get("error") or {}).get("code") == LOOP_DETECTED
+
+    # observation exemption: identical browser_view calls are never blocked
+    hv = arguments_hash("browser_view", {"brief": "b"})
+    for _ in range(4):
+        assert safety.check_before_execute("browser_view", hv, {"brief": "b"}) is None

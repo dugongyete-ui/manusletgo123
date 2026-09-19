@@ -206,13 +206,22 @@ def test_browser_tracker_state_transitions():
 # ── agent-orchestrator loop safety (contract limits) ────────────────────────
 
 def test_loop_safety_identical_call_limit(monkeypatch):
+    """Contract max_identical_calls=2: TWO identical calls with the same
+    outcome are allowed, the THIRD is blocked. Outcome recording is part
+    of the semantics — a call whose outcome CHANGED between attempts is
+    progress, never a loop (the old consecutive-only counter blocked the
+    2nd attempt blindly and was laundered by any interleaved probe)."""
     from app.core.config import get_settings
     settings = get_settings()
     monkeypatch.setattr(settings, "manus_max_identical_calls", 2)
     safety = LoopSafety()
     h = arguments_hash("browser_click", {"index": 1})
-    assert safety.check_before_execute("browser_click", h) is None  # 1st
-    blocked = safety.check_before_execute("browser_click", h)       # 2nd
+    args = {"index": 1}
+    assert safety.check_before_execute("browser_click", h, args) is None  # 1st
+    safety.record_result("browser_click", h, False, "EXECUTION_ERROR", "stale index", arguments=args)
+    assert safety.check_before_execute("browser_click", h, args) is None  # 2nd allowed
+    safety.record_result("browser_click", h, False, "EXECUTION_ERROR", "stale index", arguments=args)
+    blocked = safety.check_before_execute("browser_click", h, args)       # 3rd blocked
     assert blocked is not None
     assert blocked["error"]["code"] == "LOOP_DETECTED"
 
