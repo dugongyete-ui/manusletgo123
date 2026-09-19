@@ -48,30 +48,17 @@ class Settings(BaseSettings):
     # Selects WHICH model-provider adapter builds the LLM client used by the
     # existing agent runtime (PlanActFlow / agents / tools / events are all
     # provider-agnostic and stay untouched).
-    #   "existing"  — current OpenAI-compatible gateway (default, unchanged)
-    #   "anthropic" — Anthropic Messages API server-side adapter
-    #                 (langchain-anthropic / ChatAnthropic; NO CLI subprocess)
-    # Unknown values safely fall back to "existing". Rollback = flip the env
-    # var back — no code change needed.
+    #   "existing" — the configured OpenAI-compatible gateway (default,
+    #                unchanged). In this deployment that gateway is NVIDIA NIM
+    #                (API_BASE=https://integrate.api.nvidia.com/v1 +
+    #                MODEL_NAME=nvidia/…), i.e. the model already in use.
+    # Unknown values safely fall back to "existing". The AgentProvider
+    # protocol (agents/providers.py) is the extension point for adding a
+    # future adapter — per project decision the Anthropic adapter was removed
+    # and the deployment standardizes on the NVIDIA model.
     # env var: AGENT_PROVIDER
     agent_provider: str = "existing"
 
-    # Anthropic adapter configuration (only read when AGENT_PROVIDER=anthropic).
-    # The API key NEVER reaches logs, SSE events, the browser, or the database.
-    # env var: ANTHROPIC_API_KEY
-    anthropic_api_key: str | None = None
-    # env var: ANTHROPIC_MODEL
-    anthropic_model: str = "claude-sonnet-4-5"
-    # Optional custom gateway/proxy base URL. Empty = official API endpoint.
-    # env var: ANTHROPIC_BASE_URL
-    anthropic_base_url: str | None = None
-    # Anthropic requires an explicit output budget per request.
-    # env var: ANTHROPIC_MAX_TOKENS
-    anthropic_max_tokens: int = 8192
-    # None = inherit the global TEMPERATURE setting.
-    # env var: ANTHROPIC_TEMPERATURE
-    anthropic_temperature: float | None = None
-    
     # MongoDB configuration
     mongodb_uri: str = "mongodb://localhost:27017"
     mongodb_database: str = "dzeck"

@@ -1,12 +1,13 @@
 """Tests — provider binding guard + event-contract & no-CLI guarantees.
 
 Acceptance criteria covered here:
-- ``response_format`` never reaches the Anthropic adapter (SDK would 400);
-- the OpenAI-compatible path keeps receiving it (regression guard);
+- the OpenAI-compatible path (NVIDIA NIM gateway) keeps receiving
+  ``response_format`` (regression guard);
 - no provider spawns an interactive CLI (e.g. ``claude``) per request;
 - the SSE event contract is untouched by the provider seam (the provider
   only swaps the model layer — events keep flowing through the same
-  AgentEvent union the frontend consumes).
+  AgentEvent union the frontend consumes);
+- provider selection never logs credentials.
 """
 
 import inspect
@@ -27,7 +28,6 @@ from app.domain.services.agents.provider_factory import (
 @pytest.fixture(autouse=True)
 def _clean(monkeypatch):
     monkeypatch.delenv("AGENT_PROVIDER", raising=False)
-    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
     reset_agent_provider_cache()
     get_settings.cache_clear()
     yield
@@ -42,31 +42,9 @@ def test_bind_kwargs_openai_keeps_response_format(monkeypatch):
     assert kwargs == {"response_format": {"type": "json"}, "tool_choice": "auto"}
 
 
-def test_bind_kwargs_anthropic_drops_response_format(monkeypatch):
-    monkeypatch.setenv("AGENT_PROVIDER", "anthropic")
-    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test")
-    reset_agent_provider_cache()
-    kwargs = _provider_bind_kwargs({"type": "json"}, "auto")
-    assert "response_format" not in kwargs
-    assert kwargs["tool_choice"] == "auto"
-
-
 def test_bind_kwargs_none_values_dropped(monkeypatch):
     reset_agent_provider_cache()
     assert _provider_bind_kwargs(None, None) == {}
-
-
-def test_history_projection_anthropic(monkeypatch):
-    from langchain_core.messages import HumanMessage
-
-    monkeypatch.setenv("AGENT_PROVIDER", "anthropic")
-    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test")
-    reset_agent_provider_cache()
-    out = _provider_history([
-        HumanMessage(content=""),
-        HumanMessage(content="halo"),
-    ])
-    assert len(out) == 1  # empty message dropped for anthropic
 
 
 def test_history_projection_default_passthrough(monkeypatch):
@@ -118,12 +96,11 @@ def test_event_contract_untouched_by_provider_seam():
 
 
 def test_no_api_key_in_provider_module_logs(monkeypatch, caplog):
-    """Selecting the anthropic provider must never log the API key."""
+    """Provider selection must never log the API key."""
     import logging
 
-    monkeypatch.setenv("AGENT_PROVIDER", "anthropic")
-    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-secret-never-log")
+    monkeypatch.setenv("API_KEY", "sk-secret-never-log-123")
     with caplog.at_level(logging.DEBUG, logger="app.domain.services.agents.provider_factory"):
         reset_agent_provider_cache()
         get_agent_provider()
-    assert "sk-ant-secret-never-log" not in caplog.text
+    assert "sk-secret-never-log-123" not in caplog.text

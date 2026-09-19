@@ -219,11 +219,10 @@ def _build_chat_model(prefer_fallback: bool = False):
 
     The provider abstraction keeps the existing runtime (flows, agents,
     tools, events) untouched — only the model layer is swapped:
-    - ``existing``  (default) → the original OpenAI-compatible path above.
-    - ``anthropic``           → Anthropic Messages API (langchain-anthropic,
-                                server-side; NEVER a CLI subprocess).
+    - ``existing`` (default) → the original OpenAI-compatible path above
+      (in this deployment: the NVIDIA NIM gateway from API_BASE/MODEL_NAME).
     Falls back to the existing path when the selected provider is not
-    usable (e.g. missing ANTHROPIC_API_KEY) so chat can never break.
+    usable so chat can never break.
     """
     from app.domain.services.agents.provider_factory import get_agent_provider
 
@@ -256,9 +255,10 @@ def _provider_history(messages) -> list:
 def _provider_bind_kwargs(response_format, tool_choice) -> dict:
     """Bind kwargs filtered by the provider's capability contract.
 
-    ``response_format`` is an OpenAI-only concept — the Anthropic adapter
-    (supports_response_format=False) must never receive it or the SDK
-    rejects the request. ``tool_choice`` is provider-portable.
+    ``response_format`` is an OpenAI-only concept — any future adapter that
+    does not support it (``supports_response_format=False``) must never
+    receive it or the SDK rejects the request. ``tool_choice`` is
+    provider-portable. The default provider (NVIDIA gateway) supports it.
     """
     from app.domain.services.agents.provider_factory import get_agent_provider
 
@@ -1567,13 +1567,11 @@ class BaseAgent(ABC):
         chain = _build_chain()
 
         # Provider-neutral error vocabulary (providers.ProviderErrorKind).
-        # The OpenAI-compatible adapter returns the original openai.* types,
-        # the Anthropic adapter returns anthropic.* types — the ladder below
-        # (auth → fallback swap, transient → back-off, rate limit → patient
-        # rotation, status → compaction/rotation) keeps identical semantics
-        # for both. anthropic.NotFoundError intentionally lands in the status
-        # branch (fatal unless limit-like) — the "No endpoints found" pool
-        # recycling quirk is OpenRouter-specific.
+        # Adapters return exceptions classified into the SAME kinds the
+        # ladder below handles (auth → fallback swap, transient → back-off,
+        # rate limit → patient rotation, status → compaction/rotation) —
+        # semantics stay identical no matter which adapter is active. The
+        # "No endpoints found" pool recycling quirk is OpenRouter-specific.
         from app.domain.services.agents.provider_factory import get_agent_provider
 
         _turn_provider = get_agent_provider()

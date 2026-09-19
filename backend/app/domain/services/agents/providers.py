@@ -5,17 +5,22 @@ official Claude Code repository audit: the agent loop stays tool-use driven,
 permission-gated and provider-agnostic; only the MODEL LAYER is swapped.
 
 Design constraints (see worklog + claude-code-reference-audit.md):
-- ``existing`` (OpenAI-compatible gateway) MUST remain the default and behave
-  byte-for-byte like the pre-abstraction code path.
-- ``anthropic`` uses the Anthropic Messages API SERVER-SIDE via
-  ``langchain-anthropic`` (ChatAnthropic). The Claude Code CLI and the
-  ``claude-agent-sdk`` wrapper are NEVER spawned — web backend multi-user
-  requires a programmatically controlled API, not a CLI subprocess.
+- ``existing`` (the configured OpenAI-compatible gateway — in this deployment
+  the NVIDIA NIM endpoint set via API_BASE/MODEL_NAME) MUST remain the default
+  and behave byte-for-byte like the pre-abstraction code path.
+- The Claude Code CLI and the ``claude-agent-sdk`` wrapper are NEVER spawned —
+  a web backend with multiple users requires a programmatically controlled
+  server-side API, not a CLI subprocess.
 - No API key may ever reach logs, SSE events, the browser, or the database.
-- Error translation is provider-neutral: both adapters classify exceptions
-  into the SAME kinds the existing retry ladder already handles, so the
-  fallback rotation / patient rate-limit loop / context-overflow compaction
-  keep working no matter which provider is selected.
+- Error translation is provider-neutral: adapters classify exceptions into
+  the SAME kinds the existing retry ladder already handles, so the fallback
+  rotation / patient rate-limit loop / context-overflow compaction keep
+  working no matter which provider is selected.
+
+The ``AgentProvider`` protocol is the single extension point for adding a
+future model adapter; per project decision the Anthropic adapter was removed
+(the deployment standardizes on the NVIDIA gateway already configured in
+``config.py`` / ``.env``).
 """
 
 from __future__ import annotations
@@ -23,9 +28,6 @@ from __future__ import annotations
 import logging
 from enum import Enum
 from typing import Any, List, Optional, Protocol, Tuple, runtime_checkable
-
-import httpx
-from langchain.chat_models import init_chat_model
 
 from app.core.config import get_settings
 
@@ -62,7 +64,8 @@ class AgentProvider(Protocol):
     @property
     def supports_response_format(self) -> bool:
         """Whether ``bind(response_format=...)`` is supported (OpenAI-style
-        JSON mode). Anthropic rejects it — the guard must drop the key."""
+        JSON mode). Strict providers without it must never receive the key —
+        the guard drops it (the default NVIDIA gateway supports it)."""
         ...
 
     def build_chat_model(self, prefer_fallback: bool = False) -> Optional[Any]:
@@ -97,7 +100,9 @@ class AgentProvider(Protocol):
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# OpenAI-compatible adapter (the pre-existing behaviour, unchanged)
+# OpenAI-compatible adapter (the pre-existing behaviour, unchanged).
+# In this deployment the gateway is NVIDIA NIM (integrate.api.nvidia.com) —
+# configured through the standard API_BASE / MODEL_NAME / API_KEY settings.
 # ─────────────────────────────────────────────────────────────────────────────
 class OpenAICompatProvider:
     """The original model construction path, moved verbatim behind the
@@ -205,116 +210,3 @@ class OpenAICompatProvider:
                 "try again", "provider returned error", "no endpoints found",
             )
         )
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# Anthropic adapter — server-side Messages API (NO CLI, NO subprocess)
-# ─────────────────────────────────────────────────────────────────────────────
-class AnthropicProvider:
-    """Anthropic Messages API adapter built on ``langchain-anthropic``.
-
-    The provider keeps every runtime guarantee of the existing system: tools
-    still flow through ManusGate / the registry / the sandbox, events still
-    follow the SSE contract, cancellation stays asyncio-native. Only the
-    model client and its exception vocabulary change.
-    """
-
-    name = "anthropic"
-    supports_response_format = False  # Anthropic has no OpenAI json_mode key
-
-    def __init__(self) -> None:
-        self._openai_compat = OpenAICompatProvider()
-
-    # ── model construction ──────────────────────────────────────────────────
-    def build_chat_model(self, prefer_fallback: bool = False) -> Optional[Any]:
-        settings = get_settings()
-        if prefer_fallback:
-            # The secondary provider is the OpenAI-compatible fallback
-            # (FALLBACK_* / z.ai internal API) regardless of the primary —
-            # documented behaviour, keeps the rotation pool intact.
-            return self._openai_compat.build_chat_model(prefer_fallback=True)
-        if not settings.anthropic_api_key:
-            return None  # factory falls back to "existing" — chat never breaks
-        kwargs: dict = {
-            "model": settings.anthropic_model,
-            "model_provider": "anthropic",
-            "api_key": settings.anthropic_api_key,
-            "max_tokens": settings.anthropic_max_tokens,
-            "temperature": (
-                settings.anthropic_temperature
-                if settings.anthropic_temperature is not None
-                else settings.temperature
-            ),
-        }
-        if settings.anthropic_base_url:
-            kwargs["base_url"] = settings.anthropic_base_url
-            kwargs["http_client"] = httpx.Client(verify=settings.ssl_verify)
-            kwargs["http_async_client"] = httpx.AsyncClient(verify=settings.ssl_verify)
-        return init_chat_model(**kwargs)
-
-    # ── exception vocabulary ────────────────────────────────────────────────
-    @staticmethod
-    def _anthropic():
-        try:
-            import anthropic
-
-            return anthropic
-        except ImportError:  # pragma: no cover — dependency is declared
-            logger.warning("anthropic package unavailable — treating as FATAL")
-            return None
-
-    def transient_error_types(self) -> Tuple[type, ...]:
-        sdk = self._anthropic()
-        if sdk is None:
-            return ()
-        return (
-            sdk.InternalServerError,
-            sdk.APIConnectionError,
-            sdk.APITimeoutError,
-            sdk.RateLimitError,
-        )
-
-    def auth_error_types(self) -> Tuple[type, ...]:
-        sdk = self._anthropic()
-        if sdk is None:
-            return ()
-        return (sdk.AuthenticationError, sdk.PermissionDeniedError)
-
-    def status_error_types(self) -> Tuple[type, ...]:
-        sdk = self._anthropic()
-        if sdk is None:
-            return ()
-        return (sdk.APIStatusError, sdk.NotFoundError)
-
-    def classify_exception(self, exc: BaseException) -> ProviderErrorKind:
-        sdk = self._anthropic()
-        if sdk is not None:
-            if isinstance(exc, (sdk.AuthenticationError, sdk.PermissionDeniedError)):
-                return ProviderErrorKind.AUTH
-            if isinstance(exc, sdk.RateLimitError):
-                return ProviderErrorKind.RATE_LIMIT
-            if isinstance(
-                exc,
-                (sdk.InternalServerError, sdk.APIConnectionError, sdk.APITimeoutError),
-            ):
-                return ProviderErrorKind.TRANSIENT
-        if self._openai_compat._is_context_overflow(exc):
-            return ProviderErrorKind.CONTEXT_OVERFLOW
-        if sdk is not None and isinstance(exc, sdk.APIStatusError):
-            status = getattr(exc, "status_code", None)
-            if status == 402 or self._openai_compat._is_limit_message(exc):
-                return ProviderErrorKind.RATE_LIMIT
-            return ProviderErrorKind.FATAL
-        if self._openai_compat._is_limit_message(exc):
-            return ProviderErrorKind.RATE_LIMIT
-        return ProviderErrorKind.FATAL
-
-    def describe(self) -> dict:
-        settings = get_settings()
-        return {
-            "provider": self.name,
-            "model": settings.anthropic_model,
-            "transport": "anthropic-messages-api (server-side, no CLI)",
-            "base_url_configured": bool(settings.anthropic_base_url),
-            "fallback_pool": "openai-compatible",
-        }

@@ -24,8 +24,6 @@ dependencies = [
     # ── AI / LLM ─────────────────────────────────────────────────────────────
     "langchain>=1.0.7",
     "langchain-classic>=1.0.7",
-    "langchain-anthropic>=1.0.0",
-    "anthropic>=0.76.0",
     "langchain-openai>=1.0.3",
     "openai>=2.8.0",
     # ── Sandbox / browser / search ───────────────────────────────────────────

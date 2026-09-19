@@ -122,46 +122,41 @@ client layer is swapped.
 
 | `AGENT_PROVIDER` | Adapter | Transport | Default |
 |---|---|---|---|
-| `existing` | `OpenAICompatProvider` — the original gateway (OpenAI-compatible APIs: NVIDIA NIM, OpenRouter, vLLM, z.ai fallback, …) | server-side HTTP | ✅ default |
-| `anthropic` | `AnthropicProvider` — Anthropic Messages API via `langchain-anthropic` (ChatAnthropic) | server-side HTTP (`/v1/messages`) | opt-in |
+| `existing` | `OpenAICompatProvider` — the configured OpenAI-compatible gateway. **In this deployment: NVIDIA NIM** (`API_BASE=https://integrate.api.nvidia.com/v1`, `MODEL_NAME=nvidia/…`) | server-side HTTP | ✅ default |
 
-**The Anthropic adapter never spawns the Claude Code CLI** (or any CLI
-subprocess) per request — the web backend requires a programmatically
-controlled server-side API. This is enforced by a test
-(`tests/test_provider_binding_and_contract.py`).
+**No adapter ever spawns the Claude Code CLI** (or any CLI subprocess) per
+request — the web backend requires a programmatically controlled server-side
+API. This is enforced by a test (`tests/test_provider_binding_and_contract.py`).
 
-### Running with the existing provider (default)
+Per project decision the **Anthropic adapter was removed** — the deployment
+standardizes on the NVIDIA model already configured via `API_KEY` / `API_BASE`
+/ `MODEL_NAME`. The `AgentProvider` protocol (`agents/providers.py`) remains
+the single extension point for adding a future adapter (rollback to an
+alternative stays a one-env-var flip).
+
+### Running with the existing provider (default — NVIDIA)
 
 ```bash
 AGENT_PROVIDER=existing   # or simply unset — identical behaviour
-```
-
-### Running with the Anthropic provider
-
-```bash
-AGENT_PROVIDER=anthropic
-ANTHROPIC_API_KEY=sk-ant-...        # never logged, never sent to the browser
-ANTHROPIC_MODEL=claude-sonnet-4-5   # optional, default claude-sonnet-4-5
-# ANTHROPIC_BASE_URL=...            # optional gateway/proxy
-# ANTHROPIC_MAX_TOKENS=8192         # optional output budget
-# ANTHROPIC_TEMPERATURE=            # optional; defaults to TEMPERATURE
+# The model itself is configured through the standard settings:
+# API_KEY=..., API_BASE=https://integrate.api.nvidia.com/v1, MODEL_NAME=nvidia/...
 ```
 
 Behaviour notes:
 
-- Missing `ANTHROPIC_API_KEY` → the factory **falls back to `existing`**
-  with a warning (chat never breaks).
-- `response_format` (OpenAI JSON mode) is automatically dropped for the
-  Anthropic adapter (`supports_response_format=False`).
+- Unknown `AGENT_PROVIDER` values (including the removed `anthropic`) safely
+  **fall back to `existing`** with a warning (chat never breaks).
+- `response_format` (OpenAI JSON mode) is supported by the default adapter
+  (`supports_response_format=True`) and stays filtered by the capability
+  guard for any future adapter.
 - Provider errors are classified into a neutral vocabulary
   (`ProviderErrorKind`: AUTH / RATE_LIMIT / TRANSIENT / CONTEXT_OVERFLOW /
   FATAL) so the existing retry ladder — fallback rotation, patient 429
   waiting, context-overflow emergency compaction — works identically.
-- The secondary (fallback) provider pool remains the OpenAI-compatible one
-  for both adapters.
-- Session history is projected to the provider's protocol shape
-  (`history_adapter.py`): a passthrough for `existing`, protocol-safe
-  sanitisation for `anthropic`.
+- The secondary (fallback) provider pool remains the OpenAI-compatible one.
+- Session history is projected through `history_adapter.py` — a passthrough
+  for the current provider (the NVIDIA gateway consumes LangChain history
+  as-is).
 - **Rollback**: flip `AGENT_PROVIDER=existing` and restart. No code change.
 
 ## MCP (Model Context Protocol) — active by default

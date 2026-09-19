@@ -1,12 +1,17 @@
 """Agent provider factory — selects the model-provider adapter.
 
 ``AGENT_PROVIDER`` (env / Settings):
-- ``existing``  → :class:`OpenAICompatProvider` (DEFAULT, unchanged behaviour)
-- ``anthropic`` → :class:`AnthropicProvider`   (server-side Messages API)
+- ``existing`` → :class:`OpenAICompatProvider` (DEFAULT, unchanged behaviour)
+
+In this deployment the ``existing`` adapter talks to the configured
+OpenAI-compatible gateway — the NVIDIA NIM endpoint set via
+``API_BASE`` / ``MODEL_NAME`` / ``API_KEY`` in config.py / .env.
 
 Any unknown/unconfigured value safely degrades to ``existing`` — the chat
-pipeline can never break because of a typo in the environment. Rollback to
-the previous behaviour is a single environment-variable flip.
+pipeline can never break because of a typo in the environment. The
+``AgentProvider`` protocol stays the single extension point for a future
+model adapter; per project decision the Anthropic adapter was removed
+(rollback to any future alternative remains a single env-var flip).
 """
 
 from __future__ import annotations
@@ -17,13 +22,12 @@ import threading
 from app.core.config import get_settings
 from app.domain.services.agents.providers import (
     AgentProvider,
-    AnthropicProvider,
     OpenAICompatProvider,
 )
 
 logger = logging.getLogger(__name__)
 
-_VALID_PROVIDERS = ("existing", "anthropic")
+_VALID_PROVIDERS = ("existing",)
 
 _cache_lock = threading.Lock()
 _cached_name: str | None = None
@@ -52,20 +56,7 @@ def get_agent_provider() -> AgentProvider:
         if _cached_provider is not None and _cached_name == name:
             return _cached_provider
 
-        provider: AgentProvider
-        if name == "anthropic":
-            anthropic = AnthropicProvider()
-            if not get_settings().anthropic_api_key:
-                logger.warning(
-                    "AGENT_PROVIDER=anthropic but ANTHROPIC_API_KEY is not "
-                    "configured — falling back to the 'existing' provider. "
-                    "Set ANTHROPIC_API_KEY to enable the Anthropic adapter."
-                )
-                provider = OpenAICompatProvider()
-            else:
-                provider = anthropic
-        else:
-            provider = OpenAICompatProvider()
+        provider = OpenAICompatProvider()
 
         # Log safe metadata only — never credentials.
         logger.info("Agent provider selected: %s", provider.describe())
