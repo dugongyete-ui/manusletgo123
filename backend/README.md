@@ -123,16 +123,16 @@ client layer is swapped.
 | `AGENT_PROVIDER` | Adapter | Transport | Default |
 |---|---|---|---|
 | `existing` | `OpenAICompatProvider` — the configured OpenAI-compatible gateway. **In this deployment: NVIDIA NIM** (`API_BASE=https://integrate.api.nvidia.com/v1`, `MODEL_NAME=nvidia/…`) | server-side HTTP | ✅ default |
+| `opencode_adapter` | Native OpenCode-inspired policy/event adapter over the same existing model seam and agent loop | server-side HTTP | opt-in |
 
 **No adapter ever spawns the Claude Code CLI** (or any CLI subprocess) per
 request — the web backend requires a programmatically controlled server-side
 API. This is enforced by a test (`tests/test_provider_binding_and_contract.py`).
 
-Per project decision the **Anthropic adapter was removed** — the deployment
-standardizes on the NVIDIA model already configured via `API_KEY` / `API_BASE`
-/ `MODEL_NAME`. The `AgentProvider` protocol (`agents/providers.py`) remains
-the single extension point for adding a future adapter (rollback to an
-alternative stays a one-env-var flip).
+OpenCode is not launched as a TUI, CLI subprocess, or sidecar. The adapter
+uses the Python/FastAPI runtime already in this project. It does not copy
+OpenCode source and does not create a second session, storage, or tool loop.
+The existing Manus registry remains the single tool boundary.
 
 ### Running with the existing provider (default — NVIDIA)
 
@@ -158,6 +158,38 @@ Behaviour notes:
   for the current provider (the NVIDIA gateway consumes LangChain history
   as-is).
 - **Rollback**: flip `AGENT_PROVIDER=existing` and restart. No code change.
+
+### OpenCode-inspired mode policy
+
+`AGENT_MODE=build` is the default and preserves the current behavior: every
+tool still goes through the existing registry, sandbox, timeout, retry, loop
+guard, permission, and confirmation flow.
+
+`AGENT_MODE=plan` is a conservative read-only allowlist. It permits inspection
+tools such as `file_read`, `file_list`, search, browser observation, and status
+checks. File writes, shell mutation, browser actions, MCP mutation, artifact
+creation, and other unlisted tools return an actionable `PERMISSION_DENIED`
+ToolResult before dispatch. This policy is enforced in the shared agent
+dispatch path, so it also protects legacy tools that are not registry entries.
+
+### Event mapping
+
+The optional `OpenCodeEventNormalizer` maps OpenCode-shaped events into the
+existing SSE contract without changing frontend types:
+
+| OpenCode event family | Existing event |
+|---|---|
+| `message.part.updated`, `message.delta` | `message_chunk` |
+| `message.updated` | `message` |
+| `tool.execute.before` / `.after` | `tool` (`calling` / `called`) |
+| `plan.updated` / `todo.updated` | `plan` |
+| `step.*` | `step` |
+| `permission.asked` | `wait` |
+| `session.error` | `error` |
+| `session.idle` / `session.done` | `done` |
+
+Unknown optional events are ignored. Secrets are redacted before normalized
+tool arguments/results cross the event boundary.
 
 ## MCP (Model Context Protocol) — active by default
 

@@ -10,6 +10,7 @@ from app.domain.services.agents.provider_factory import (
 from app.domain.services.agents.providers import (
     AgentProvider,
     OpenAICompatProvider,
+    OpenCodeAdapterProvider,
 )
 
 
@@ -35,6 +36,15 @@ def test_default_provider_is_existing():
 def test_provider_satisfies_protocol():
     """The adapter honours the AgentProvider runtime protocol."""
     assert isinstance(OpenAICompatProvider(), AgentProvider)
+
+
+def test_opencode_adapter_is_selectable_without_replacing_existing(monkeypatch):
+    monkeypatch.setenv("AGENT_PROVIDER", "opencode_adapter")
+    provider = get_agent_provider()
+    assert isinstance(provider, OpenCodeAdapterProvider)
+    assert isinstance(provider, AgentProvider)
+    assert provider.name == "opencode_adapter"
+    assert provider.describe()["adapter"] == "opencode-inspired-native"
 
 
 def test_removed_anthropic_value_degrades_to_existing(monkeypatch):
@@ -78,3 +88,18 @@ def test_existing_build_model_delegates_verbatim(monkeypatch):
     assert provider.build_chat_model(prefer_fallback=True) == "EXISTING-SENTINEL"
     assert provider.build_chat_model(prefer_fallback=False) == "EXISTING-SENTINEL"
     assert calls == [True, False]
+
+
+def test_opencode_adapter_delegates_model_construction(monkeypatch):
+    import app.domain.services.agents.base as base_mod
+
+    calls = []
+
+    def _fake_existing(prefer_fallback=False):
+        calls.append(prefer_fallback)
+        return "EXISTING-SENTINEL"
+
+    monkeypatch.setattr(base_mod, "_build_existing_chat_model", _fake_existing)
+    provider = OpenCodeAdapterProvider()
+    assert provider.build_chat_model(prefer_fallback=True) == "EXISTING-SENTINEL"
+    assert calls == [True]

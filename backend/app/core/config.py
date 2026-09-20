@@ -59,6 +59,12 @@ class Settings(BaseSettings):
     # env var: AGENT_PROVIDER
     agent_provider: str = "existing"
 
+    # Generic OpenCode-inspired policy mode.  "build" keeps the current
+    # behavior; "plan" is enforced as a read-only allowlist before any tool
+    # dispatch.  This is policy, not a second agent engine.
+    # env var: AGENT_MODE
+    agent_mode: str = "build"
+
     # MongoDB configuration
     mongodb_uri: str = "mongodb://localhost:27017"
     mongodb_database: str = "dzeck"

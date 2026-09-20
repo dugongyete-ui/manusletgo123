@@ -1,6 +1,41 @@
 # Worklog
 
 ---
+
+## OpenCode internal adaptation — 2026-09-21
+
+- Audit reference: official OpenCode repository, branch `dev`, commit
+  `d870e22`, cloned read-only to `/tmp/opencode-reference`. The audit found a
+  TypeScript/Bun runtime and JavaScript SDK/server lifecycle, but no Python
+  embedding API suitable for the existing FastAPI multi-user runtime.
+- Strategy selected: **internal adaptation**. No OpenCode CLI/TUI subprocess,
+  sidecar, copied source, second session store, or duplicate agent loop.
+- `AGENT_PROVIDER=existing` remains the default and keeps the original
+  OpenAI-compatible model construction. `AGENT_PROVIDER=opencode_adapter`
+  selects a native adapter over that same model seam and existing execution
+  pipeline. Rollback is one environment-variable change.
+- Added generic `AGENT_MODE=build|plan`. `build` keeps registry, sandbox,
+  permission, confirmation, timeout, retry, loop detection, cancellation, and
+  user isolation unchanged. `plan` uses a conservative read-only allowlist
+  before both registry and legacy dispatch.
+- Added an isolated event normalizer mapping OpenCode-style message, tool,
+  plan, step, permission, error, and session events to the existing SSE
+  contract. Frontend event types and persistence were not forked.
+- No new dependency, API key, frontend secret, or storage format was added.
+  No OpenCode source was copied, so no additional attribution notice is
+  required beyond this adaptation record.
+- Tests added for provider selection/delegation, secret-safe metadata, plan
+  mode denial, event normalization, event ordering fields, and unknown-event
+  tolerance. Results: new adapter/provider smoke tests `24 passed`; focused
+  provider/adapter/registry run `59 passed, 1 failed` on the pre-existing
+  local `.env` contract assertion (`MAX_STEPS=0` is expected but the ignored
+  file still contains the old commented setting). The environment-secrets
+  guard correctly prevented editing that file. Syntax/import checks passed;
+  frontend preview loaded normally. The managed full pytest workflow was still
+  running in an older browser teardown state without new output, so no full
+  suite pass is claimed.
+
+---
 Task ID: 1
 Agent: Super Z (main agent)
 Task: Clone repo dugongyete-ui/manusletgo123 (AI Dzeck — clone Manus.im), install dependencies via install.sh, adaptasi bug agar jalan di z.ai sandbox, jalankan server, audit keseluruhan project.

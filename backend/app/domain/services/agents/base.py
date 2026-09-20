@@ -1137,9 +1137,19 @@ class BaseAgent(ABC):
                 # preserved) or None for platform-native tools.
                 try:
                     _gate_brief, _gate_args = _take_brief(dict(function_args or {}))
-                    _gate_message = await self._manus_process_call(
-                        function_name, tool_call_id, _gate_args, _gate_brief or ""
+                    from app.domain.services.agents.opencode_adapter import (
+                        is_read_only_mode,
+                        is_read_only_tool,
+                        readonly_tool_message,
                     )
+                    if is_read_only_mode() and not is_read_only_tool(function_name):
+                        _gate_message = readonly_tool_message(
+                            function_name, tool_call_id
+                        )
+                    else:
+                        _gate_message = await self._manus_process_call(
+                            function_name, tool_call_id, _gate_args, _gate_brief or ""
+                        )
                 except Exception:  # noqa: BLE001 — never break the loop from the gate
                     logger.exception("gate dispatch crashed for %s", function_name)
                     _gate_message = None

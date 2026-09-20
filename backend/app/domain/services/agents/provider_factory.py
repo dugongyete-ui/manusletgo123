@@ -23,11 +23,12 @@ from app.core.config import get_settings
 from app.domain.services.agents.providers import (
     AgentProvider,
     OpenAICompatProvider,
+    OpenCodeAdapterProvider,
 )
 
 logger = logging.getLogger(__name__)
 
-_VALID_PROVIDERS = ("existing",)
+_VALID_PROVIDERS = ("existing", "opencode_adapter")
 
 _cache_lock = threading.Lock()
 _cached_name: str | None = None
@@ -56,7 +57,11 @@ def get_agent_provider() -> AgentProvider:
         if _cached_provider is not None and _cached_name == name:
             return _cached_provider
 
-        provider = OpenAICompatProvider()
+        provider = (
+            OpenCodeAdapterProvider()
+            if name == "opencode_adapter"
+            else OpenAICompatProvider()
+        )
 
         # Log safe metadata only — never credentials.
         logger.info("Agent provider selected: %s", provider.describe())

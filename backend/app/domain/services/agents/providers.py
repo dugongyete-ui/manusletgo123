@@ -210,3 +210,27 @@ class OpenAICompatProvider:
                 "try again", "provider returned error", "no endpoints found",
             )
         )
+
+
+class OpenCodeAdapterProvider(OpenAICompatProvider):
+    """OpenCode-inspired adapter over the existing server-side model seam.
+
+    OpenCode itself is not embedded here.  Selecting this adapter keeps the
+    current LangChain model construction and error ladder, while enabling the
+    native plan-mode policy and event normalization without duplicating the
+    agent loop or bypassing the existing tool boundary.
+    """
+
+    name = "opencode_adapter"
+
+    def describe(self) -> dict:
+        from app.domain.services.agents.opencode_adapter import configured_agent_mode
+
+        metadata = super().describe()
+        metadata.update(
+            {
+                "adapter": "opencode-inspired-native",
+                "mode": configured_agent_mode(),
+            }
+        )
+        return metadata
