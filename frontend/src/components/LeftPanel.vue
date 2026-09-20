@@ -371,7 +371,10 @@ const fetchSessions = async () => {
 }
 
 const handleNewTaskClick = () => {
-  router.push('/')
+  // HomePage is the empty child route under /chat. Navigate there directly
+  // instead of relying on the root auth redirect, which can produce malformed
+  // deployment URLs when the redirect base is unavailable.
+  router.push('/chat')
 }
 
 const handleSessionDeleted = (sessionId: string) => {

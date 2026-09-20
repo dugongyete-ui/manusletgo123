@@ -26,7 +26,9 @@ const CommunityPage = () => import('./pages/CommunityPage.vue')
 
 // Create router
 export const router = createRouter({
-  history: createWebHistory(),
+  // The app is served from the deployment root. Passing the base explicitly
+  // prevents an undefined deployment base from leaking into generated URLs.
+  history: createWebHistory('/'),
   routes: [
     {
       path: '/',

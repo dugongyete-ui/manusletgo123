@@ -139,7 +139,10 @@ const handleSubmit = async () => {
     try {
       // Create new Agent — persona selection is backend-driven (no picker UI).
       const session = await createSession();
-      const sessionId = session.session_id;
+      const sessionId = session?.session_id?.trim();
+      if (!sessionId || sessionId === 'undefined' || sessionId === 'null') {
+        throw new Error('Create session response did not include a valid session ID');
+      }
 
       // Navigate to new route with session_id, passing initial message via state
       router.push({
