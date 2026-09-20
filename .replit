@@ -155,6 +155,30 @@ MODEL_NAME = "nvidia/nemotron-3-super-120b-a12b"
 MODEL_PROVIDER = "openai"
 TEMPERATURE = "0.7"
 MAX_TOKENS = "8000"
+# Agent provider and OpenCode-inspired policy.
+# existing is the default; opencode_adapter is the native Python adapter.
+AGENT_PROVIDER = "existing"
+# build = normal execution through all existing safety gates.
+# plan = conservative read-only tool allowlist.
+AGENT_MODE = "build"
+AGENT_FLOW_ENGINE = "langgraph"
+MAX_STEPS = "0"
+MAX_CONSECUTIVE_FAILURES = "10"
+NESTED_MAX_ITERATIONS = "0"
+AGENT_CONTEXT_SOFT_LIMIT_CHARS = "280000"
+AGENT_TOOL_RESULT_MAX_CHARS = "48000"
+EXTEND_SYSTEM_MESSAGE = ""
+# Manus registry/runtime safety contracts.
+MANUS_REGISTRY_ENABLED = "true"
+MANUS_MAX_IDENTICAL_CALLS = "2"
+MANUS_MAX_IDENTICAL_ERRORS = "3"
+MANUS_FAMILY_FAILURE_LIMIT = "3"
+MANUS_MAX_RETRIES_PER_CALL = "2"
+MANUS_CONFIRMATION_TTL_SECONDS = "600"
+MANUS_TASK_TIMEOUT_MS = "900000"
+MANUS_TOOL_TIMEOUT_SECONDS = "300"
+AGENT_CONTEXT_MAX_MESSAGES = "200"
+AGENT_DUPLICATE_MESSAGE_WINDOW_SECONDS = "120"
 VISION_MODEL_NAME = "meta/llama-3.2-11b-vision-instruct"
 VISION_MODEL_PROVIDER = "openai"
 VISION_API_BASE = "https://integrate.api.nvidia.com/v1"
@@ -171,15 +195,8 @@ CLAW_ENABLED = "false"
 LOG_LEVEL = "INFO"
 MCP_CONFIG_PATH = "/home/runner/workspace/mcp.json"
 SUMMARY_MODEL_NAME = "nvidia/nemotron-3-super-120b-a12b"
-MONGODB_URI = "mongodb+srv://galerizaki_db_user:wTkfzrqewY5qCxYG@cluster0.vmiek8b.mongodb.net/manus?retryWrites=true&w=majority"
-REDIS_PASSWORD = "dA82OZIdJg62zWqsPJ9sDNvgtpCKbAAs"
-JWT_SECRET_KEY = "vcyffuhduduffjdejieueueueueuu-#--$-#6#-super-secure"
-TAVILY_API_KEY = "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"
-VISION_API_KEY = "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"
-API_KEY = "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"
 SANDBOX_TTL_MINUTES = "30"
 BROWSER_ENGINE = "browser_use"
-PASSWORD_SALT = "manus-salt-2025"
 SHOW_GITHUB_BUTTON = "false"
 SANDBOX_CDP_URL = "http://localhost:8222"
 SANDBOX_BASE_URL = "http://localhost:8080"
@@ -187,11 +204,13 @@ SANDBOX_VNC_URL = "ws://localhost:5901"
 SANDBOX_DISPLAY_SIZE = "1280x1029"
 GITHUB_REPOSITORY_URL = "https://github.com/manusletgo123/dzeck"
 SSL_VERIFY = "false"
-GITHUB_TOKEN = "None"
-E2B_API_KEY = "./)e2b_964bede70ba199765e4a595b21500872375b03be"
 SANDBOX_PROVIDER = "replit"
 E2B_SANDBOX_TIMEOUT = "900"
 
 [postMerge]
 path = "scripts/post-merge.sh"
 timeoutMs = 120000
+
+# Sensitive values belong in Replit Secrets, not in this committed file:
+# API_KEY, VISION_API_KEY, TAVILY_API_KEY, MONGODB_URI, REDIS_PASSWORD,
+# JWT_SECRET_KEY, PASSWORD_SALT, E2B_API_KEY, SESSION_SECRET.
