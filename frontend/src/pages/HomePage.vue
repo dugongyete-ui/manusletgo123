@@ -118,8 +118,14 @@ onMounted(() => {
   hideFilePanel();
   const pending = localStorage.getItem(PENDING_KEY)
   if (pending) {
-    message.value = pending
     localStorage.removeItem(PENDING_KEY)
+    // Double-dispatch guard: remount / re-entry within 5 s must NOT fire the
+    // pending submit twice — each fire calls createSession → the reported
+    // "sesi terbaru ada 2" (duplicate recent sessions) bug.
+    const lastDispatch = Number(sessionStorage.getItem('dzeck_pending_dispatched') || 0)
+    if (Date.now() - lastDispatch < 5000) return
+    sessionStorage.setItem('dzeck_pending_dispatched', String(Date.now()))
+    message.value = pending
     setTimeout(() => {
       handleSubmit()
     }, 300)
@@ -148,6 +154,9 @@ const handleSubmit = async () => {
           }))
         }
       });
+      // Navigation succeeded — release the flag so HomePage stays usable
+      // if the user comes back (it previously stayed true forever).
+      isSubmitting.value = false;
     } catch (error) {
       console.error('Failed to create session:', error);
       showErrorToast(t('Failed to create session, please try again later'));

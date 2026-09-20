@@ -594,16 +594,23 @@ class PlanActFlow(BaseFlow):
             enriched.message = resume_brief
             message = enriched
 
-            _u = (enriched.message or "").lower()
+            _u = (message.message or "").lower()
             _indonesian = any(
                 w in _u for w in ("lanjut", "saya", "tolong", "ya", "oke", "baik")
             )
+            # Concrete, not canned: name the step being resumed so the user
+            # sees WHERE the work continues (generic "lanjutkan dari titik
+            # terakhir" slop was reported as robotic/unhelpful).
+            _next = pending_steps[0]
+            _next_desc = (_next.description or "").strip()
+            if len(_next_desc) > 90:
+                _next_desc = _next_desc[:89].rstrip() + "…"
             yield MessageEvent(
                 role="assistant",
                 message=(
-                    "Baik, saya lanjutkan tugasnya dari titik terakhir."
+                    f"Lanjut dari langkah {_next.id}: {_next_desc}"
                     if _indonesian
-                    else "Okay — picking the task back up from where it stopped."
+                    else f"Resuming from step {_next.id}: {_next_desc}"
                 ),
             )
             yield PlanEvent(status=PlanStatus.UPDATED, plan=resume_plan)

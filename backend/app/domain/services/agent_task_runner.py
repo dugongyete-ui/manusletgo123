@@ -1091,12 +1091,9 @@ class AgentTaskRunner(TaskRunner):
             MessageEvent(
                 role="assistant",
                 message=(
-                    f"⏱️ Dzeck menghentikan tugas ini karena melebihi batas "
-                    f"waktu {minutes} menit tanpa kemajuan yang selesai. "
-                    f"Kirim pesan baru untuk melanjutkan dari titik terakhir." 
-                    f"/ The task hit the {minutes}-minute wall-clock limit and "
-                    f"was stopped — send a new message to continue where it "
-                    f"left off."
+                    f"⏱️ Dzeck menghentikan tugas ini otomatis karena melewati "
+                    f"batas waktu {minutes} menit. Progres sejauh ini "
+                    f"tersimpan — kirim pesan kalau mau disambung."
                 ),
                 is_final=True,
             ),

@@ -95,14 +95,66 @@ def test_non_stop_messages_rejected(text):
 
 
 def test_stop_acknowledgement_language():
-    assert "tidak dilanjutkan" in stop_acknowledgement("berhenti")
-    assert "stopped" in stop_acknowledgement("stop now").lower()
+    # Deliberately SHORT, human, slop-free: no canned promises about
+    # "continuing from the last point" (reported bug).
+    id_ack = stop_acknowledgement("berhenti")
+    assert "hentikan" in id_ack.lower()
+    assert "tersimpan" in id_ack.lower()
+    assert "lanjutkan dari titik terakhir" not in id_ack.lower()
+    assert len(id_ack) < 120
+    en_ack = stop_acknowledgement("stop now")
+    assert "stopped" in en_ack.lower()
+    assert "pick it back up" not in en_ack.lower()
+    assert len(en_ack) < 120
 
 
 def test_stop_button_notice_text():
     assert stopped_by_button_notice() == (
-        "Dzeck telah berhenti, kirim pesan baru untuk melanjutkan."
+        "Dzeck berhenti di sini. Kirim pesan kalau mau disambung lagi."
     )
+
+
+# ── Identity-chat fast path ─────────────────────────────────────────────────
+
+
+def _run(coro):
+    import asyncio
+    return asyncio.run(coro)
+
+
+def test_identity_chat_detected_as_discuss():
+    from app.domain.services.agents.intent import classify_chat_mode
+
+    for text in (
+        "hai nama lu siapa",
+        "nama lu siapa",
+        "kamu siapa",
+        "siapa kamu sih",
+        "nama kamu apa",
+        "what's your name",
+        "who are you",
+        "kamu bisa apa",
+        "kamu robot ya?",
+        "kamu dibuat sama siapa",
+    ):
+        mode, confidence = _run(classify_chat_mode(text))
+        assert mode == "discuss", f"{text!r} → {mode}"
+        assert confidence >= 0.9
+
+
+def test_identity_chat_with_task_vocab_not_deterministic_discuss():
+    from app.domain.services.agents.intent import _is_identity_chat
+
+    for text in (
+        "hai, buatkan website portfolio",
+        "buatkan nama domain untuk toko saya",
+        "buat website namamu sendiri",
+        "download file ini lalu ubah namanya",
+    ):
+        assert _is_identity_chat(text) is False, (
+            f"{text!r} salah terdeteksi sebagai identitas — harus tetap lewat"
+            " klasifikasi semantik / agent mode"
+        )
 
 
 # ── Demonstration-request lock ───────────────────────────────────────────────

@@ -68,6 +68,50 @@ _TRIVIAL_TOKENS = frozenset({
 _TRIVIAL_TOKEN_MAX = 5
 _TOKEN_SPLIT = re.compile(r"[\s,.!?;:\u2026\u2014\u2013()\[\]{}\"']+")
 
+# ── Deterministic identity/meta-chat fast path ──────────────────────────
+# Questions ABOUT the assistant itself ("hai nama lu siapa", "kamu siapa",
+# "what's your name", "kamu bisa apa") are ALWAYS pure conversation — they
+# never need tools. They used to depend on the semantic classifier: when
+# that LLM call failed or timed out the default was AGENT, and a greeting
+# came back as the slop ack "Baik, saya mulai mengerjakannya" (reported
+# bug). This gate catches them deterministically, with a small task-vocab
+# guard so "buatkan website namamu" still runs as work.
+_IDENTITY_RE = re.compile(
+    r"(nama\s*(kamu|lu|lo|you|bot|dzeck|mu|nya))"                # nama kamu/lu/you
+    r"|(kamu|lu|lo|you|bot|dzeck)\s*(ini\s+)?(siapa|siap|apa|apaan)"  # kamu siapa / lu apa
+    r"|(siapa\s*(sih|dong|nih)?\s*(kamu|lu|lo|you))"             # siapa kamu
+    r"|(who\s+are\s+you|what'?s\s+your\s+name|who\s+(made|created|built)\s+you)"
+    r"|(kamu\s+(ini\s+)?(robot|manusia|ai|mesin|program))"       # are you robot/human/ai
+    r"|(are\s+you\s+(a\s+)?(robot|human|ai|bot|machine|real))"
+    r"|(kamu\s+bisa\s+apa|apa\s+(saja\s+)?(yang\s+)?bisa\s+(kamu|lu|lo|you)\b|what\s+can\s+you\s+do)"
+    r"|(kamu\s+(dibuat|diciptakan)|siapa\s+(yang\s+)?(bikin|buat|membuat|made)\s+(kamu|lu|lo|you|dzeck))"
+    r"|(kamu\s+(pakai|pake|pakeme|model)\s+(model|ai|llm)\s+apa)" # which model are you
+    r"|(kamu\s+(orang|dari)\s+mana|umur\s*(kamu|lu|you))",        # where are you from / your age
+    re.IGNORECASE,
+)
+_TASK_VOCAB_RE = re.compile(
+    r"\b(buatkan|buat|bikin|bikinkan|cari|carikan|cari\-kan|download|unduh|"
+    r"research|riset|website|aplikasi|app\b|kode|code|script|deploy|"
+    r"kirim|upload|hapus|edit\b|ubah\b|analisa|analisis|scrape|render|"
+    r"foto\b|image\b|video\b|file\b|laporan|report\b|presentasi|slide)",
+    re.IGNORECASE,
+)
+_IDENTITY_MAX_TOKENS = 10
+
+
+def _is_identity_chat(text: str) -> bool:
+    """True when the whole message is a short question about the assistant
+    itself (name, identity, capabilities, origin) — pure conversation."""
+    raw = (text or "").strip()
+    if not raw or len(raw) > 80:
+        return False
+    tokens = [t for t in _TOKEN_SPLIT.split(raw) if any(c.isalnum() for c in t)]
+    if not tokens or len(tokens) > _IDENTITY_MAX_TOKENS:
+        return False
+    if _TASK_VOCAB_RE.search(raw):
+        return False
+    return bool(_IDENTITY_RE.search(raw))
+
 
 def _is_trivial_chat(text: str) -> bool:
     """True when the whole message is pure small talk — greeting, ack, thanks,
@@ -134,10 +178,13 @@ async def classify_chat_mode(
     if not text:
         return CHAT_MODE_AGENT, 0.0
 
-    # Deterministic fast path: pure small talk is discuss without a model call
-    # — zero latency, zero cost, and immune to provider hiccups.
+    # Deterministic fast paths: pure small talk AND identity questions are
+    # discuss without a model call — zero latency, zero cost, and immune to
+    # provider hiccups.
     if _is_trivial_chat(text):
         return CHAT_MODE_DISCUSS, 0.99
+    if _is_identity_chat(text):
+        return CHAT_MODE_DISCUSS, 0.95
 
     prompt = ""
     if conversation_history and conversation_history.strip():
@@ -341,7 +388,10 @@ def stop_acknowledgement(message_text: str) -> str:
     """The assistant's reply when the user stops the task by text.
 
     Language follows the stop message itself (Indonesian stop words →
-    Indonesian reply). States that the task is closed and progress kept.
+    Indonesian reply). Deliberately SHORT and human: one honest line —
+    no canned promises about "continuing from the last point" (that slop
+    was the reported bug: the user stops, and the reply talks about
+    continuing).
     """
     lowered = (message_text or "").lower()
     indonesian = any(w in lowered for w in (
@@ -349,21 +399,10 @@ def stop_acknowledgement(message_text: str) -> str:
         "batal", "dilanjutkan", "diteruskan", "udah", "sini",
     ))
     if indonesian:
-        return (
-            "Baik, task saya hentikan di sini — tidak dilanjutkan. "
-            "Semua progres yang sudah dibuat sudah disimpan dan plan saya "
-            "tandai selesai.\n\n"
-            "Kalau nanti mau menyambung lagi, kirim pesan apa saja dan saya "
-            "lanjutkan dari titik terakhir."
-        )
-    return (
-        "Okay — I've stopped here as requested; this task will not continue. "
-        "All progress made so far is saved and the plan is marked complete.\n\n"
-        "Send any message whenever you want me to pick it back up from the "
-        "last stopping point."
-    )
+        return "Oke, saya hentikan di sini. Progres yang sudah jadi tetap tersimpan."
+    return "Okay — stopped here. Progress made so far is saved."
 
 
 def stopped_by_button_notice() -> str:
     """The fixed user-facing line emitted when the STOP button is pressed."""
-    return "Dzeck telah berhenti, kirim pesan baru untuk melanjutkan."
+    return "Dzeck berhenti di sini. Kirim pesan kalau mau disambung lagi."
