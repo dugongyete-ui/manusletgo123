@@ -295,6 +295,10 @@ export const createSSEConnection = async <T = any>(
   
   // Create AbortController for cancellation
   const abortController = new AbortController();
+  // A completed chat stream closes normally immediately after its terminal
+  // SSE event. Keep that close distinct from a connection drop so the UI does
+  // not show a false "connection lost" toast after every successful reply.
+  let receivedTerminalEvent = false;
   
   const apiUrl = `${BASE_URL}${endpoint}`;
   
@@ -353,6 +357,9 @@ export const createSSEConnection = async <T = any>(
         },
         onmessage(event: EventSourceMessage) {
           if (event.event && event.event.trim() !== '') {
+             if (event.event === 'done' || event.event === 'wait' || event.event === 'error') {
+               receivedTerminalEvent = true;
+             }
             if (onMessage) {
               onMessage({
                 event: event.event,
@@ -365,9 +372,11 @@ export const createSSEConnection = async <T = any>(
           if (onClose) {
             onClose();
           }
-          // Throw to prevent fetchEventSource from auto-retrying the POST.
-          // Retrying would re-send the user message and create a duplicate task.
-          throw new Error('SSE connection closed by server');
+           if (!receivedTerminalEvent && !abortController.signal.aborted) {
+             // Throw to prevent fetchEventSource from auto-retrying the POST.
+             // Retrying would re-send the user message and create a duplicate task.
+             throw new Error('SSE connection closed by server');
+           }
         },
         onerror(err: any) {
           const error = err instanceof Error ? err : new Error(String(err));
