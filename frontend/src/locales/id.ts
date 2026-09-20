@@ -266,7 +266,6 @@ export default {
   'Back to home': 'Kembali ke beranda',
   'This share link is not available': 'Tautan berbagi ini tidak tersedia',
   'The link may be incorrect, the task may have been unshared, or the server could not be reached. Double-check the link, or ask the person who shared it with you.': 'Tautannya mungkin salah, tugasnya mungkin sudah tidak dibagikan lagi, atau servernya tidak dapat dijangkau. Periksa kembali tautannya, atau tanyakan langsung kepada orang yang membagikannya.',
-  'Retry': 'Coba Lagi',
   'Technical details': 'Detail teknis',
   'Retrying': 'Mencoba ulang',
   'View Results': 'Lihat Hasil',
@@ -425,14 +424,11 @@ export default {
 'No shared tasks yet': 'Belum ada task yang dibagikan',
 'Share one of your finished tasks and it will appear here for everyone to explore and fork.': 'Bagikan salah satu task selesai Anda dan task itu akan muncul di sini untuk semua orang.',
 'Back to chats': 'Kembali ke chat',
-'Untitled task': 'Task tanpa judul',
 'Could not load community tasks, please try again later': 'Gagal memuat task komunitas, coba lagi nanti',
 
 // ── File categories (Manus getSessionFilesV2 grouping) ─────────────────────
 'Slides': 'Slide',
 'Data': 'Data',
-'Documents': 'Dokumen',
-'Code': 'Kode',
 'Archives': 'Arsip',
 // ── Scheduled runs (scheduleTask) ─────────────────────────────────────────
 'Schedule': 'Jadwalkan',
@@ -451,8 +447,6 @@ export default {
 'Could not schedule, please try again': 'Gagal menjadwalkan, coba lagi nanti',
 'Scheduled runs': 'Run terjadwal',
 'runs': 'kali run',
-'Pause': 'Jeda',
-'Resume': 'Lanjutkan',
 'Could not update, please try again': 'Gagal memperbarui, coba lagi nanti',
 'Could not delete, please try again': 'Gagal menghapus, coba lagi nanti',
 'Connection lost during the task — the server may have restarted. Reopen this chat to resume, or resend your message.': 'Koneksi terputus saat tugas berjalan — server kemungkinan di-restart. Buka ulang chat ini untuk melanjutkan, atau kirim ulang pesan Anda.',

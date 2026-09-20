@@ -266,7 +266,6 @@ export default {
   'Back to home': 'Back to home',
   'This share link is not available': 'This share link is not available',
   'The link may be incorrect, the task may have been unshared, or the server could not be reached. Double-check the link, or ask the person who shared it with you.': 'The link may be incorrect, the task may have been unshared, or the server could not be reached. Double-check the link, or ask the person who shared it with you.',
-  'Retry': 'Retry',
   'Technical details': 'Technical details',
   'Retrying': 'Retrying',
   'View Results': 'View Results',
@@ -424,14 +423,11 @@ export default {
 'No shared tasks yet': 'No shared tasks yet',
 'Share one of your finished tasks and it will appear here for everyone to explore and fork.': 'Share one of your finished tasks and it will appear here for everyone to explore and fork.',
 'Back to chats': 'Back to chats',
-'Untitled task': 'Untitled task',
 'Could not load community tasks, please try again later': 'Could not load community tasks, please try again later',
 
 // ── File categories (Manus getSessionFilesV2 grouping) ─────────────────────
 'Slides': 'Slides',
 'Data': 'Data',
-'Documents': 'Documents',
-'Code': 'Code',
 'Archives': 'Archives',
 // ── Scheduled runs (scheduleTask) ─────────────────────────────────────────
 'Schedule': 'Schedule',
@@ -450,8 +446,6 @@ export default {
 'Could not schedule, please try again': 'Could not schedule, please try again',
 'Scheduled runs': 'Scheduled runs',
 'runs': 'runs',
-'Pause': 'Pause',
-'Resume': 'Resume',
 'Could not update, please try again': 'Could not update, please try again',
 'Could not delete, please try again': 'Could not delete, please try again',
 'Connection lost during the task — the server may have restarted. Reopen this chat to resume, or resend your message.': 'Connection lost during the task — the server may have restarted. Reopen this chat to resume, or resend your message.',
