@@ -39,8 +39,14 @@ if python3 -m pip install --break-system-packages --dry-run pip &>/dev/null 2>&1
   PIP_FLAGS="--break-system-packages"
 fi
 
+# Replit's package firewall can return 403 for valid package metadata when a
+# dependency resolver selects a newer transitive release. PyPI itself is
+# reachable in this environment, so prefer it explicitly for reproducible
+# installs instead of relying on the inherited PIP_INDEX_URL.
+PIP_INDEX_FLAGS=(--index-url "https://pypi.org/simple")
+
 # Upgrade pip/setuptools first to avoid resolver issues
-python3 -m pip install $PIP_FLAGS -q --upgrade pip setuptools wheel 2>/dev/null || true
+python3 -m pip install $PIP_FLAGS "${PIP_INDEX_FLAGS[@]}" -q --upgrade pip setuptools wheel 2>/dev/null || true
 
 # ── 1. Frontend dependencies ──────────────────────────────────────────────────
 echo ""
@@ -55,7 +61,7 @@ echo "      Frontend dependencies installed"
 echo ""
 echo "[2/5] Installing core backend dependencies..."
 
-python3 -m pip install $PIP_FLAGS -q \
+python3 -m pip install $PIP_FLAGS "${PIP_INDEX_FLAGS[@]}" -q \
   "fastapi>=0.121.2" \
   "uvicorn>=0.38.0" \
   "beanie>=1.25.0" \
@@ -85,16 +91,17 @@ echo ""
 echo "[3/5] Installing AI/LLM dependencies..."
 
 # 3a. LangChain ecosystem — openai provider only
-python3 -m pip install $PIP_FLAGS -q \
+# browser-use 0.13.x pins openai==2.26.0; the 1.1.x provider line supports it.
+python3 -m pip install $PIP_FLAGS "${PIP_INDEX_FLAGS[@]}" -q \
   "openai>=2.8.0" \
   "langchain>=1.0.7" \
   "langchain-classic>=1.0.7" \
-  "langchain-openai>=1.0.3"
+  "langchain-openai>=1.0.3,<1.2.0"
 
 # 3b. browser-use + Playwright (cdp-use, bubus, rich are transitive deps — installed automatically)
-python3 -m pip install $PIP_FLAGS -q "browser-use>=0.12.1"
-python3 -m pip install $PIP_FLAGS -q "playwright>=1.42.0"
-python3 -m pip install $PIP_FLAGS -q "patchright>=1.42.0" 2>/dev/null || true
+python3 -m pip install $PIP_FLAGS "${PIP_INDEX_FLAGS[@]}" -q "browser-use>=0.12.1"
+python3 -m pip install $PIP_FLAGS "${PIP_INDEX_FLAGS[@]}" -q "playwright>=1.42.0"
+python3 -m pip install $PIP_FLAGS "${PIP_INDEX_FLAGS[@]}" -q "patchright>=1.42.0" 2>/dev/null || true
 
 echo "      AI/LLM dependencies installed"
 
@@ -103,14 +110,14 @@ echo "      AI/LLM dependencies installed"
 # otherwise stay hidden until the first sandbox session and silently trigger
 # the local Replit fallback.
 echo "      Installing E2B sandbox dependency..."
-python3 -m pip install $PIP_FLAGS -q "e2b>=2.0.0"
+python3 -m pip install $PIP_FLAGS "${PIP_INDEX_FLAGS[@]}" -q "e2b>=2.0.0"
 python3 -c "import e2b; print('      E2B Python package installed')"
 
 # ── 4. Utility dependencies ───────────────────────────────────────────────────
 echo ""
 echo "[4/5] Installing utility dependencies..."
 
-python3 -m pip install $PIP_FLAGS -q \
+python3 -m pip install $PIP_FLAGS "${PIP_INDEX_FLAGS[@]}" -q \
   "curl-cffi>=0.14.0" \
   "beautifulsoup4>=4.12.0" \
   "markdownify>=1.2.0" \
@@ -123,7 +130,7 @@ python3 -m pip install $PIP_FLAGS -q \
 
 # ── 4b. File extraction dependencies ─────────────────────────────────────────
 echo "      Installing file-extraction dependencies..."
-python3 -m pip install $PIP_FLAGS -q \
+python3 -m pip install $PIP_FLAGS "${PIP_INDEX_FLAGS[@]}" -q \
   "python-docx>=1.2.0" \
   "python-pptx>=1.0.0" \
   "pdfplumber>=0.11.0" \
@@ -134,7 +141,7 @@ echo "      Utility dependencies installed"
 
 # ── 4c. Dev / test dependencies ───────────────────────────────────────────────
 echo "      Installing dev/test dependencies..."
-python3 -m pip install $PIP_FLAGS -q \
+python3 -m pip install $PIP_FLAGS "${PIP_INDEX_FLAGS[@]}" -q \
   "pytest>=7.0.0" \
   "pytest-asyncio>=0.21.0" \
   "pytest-cov>=4.0.0" \
