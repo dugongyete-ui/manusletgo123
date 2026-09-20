@@ -24,6 +24,19 @@ command -v termux-wake-lock >/dev/null 2>&1 && termux-wake-lock 2>/dev/null
 # Python interpreter: venv hasil install_termux.sh bila ada, else python3.
 if [ -x "$REPO/.venv/bin/python" ]; then PY="$REPO/.venv/bin/python"; else PY="python3"; fi
 
+# [dns-fix] Termux tidak punya /etc/resolv.conf -> dnspython (mongodb+srv) butuh DNS eksplisit
+if [ "$PY" != "python3" ]; then
+    DNS_SITE="$("$PY" -c 'import sysconfig; print(sysconfig.get_paths()["purelib"])' 2>/dev/null || true)"
+    if [ -n "$DNS_SITE" ] && [ ! -e "$DNS_SITE/sitecustomize.py" ]; then
+        printf '%s\n' 'try:' \
+         '    import dns.resolver as _r, dns.asyncresolver as _a' \
+         '    _ns = ["8.8.8.8", "1.1.1.1"]' \
+         '    _r.default_resolver = _r.Resolver(configure=False); _r.default_resolver.nameservers = _ns' \
+         '    _a.default_resolver = _a.Resolver(configure=False); _a.default_resolver.nameservers = _ns' \
+         'except Exception:' '    pass' > "$DNS_SITE/sitecustomize.py"
+    fi
+fi
+
 port_up() { (echo >/dev/tcp/127.0.0.1/"$1") >/dev/null 2>&1; }   # bash TCP probe
 
 wait_port() { # wait_port <port> <nama> <maks-detik>
@@ -82,7 +95,7 @@ if port_up 8080; then
     echo "  sandbox API : sudah jalan (:8080)"
 else
     ( cd "$REPO/sandbox" && \
-      SANDBOX_STANDALONE=1 LOG_LEVEL=info nohup "$PY" -m uvicorn app.main:app \
+      SANDBOX_STANDALONE=1 LOG_LEVEL=INFO nohup "$PY" -m uvicorn app.main:app \
         --host 0.0.0.0 --port 8080 >"$LOGDIR/sandbox.log" 2>&1 & )
     wait_port 8080 "sandbox API" 30 && echo "  sandbox API : jalan (:8080, standalone)"
 fi
@@ -93,16 +106,19 @@ if command -v Xvfb >/dev/null 2>&1 && ! pgrep -f "Xvfb :1" >/dev/null 2>&1; then
     nohup Xvfb :1 -screen 0 1280x1029x24 >"$LOGDIR/xvfb.log" 2>&1 & sleep 2
     echo "  Xvfb        : jalan (display :1)"
 fi
-if command -v chromium >/dev/null 2>&1 && port_up 8222; then :;
-elif command -v chromium >/dev/null 2>&1 && [ -n "${DISPLAY:-}" ]; then
-    nohup chromium --display="${DISPLAY}" --no-sandbox --disable-dev-shm-usage \
+CHROME_BIN="$(command -v chromium-browser || command -v chromium || true)"
+if [ -n "$CHROME_BIN" ] && port_up 8222; then :;
+elif [ -n "$CHROME_BIN" ]; then
+    mkdir -p "$PREFIX/tmp/chrome-profile"
+    if [ -n "${DISPLAY:-}" ]; then CHROME_MODE="--display=${DISPLAY}"; else CHROME_MODE="--headless"; fi
+    nohup "$CHROME_BIN" $CHROME_MODE --no-sandbox --disable-dev-shm-usage \
         --disable-gpu --user-data-dir="$PREFIX/tmp/chrome-profile" \
         --remote-debugging-address=0.0.0.0 --remote-debugging-port=8222 \
         --remote-allow-origins='*' --no-first-run --no-default-browser-check \
         >"$LOGDIR/chrome.log" 2>&1 & sleep 4
-    port_up 8222 && echo "  chromium    : CDP jalan (:8222)" || echo "  chromium    : CDP gagal — tool browser terdegradasi"
+    port_up 8222 && echo "  chromium    : CDP jalan (:8222)" || echo "  chromium    : CDP gagal — lihat logs/chrome.log"
 else
-    echo "  browser     : tidak tersedia — tool browser akan gagal mulai (normal di Termux)"
+    echo "  browser     : chromium belum terpasang (pkg install tur-repo x11-repo chromium)"
 fi
 
 # ── 4. Backend (8000) ──────────────────────────────────────────────────────
@@ -111,7 +127,7 @@ if port_up 8000; then
 else
     [ -f "$REPO/backend/.env" ] || { echo "[!] backend/.env tidak ada — jalankan install_termux.sh dulu." >&2; exit 1; }
     ( cd "$REPO/backend" && set -a && source .env && set +a && \
-      nohup "${PYTHON:-python3}" -m uvicorn app.main:app \
+      nohup "$PY" -m uvicorn app.main:app \
         --host 0.0.0.0 --port 8000 >"$LOGDIR/backend.log" 2>&1 & )
     wait_port 8000 backend 60 && echo "  backend     : jalan (:8000)"
 fi

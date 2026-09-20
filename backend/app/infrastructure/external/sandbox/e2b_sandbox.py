@@ -65,8 +65,14 @@ import httpx
 from app.core.config import get_settings
 from app.domain.external.browser import Browser
 from app.domain.models.tool_result import ToolResult
-from app.infrastructure.external.browser.browser_use_browser import BrowserUseBrowser
-from app.infrastructure.external.browser.playwright_browser import PlaywrightBrowser
+try:  # [termux-guard]
+    from app.infrastructure.external.browser.browser_use_browser import BrowserUseBrowser
+except ImportError:
+    BrowserUseBrowser = None
+try:  # [termux-guard]
+    from app.infrastructure.external.browser.playwright_browser import PlaywrightBrowser
+except ImportError:
+    PlaywrightBrowser = None
 
 logger = logging.getLogger(__name__)
 

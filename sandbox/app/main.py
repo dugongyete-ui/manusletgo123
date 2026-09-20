@@ -24,7 +24,7 @@ def setup_logging():
     Configures log level, format, and handlers based on application settings.
     Outputs logs to stdout for container compatibility.
     """
-    log_level = getattr(logging, settings.LOG_LEVEL)
+    log_level = getattr(logging, settings.LOG_LEVEL.upper())
     log_format = "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
     
     logging.basicConfig(
@@ -36,7 +36,7 @@ def setup_logging():
     root_logger = logging.getLogger()
     
     # Set root log level
-    log_level = getattr(logging, settings.LOG_LEVEL)
+    log_level = getattr(logging, settings.LOG_LEVEL.upper())
     root_logger.setLevel(log_level)
     
     # Log setup completion

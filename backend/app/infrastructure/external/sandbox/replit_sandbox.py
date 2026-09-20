@@ -7,8 +7,14 @@ from typing import Optional, BinaryIO
 import httpx
 
 from app.domain.external.sandbox import Sandbox, Browser
-from app.infrastructure.external.browser.browser_use_browser import BrowserUseBrowser
-from app.infrastructure.external.browser.playwright_browser import PlaywrightBrowser
+try:  # [termux-guard]
+    from app.infrastructure.external.browser.browser_use_browser import BrowserUseBrowser
+except ImportError:
+    BrowserUseBrowser = None
+try:  # [termux-guard]
+    from app.infrastructure.external.browser.playwright_browser import PlaywrightBrowser
+except ImportError:
+    PlaywrightBrowser = None
 from app.core.config import get_settings
 from app.domain.models.tool_result import ToolResult
 
