@@ -142,3 +142,15 @@ Work Log:
 Stage Summary:
 - install_termux.sh & scripts/termux_mongo.sh diperbaiki dan siap di-pull ulang dari GitHub.
 - Pengguna cukup: cd ~/manusletgo123 && git pull && bash install_termux.sh (idempotent).
+
+---
+OpenCode Replit configuration follow-up:
+- `.replit` was schema-validated and updated with the complete non-secret agent
+  configuration: provider selection, build/plan mode, flow engine, context
+  limits, registry safety contracts, timeout, retry, confirmation, and
+  duplicate/loop guards.
+- Credential literals were removed from `.replit` after the Replit
+  configuration audit. The secure Secrets request was declined, so the
+  backend workflow was intentionally not restarted; the already-running
+  process remains active, but a future restart requires those credentials to
+  be configured through Replit Secrets.

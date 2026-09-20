@@ -40,7 +40,11 @@ All configured in `backend/.env`:
 - `AUTH_PROVIDER` — `password` (JWT-based)
 - `SANDBOX_PROVIDER` — `replit` / `e2b` / `auto`
 - `AGENT_FLOW_ENGINE` — `langgraph` (default) / `custom`
+- `AGENT_PROVIDER` — `existing` (default) / `opencode_adapter`
+- `AGENT_MODE` — `build` (default) / `plan` read-only policy
 - `AGENT_CONTEXT_SOFT_LIMIT_CHARS` / `AGENT_TOOL_RESULT_MAX_CHARS` — context-overflow defense knobs
+- `MANUS_REGISTRY_ENABLED` and `MANUS_*` — tool registry, confirmation, timeout,
+  retry, and loop-safety contracts
 
 ## User Preferences
 
