@@ -207,6 +207,12 @@ class Settings(BaseSettings):
     # only selects the loop driver. env var: AGENT_FLOW_ENGINE
     agent_flow_engine: str = "langgraph"
 
+    # Prompt profile for the live runtime. ``compact`` keeps the security and
+    # sandbox contract while routing domain playbooks selectively. ``legacy``
+    # is the rollback path for the previous all-in-one prompt.
+    # env var: AGENT_PROMPT_PROFILE
+    agent_prompt_profile: str = "compact"
+
     # ── Context-overflow defense (provider error 1261) ──────────────────
     # Soft budget on the estimated serialized conversation size. Before
     # EVERY LLM call the agent estimates its memory size in characters;

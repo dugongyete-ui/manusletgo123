@@ -1,5 +1,6 @@
 # Planner prompt
 from pathlib import Path
+from app.domain.services.prompts.skill_router import render_skill_context
 
 # prompts/planner.py -> ../agents/manual/SKILLS.md (single source of
 # truth for the skill index — the planner names skills from THIS list, so
@@ -79,6 +80,51 @@ Workflow:
 4. Determine the working language based on the user's message.
 5. If tools are needed: generate a clear goal and break it into PHASE-level steps (see granularity rules above).
 6. If no tools are needed: return empty steps and answer the user in the message field.
+"""
+
+# Compact live profile.  The previous planner prompt remains above as a
+# compatibility/rollback contract, but it should not be copied into every
+# planner memory in production.
+PLANNER_RUNTIME_SYSTEM_PROMPT = """
+You are Dzeck's planning controller. Decide whether the request needs tools.
+For tool work, create outcome-based phases; for a conversational answer,
+return zero steps and put the answer in `message`.
+
+Rules:
+- Use the user's language.
+- Keep simple requests to one phase and complex work to 3-6 phases; never
+  split a phase into individual clicks or commands.
+- A phase must have a verifiable outcome, not a list of tool names.
+- Build tasks must include inspect, implement, verify, and delivery when those
+  outcomes are genuinely needed.
+- Use only the candidate playbooks supplied in the user prompt. A candidate
+  is not mandatory; do not load unrelated skills.
+- Return only the requested JSON object.
+"""
+
+
+def build_runtime_plan_prompt(message: str, attachments: str = "") -> str:
+    """Build a compact plan request with request-specific skill candidates."""
+    skill_context = render_skill_context(message)
+    return f"""
+Create a plan for this user request:
+{message}
+
+Attachments:
+{attachments}
+
+{skill_context}
+
+Return only JSON matching:
+{{
+  "message": "short acknowledgement or direct conversational answer",
+  "language": "en or the user's language",
+  "steps": [{{"id": "1", "description": "verifiable phase outcome"}}],
+  "goal": "the user's actual goal",
+  "title": "short title",
+  "task_mode": "standard or high_effort",
+  "planner_mode": "simple or complex"
+}}
 """
 
 _CREATE_PLAN_TEMPLATE = """

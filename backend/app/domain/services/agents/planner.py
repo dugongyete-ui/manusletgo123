@@ -8,6 +8,7 @@ from app.domain.models.memory import Memory
 from app.domain.services.prompts.system import SYSTEM_PROMPT
 from app.domain.services.prompts.planner import (
     CREATE_PLAN_PROMPT, 
+    build_runtime_plan_prompt,
     UPDATE_PLAN_PROMPT,
     PLANNER_SYSTEM_PROMPT
 )
@@ -483,10 +484,19 @@ class PlannerAgent(BaseAgent):
                     f"Injecting previous file context into create_plan: {prev_file_names}"
                 )
 
-        base_prompt = CREATE_PLAN_PROMPT.format(
-            message=message.message + prev_files_note,
-            attachments="\n".join(message.attachments)
-        )
+        from app.core.config import get_settings
+
+        planning_message = message.message + prev_files_note
+        if (get_settings().agent_prompt_profile or "").strip().lower() == "legacy":
+            base_prompt = CREATE_PLAN_PROMPT.format(
+                message=planning_message,
+                attachments="\n".join(message.attachments),
+            )
+        else:
+            base_prompt = build_runtime_plan_prompt(
+                planning_message,
+                "\n".join(message.attachments),
+            )
 
         content = base_prompt
 

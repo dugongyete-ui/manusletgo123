@@ -8,6 +8,7 @@ from app.domain.services.prompts.system import SYSTEM_PROMPT
 from app.domain.services.prompts.execution import (
     EXECUTION_SYSTEM_PROMPT,
     EXECUTION_PROMPT,
+    RUNTIME_EXECUTION_PROMPT,
     SUMMARIZE_PROMPT,
     SUMMARIZE_STREAM_PROMPT,
 )
@@ -609,6 +610,20 @@ class ExecutionAgent(BaseAgent):
             language=plan.language,
             user_home=self._resolve_user_home(),
         )
+        from app.core.config import get_settings
+        if (get_settings().agent_prompt_profile or "").strip().lower() != "legacy":
+            from app.domain.services.prompts.skill_router import render_skill_context
+
+            prompt = RUNTIME_EXECUTION_PROMPT.format(
+                step=step.description,
+                message=message.message,
+                attachments="\n".join(message.attachments),
+                language=plan.language,
+                user_home=self._resolve_user_home(),
+                skill_context=render_skill_context(
+                    f"{message.message}\n{step.description}"
+                ),
+            )
 
         vision_content = None
         if message.vision_images:

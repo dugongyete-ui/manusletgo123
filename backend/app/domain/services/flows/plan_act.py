@@ -31,9 +31,18 @@ from app.domain.services.tools.file import FileToolkit
 from app.domain.services.tools.message import MessageToolkit
 from app.domain.services.tools.search import SearchToolkit
 from app.domain.services.tools.image import ImageToolkit
-from app.domain.services.prompts.system import get_system_prompt
-from app.domain.services.prompts.planner import PLANNER_SYSTEM_PROMPT
-from app.domain.services.prompts.execution import EXECUTION_SYSTEM_PROMPT
+from app.domain.services.prompts.system import (
+    get_runtime_system_prompt,
+    get_system_prompt,
+)
+from app.domain.services.prompts.planner import (
+    PLANNER_RUNTIME_SYSTEM_PROMPT,
+    PLANNER_SYSTEM_PROMPT,
+)
+from app.domain.services.prompts.execution import (
+    EXECUTION_RUNTIME_SYSTEM_PROMPT,
+    EXECUTION_SYSTEM_PROMPT,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -227,7 +236,12 @@ class PlanActFlow(BaseFlow):
         # deployment via SANDBOX_PROTECTED_PATHS so the prompt never lies.
         from app.core.config import get_settings as _get_settings
         _protected = (_get_settings().sandbox_protected_paths or "").split(":")[0].strip() or None
-        base_prompt = get_system_prompt(
+        prompt_builder = (
+            get_system_prompt
+            if (_get_settings().agent_prompt_profile or "").strip().lower() == "legacy"
+            else get_runtime_system_prompt
+        )
+        base_prompt = prompt_builder(
             user_home=user_home, upload_dir=upload_dir, environment=environment,
             project_instruction=project_instruction,
             protected_workspace=_protected,
@@ -256,7 +270,17 @@ class PlanActFlow(BaseFlow):
             agent_repository=self._repository,
             tools=tools,
         )
-        self.planner.system_prompt = base_prompt + PLANNER_SYSTEM_PROMPT
+        planner_prompt = (
+            PLANNER_SYSTEM_PROMPT
+            if (_get_settings().agent_prompt_profile or "").strip().lower() == "legacy"
+            else PLANNER_RUNTIME_SYSTEM_PROMPT
+        )
+        executor_prompt = (
+            EXECUTION_SYSTEM_PROMPT
+            if (_get_settings().agent_prompt_profile or "").strip().lower() == "legacy"
+            else EXECUTION_RUNTIME_SYSTEM_PROMPT
+        )
+        self.planner.system_prompt = base_prompt + planner_prompt
         logger.debug(f"Created planner agent for Agent {self._agent_id} (home={user_home})")
             
         self.executor = ExecutionAgent(
@@ -264,7 +288,7 @@ class PlanActFlow(BaseFlow):
             agent_repository=self._repository,
             tools=tools,
         )
-        self.executor.system_prompt = base_prompt + EXECUTION_SYSTEM_PROMPT
+        self.executor.system_prompt = base_prompt + executor_prompt
         logger.debug(f"Created execution agent for Agent {self._agent_id} (home={user_home})")
 
     async def _preprocess_images(self, message: Message) -> Message:
