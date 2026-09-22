@@ -154,3 +154,35 @@ OpenCode Replit configuration follow-up:
   backend workflow was intentionally not restarted; the already-running
   process remains active, but a future restart requires those credentials to
   be configured through Replit Secrets.
+++ b/worklog.md
+
+---
+Task ID: 18
+Agent: Super Z (main agent)
+Task: Pull perbaikan user + fix balasan slop agent (sapaan dijawab "mulai mengerjakan",
+stop dijawab "melanjutkan dari titik terakhir") + investigasi sesi dobel
+
+Work Log:
+- Pull commit user c3804e0 (Fix Termux: DNS resolver, package discovery, LOG_LEVEL,
+  browser CDP, npm registry) — sinkron dengan GitHub.
+- Akar masalah slop: pertanyaan identitas ("hai nama lu siapa") tidak tertangkap fast-path
+  trivial; semantic classifier LLM kalau gagal/timeout default AGENT → planner membalas
+  ack generik "Baik, saya mulai mengerjakannya".
+- Fix intent.py: detektor identitas deterministic (_IDENTITY_RE + guard task-vocab) →
+  DISCUSS 0.95 tanpa LLM; stop_acknowledgement ditulis ulang satu kalimat tanpa janji slop;
+  stopped_by_button_notice lebih natural.
+- Fix plan_act.py & plan_act_graph.py: baris resume kini konkret — "Lanjut dari langkah
+  {id}: {deskripsi}", bukan "Baik, saya lanjutkan tugasnya dari titik terakhir".
+- Fix agent_task_runner.py: pesan timeout dipendekkan & manusiawi (frasa "batas waktu" dipertahankan utk test lama).
+- Fix HomePage.vue: guard double-dispatch pending prompt (sessionStorage 5s) + reset
+  isSubmitting — mencegah 2 sesi tercipta dari satu aksi ("sesi terbaru ada 2").
+- Test env: buat backend/.env dummy, pasang langchain-openai/curl-cffi/mcp<2 di venv.
+- Hasil: test_intent_stop_resume 51 passed (termasuk 14 kasus baru); suite penuh
+  920 passed — 38 sisanya test integrasi butuh live server+MongoDB (environmental);
+  frontend build sukses (21s).
+- Commit 06cdf08 di-push ke GitHub main.
+
+Stage Summary:
+- Balasan slop hilang di 4 titik (identitas/stop/ack/resume/timeout); sapaan & pertanyaan
+  identitas kini dijawab langsung sebagai percakapan dengan identitas Dzeck yang benar.
+- Guard sesi ganda dipasang di jalur pending-prompt HomePage.
