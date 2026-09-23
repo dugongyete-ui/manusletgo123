@@ -903,14 +903,14 @@ class BrowserUseBrowser:
         await asyncio.sleep(0.06)
         await self._dispatch_mouse_event("mouseReleased", x, y, "left", 1)
 
-    async def _click_with_fallback(self, element, index: int) -> tuple[bool, str]:
+    async def _click_with_fallback(self, element, index: int) -> tuple[bool, str, dict]:
         """Manus-style 3-strategy click chain.
 
         Strategy 1 — Playwright element.click() (standard, handles scroll-into-view)
         Strategy 2 — JS synthetic click + React-safe mouse events dispatched via evaluate()
         Strategy 3 — raw CDP Input.dispatchMouseEvent at element's bounding-box center
 
-        Returns (success, strategy_used_or_error_message).
+        Returns (success, strategy_used_or_error_message, clicked_target).
         """
         # ── Strategy 1: JS synthetic click with pointer + mouse events ──────
         # PRIMARY since the browser_use actor click (Element.click(), CDP mouse
@@ -924,34 +924,78 @@ class BrowserUseBrowser:
         try:
             result = await element.evaluate("""() => {
                 try {
-                    this.scrollIntoView({block: 'center', inline: 'nearest'});
-                    const r = this.getBoundingClientRect();
+                    const actionable = [
+                        'button', 'a', 'input', 'select', 'textarea', 'label',
+                        '[role="button"]', '[role="link"]', '[role="tab"]',
+                        '[role="menuitem"]', '[role="option"]', '[role="checkbox"]',
+                        '[role="radio"]', '[role="switch"]', '[role="combobox"]',
+                        '[tabindex]:not([tabindex="-1"])', '[onclick]',
+                        '[data-key]', '[data-value]', '[data-action]'
+                    ].join(',');
+                    let target = this.matches(actionable) ? this : this.closest(actionable);
+                    // Some calculator and canvas widgets use a plain div with a
+                    // pointer cursor instead of a semantic control. Walk upward
+                    // only a few levels so a text span cannot accidentally target
+                    // a neighbouring key.
+                    if (!target) {
+                        let parent = this;
+                        for (let i = 0; i < 4 && parent && parent !== document.body; i++) {
+                            const s = getComputedStyle(parent);
+                            if (s.cursor === 'pointer' || parent.hasAttribute('data-key') ||
+                                parent.hasAttribute('data-value') || parent.hasAttribute('data-action')) {
+                                target = parent;
+                                break;
+                            }
+                            parent = parent.parentElement;
+                        }
+                    }
+                    if (!target) target = this;
+                    if (target.disabled || target.getAttribute('aria-disabled') === 'true') {
+                        return JSON.stringify({ok: false, reason: 'disabled'});
+                    }
+                    target.scrollIntoView({block: 'center', inline: 'nearest'});
+                    const rects = [...target.getClientRects()].filter(r => r.width > 0 && r.height > 0);
+                    if (!rects.length) return JSON.stringify({ok: false, reason: 'not rendered'});
+                    const r = rects.sort((a, b) => (b.width * b.height) - (a.width * a.height))[0];
                     const cx = r.left + r.width / 2, cy = r.top + r.height / 2;
                     const opts = {bubbles: true, cancelable: true, view: window,
                                   button: 0, buttons: 1, clientX: cx, clientY: cy};
                     const pd = Object.assign({}, opts, {pointerId: 1, pointerType: 'mouse', isPrimary: true});
                     try {
-                        this.dispatchEvent(new PointerEvent('pointerover', pd));
-                        this.dispatchEvent(new PointerEvent('pointerdown', pd));
+                        target.dispatchEvent(new PointerEvent('pointerover', pd));
+                        target.dispatchEvent(new PointerEvent('pointerdown', pd));
                     } catch (e) {}
-                    this.dispatchEvent(new MouseEvent('mouseover', opts));
-                    this.dispatchEvent(new MouseEvent('mouseenter', opts));
-                    this.dispatchEvent(new MouseEvent('mousedown', opts));
-                    if (typeof this.focus === 'function') this.focus();
+                    target.dispatchEvent(new MouseEvent('mouseover', opts));
+                    target.dispatchEvent(new MouseEvent('mouseenter', opts));
+                    target.dispatchEvent(new MouseEvent('mousedown', opts));
+                    if (typeof target.focus === 'function') target.focus();
                     const up = Object.assign({}, opts, {buttons: 0});
                     const pu = Object.assign({}, pd, {buttons: 0});
-                    try { this.dispatchEvent(new PointerEvent('pointerup', pu)); } catch (e) {}
-                    this.dispatchEvent(new MouseEvent('mouseup', up));
+                    try { target.dispatchEvent(new PointerEvent('pointerup', pu)); } catch (e) {}
+                    target.dispatchEvent(new MouseEvent('mouseup', up));
                     // Native HTMLElement.click() fires onclick AND performs
                     // default actions (form submit, anchor navigation).
-                    if (typeof this.click === 'function') this.click();
-                    else this.dispatchEvent(new MouseEvent('click', up));
-                    return 'ok';
+                    if (typeof target.click === 'function') target.click();
+                    else target.dispatchEvent(new MouseEvent('click', up));
+                    return JSON.stringify({
+                        ok: true,
+                        tag: target.tagName,
+                        role: target.getAttribute('role') || '',
+                        text: (target.innerText || target.value || '').trim().slice(0, 80),
+                        aria: target.getAttribute('aria-label') || '',
+                        data_key: target.getAttribute('data-key') || '',
+                        data_value: target.getAttribute('data-value') || '',
+                        x: cx, y: cy
+                    });
                 } catch(e) { return 'err:' + e.message; }
             }""")
-            if result == "ok":
+            import json as _json_click
+            parsed = _json_click.loads(result) if isinstance(result, str) and result.startswith("{") else {}
+            if parsed.get("ok"):
                 await asyncio.sleep(0.15)
-                return True, "js-synthetic"
+                return True, "js-synthetic", parsed
+            if parsed.get("reason"):
+                logger.info("CLICK[%d] S1 target rejected: %s", index, parsed["reason"])
             logger.info("CLICK[%d] S1-js-synthetic returned '%s' → trying S2-actor-click", index, result)
         except Exception as e1:
             logger.info("CLICK[%d] S1-js-synthetic failed → trying S2-actor-click (%s)", index, type(e1).__name__)
@@ -963,7 +1007,7 @@ class BrowserUseBrowser:
             # Passing timeout= raised TypeError instantly, so this strategy
             # always "failed" before it even attempted the click.
             await element.click()
-            return True, "actor-click"
+            return True, "actor-click", {}
         except Exception as e2:
             logger.info("CLICK[%d] S2-actor-click failed → trying S3-cdp-coords (%s)", index, type(e2).__name__)
 
@@ -974,12 +1018,12 @@ class BrowserUseBrowser:
                 cx, cy = coords
                 await self._cdp_click_at(cx, cy)
                 await asyncio.sleep(0.15)
-                return True, f"cdp-coords({cx:.0f},{cy:.0f})"
+                return True, f"cdp-coords({cx:.0f},{cy:.0f})", {"x": cx, "y": cy}
         except Exception as e3:
             logger.info("CLICK[%d] S3-cdp-coords failed (%s)", index, type(e3).__name__)
 
         logger.warning("CLICK[%d] ALL 3 strategies failed — element may be hidden/off-screen", index)
-        return False, "all 3 click strategies failed (js-synthetic, actor-click, cdp-coords)"
+        return False, "all 3 click strategies failed (js-synthetic, actor-click, cdp-coords)", {}
 
     async def _wait_for_dom_settle(self, timeout: float = 0.6) -> None:
         """Short wait for React/Vue state updates and lazy-loaded DOM changes to settle.
@@ -1630,9 +1674,79 @@ class BrowserUseBrowser:
                 return await self._click_by_locator(str(text).strip())
 
             if coordinate_x is not None and coordinate_y is not None:
+                page = await self._get_current_page()
+                pre_url = ""
+                try:
+                    pre_url = await page.get_url()
+                except Exception:
+                    pass
+                hit = {}
+                try:
+                    raw_hit = await self._call_with_deadline(
+                        page.evaluate("""(p) => {
+                            const el = document.elementFromPoint(p.x, p.y);
+                            if (!el) return JSON.stringify({hit: false});
+                            const target = el.closest(
+                                'button,a,input,select,textarea,label,[role="button"],' +
+                                '[role="link"],[role="tab"],[role="option"],[role="menuitem"],' +
+                                '[role="checkbox"],[role="radio"],[role="switch"],' +
+                                '[tabindex]:not([tabindex="-1"]),' +
+                                '[data-key],[data-value],[data-action],[onclick]'
+                            ) || el;
+                            return JSON.stringify({
+                                hit: true,
+                                tag: target.tagName,
+                                role: target.getAttribute('role') || '',
+                                text: (target.innerText || target.value || '').trim().slice(0, 80),
+                                aria: target.getAttribute('aria-label') || '',
+                                data_key: target.getAttribute('data-key') || '',
+                                data_value: target.getAttribute('data-value') || ''
+                            });
+                        }""", {"x": coordinate_x, "y": coordinate_y}),
+                        timeout=5.0,
+                    )
+                    hit = json.loads(raw_hit) if isinstance(raw_hit, str) else (raw_hit or {})
+                except Exception:
+                    hit = {}
+                if hit.get("hit") is False:
+                    return ToolResult(
+                        success=False,
+                        message=(
+                            f"Coordinates ({coordinate_x}, {coordinate_y}) do not hit "
+                            "a rendered page element. Use browser_view or browser_find_element "
+                            "to obtain a fresh target."
+                        ),
+                    )
                 await self._cdp_click_at(coordinate_x, coordinate_y)
                 await self._wait_for_dom_settle()
-                return ToolResult(success=True)
+                try:
+                    session = await self._ensure_session()
+                    now_url = await (await self._get_current_page()).get_url()
+                    observed = await self._observe_page_state(
+                        session, include_content=bool(now_url and now_url != pre_url)
+                    )
+                    observed["page_changed"] = bool(now_url and now_url != pre_url)
+                    observed["clicked"] = hit
+                    return ToolResult(
+                        success=True,
+                        message=(
+                            f"Clicked coordinates ({coordinate_x}, {coordinate_y})"
+                            + (
+                                f" on <{hit.get('tag')} "
+                                f"text={hit.get('text')!r}>"
+                                if hit.get("hit")
+                                else ""
+                            )
+                        ),
+                        data=observed,
+                    )
+                except Exception as obs_exc:
+                    logger.debug("coordinate click observe failed: %s", obs_exc)
+                    return ToolResult(
+                        success=True,
+                        message=f"Clicked coordinates ({coordinate_x}, {coordinate_y})",
+                        data={"coordinates": {"x": coordinate_x, "y": coordinate_y}, "clicked": hit},
+                    )
 
             elif index is not None:
                 session = await self._ensure_session()
@@ -1681,7 +1795,7 @@ class BrowserUseBrowser:
                     pre_url = await page.get_url()
                 except Exception:
                     pre_url = ""
-                ok, strategy = await self._click_with_fallback(element, index)
+                ok, strategy, clicked_target = await self._click_with_fallback(element, index)
                 if ok:
                     logger.info("CLICK[%d] ✓ via [%s]", index, strategy)
                     await self._wait_for_dom_settle()
@@ -1721,9 +1835,22 @@ class BrowserUseBrowser:
                                 "the same click — re-observe or change strategy "
                                 "(e.g. browser_smart_select for dropdowns)."
                             )
+                        observed["clicked"] = {
+                            "requested_index": index,
+                            "strategy": strategy,
+                            **clicked_target,
+                        }
                         return ToolResult(
                             success=True,
-                            message=f"Clicked element {index} via [{strategy}]",
+                            message=(
+                                f"Clicked element {index} via [{strategy}]"
+                                + (
+                                    f" → <{clicked_target.get('tag')} "
+                                    f"text={clicked_target.get('text')!r}>"
+                                    if clicked_target.get("tag")
+                                    else ""
+                                )
+                            ),
                             data=observed,
                         )
                     except Exception as obs_exc:
@@ -1731,11 +1858,21 @@ class BrowserUseBrowser:
                         return ToolResult(
                             success=True,
                             message=f"Clicked element {index} via [{strategy}]",
+                            data={
+                                "clicked": {
+                                    "requested_index": index,
+                                    "strategy": strategy,
+                                    **clicked_target,
+                                }
+                            },
                         )
                 logger.warning("CLICK[%d] ✗ all strategies exhausted", index)
                 return ToolResult(success=False, message=f"Click failed for element {index}: {strategy}")
 
-            return ToolResult(success=True)
+            return ToolResult(
+                success=False,
+                message="browser_click requires index, coordinates, or text.",
+            )
         except Exception as exc:
             return ToolResult(success=False, message=f"Failed to click element: {exc}")
 
@@ -2719,10 +2856,36 @@ class BrowserUseBrowser:
             # only pass re-opens the menu without the closing toggle.
             if not visible_count:
                 try:
-                    await element.evaluate(
-                        "() => { this.dispatchEvent(new MouseEvent('mousedown', "
-                        "{bubbles: true, cancelable: true, view: window, button: 0, buttons: 1})); }"
-                    )
+                    # Re-resolve the trigger from the same current selector map.
+                    # `element` was never in scope here, which made this recovery
+                    # path silently skip on every custom dropdown.
+                    trigger = None
+                    trigger_session = await self._ensure_session()
+                    trigger_node = await trigger_session.get_dom_element_by_index(index)
+                    if trigger_node is not None:
+                        await self._ensure_dom_document()
+                        trigger = await page.get_element(trigger_node.backend_node_id)
+                    if trigger is not None:
+                        await trigger.evaluate(
+                            "() => { this.dispatchEvent(new MouseEvent('mousedown', "
+                            "{bubbles: true, cancelable: true, view: window, button: 0, buttons: 1})); }"
+                        )
+                    else:
+                        # If the map changed while the menu was opening, use the
+                        # observed click point as a last-resort DOM hit target.
+                        clicked = (click_r.data or {}).get("clicked", {}) if click_r.data else {}
+                        cx, cy = clicked.get("x"), clicked.get("y")
+                        if cx is not None and cy is not None:
+                            await page.evaluate(
+                                """(p) => {
+                                    const el = document.elementFromPoint(p.x, p.y);
+                                    if (el) el.dispatchEvent(new MouseEvent('mousedown', {
+                                        bubbles: true, cancelable: true, view: window,
+                                        button: 0, buttons: 1
+                                    }));
+                                }""",
+                                {"x": cx, "y": cy},
+                            )
                     for _ in range(6):  # 6 × 100 ms
                         await asyncio.sleep(0.1)
                         try:

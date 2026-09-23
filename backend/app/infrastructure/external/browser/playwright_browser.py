@@ -571,7 +571,34 @@ class PlaywrightBrowser:
         await self._ensure_page()
         if text is not None and text.strip():
             return await self._click_by_locator(text.strip())
+        pre_url = self.page.url
+        before_elements = list(getattr(self.page, "interactive_elements_cache", []) or [])
+        clicked = {}
         if coordinate_x is not None and coordinate_y is not None:
+            clicked = await self.page.evaluate("""(p) => {
+                const el = document.elementFromPoint(p.x, p.y);
+                if (!el) return {hit: false};
+                const target = el.closest(
+                    'button,a,input,select,textarea,label,[role="button"],[role="link"],' +
+                    '[role="tab"],[role="option"],[role="menuitem"],[data-key],[data-value],[onclick]'
+                ) || el;
+                return {
+                    hit: true, tag: target.tagName,
+                    role: target.getAttribute('role') || '',
+                    text: (target.innerText || target.value || '').trim().slice(0, 80),
+                    aria: target.getAttribute('aria-label') || '',
+                    data_key: target.getAttribute('data-key') || '',
+                    data_value: target.getAttribute('data-value') || ''
+                };
+            }""", {"x": coordinate_x, "y": coordinate_y})
+            if not clicked.get("hit"):
+                return ToolResult(
+                    success=False,
+                    message=(
+                        f"Coordinates ({coordinate_x}, {coordinate_y}) do not hit "
+                        "a rendered page element."
+                    ),
+                )
             await self.page.mouse.click(coordinate_x, coordinate_y)
         elif index is not None:
             try:
@@ -603,11 +630,51 @@ class PlaywrightBrowser:
                     # Wait for the element to become visible
                     await asyncio.sleep(1)
                 
-                # Try to click the element
+                clicked = await element.evaluate("""el => ({
+                    hit: true, tag: el.tagName,
+                    role: el.getAttribute('role') || '',
+                    text: (el.innerText || el.value || '').trim().slice(0, 80),
+                    aria: el.getAttribute('aria-label') || '',
+                    data_key: el.getAttribute('data-key') || '',
+                    data_value: el.getAttribute('data-value') || ''
+                })""")
+                # Playwright's native click performs real hit-testing and
+                # scrolls the exact cached element into view. Do not use a
+                # page-level coordinate derived from a stale observation.
                 await element.click(timeout=5000)
             except Exception as e:
                 return ToolResult(success=False, message=f"Failed to click element: {str(e)}")
-        return ToolResult(success=True)
+        else:
+            return ToolResult(
+                success=False,
+                message="browser_click requires index, coordinates, or text.",
+            )
+
+        await asyncio.sleep(0.2)
+        try:
+            after_elements = await self._extract_interactive_elements()
+        except Exception:
+            after_elements = []
+        after_url = self.page.url
+        page_changed = after_url != pre_url or after_elements != before_elements
+        clicked.update({"requested_index": index} if index is not None else {})
+        return ToolResult(
+            success=True,
+            message=(
+                f"Clicked "
+                + (f"element {index}" if index is not None else f"coordinates ({coordinate_x}, {coordinate_y})")
+                + (
+                    f" → <{clicked.get('tag')} text={clicked.get('text')!r}>"
+                    if clicked.get("tag") else ""
+                )
+            ),
+            data={
+                "url": after_url,
+                "page_changed": page_changed,
+                "clicked": clicked,
+                "interactive_elements": after_elements,
+            },
+        )
     
     async def input(
         self,

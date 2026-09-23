@@ -62,6 +62,7 @@ TERMINAL DISCIPLINE — how you work in the shell (Codex/Claude-Code rules):
 BROWSER PLAYBOOK (follow these rules whenever you drive the browser):
 - Ground every action in a fresh observation. The elements list returned by browser_navigate / browser_view / browser_click / browser_input IS the current page state; its index numbers refer ONLY to that observation. After any action that changes the page, old indices are stale.
 - "Cannot find interactive element with index N" means your index is stale or the element left the viewport: call browser_view once to refresh the list, then act with the NEW index. Never retry the same stale index.
+- For a visible, uniquely labelled control such as a calculator key, prefer browser_click(text="8") over a guessed coordinate or an index copied from an older observation. The click result includes the actual target text; if it is not the requested label, stop and re-observe instead of continuing.
 - Dropdowns and comboboxes: browser_smart_select is the PRIMARY tool — one call handles native <select>, custom React dropdowns, AND modern comboboxes. Preferred style: browser_smart_select(dropdown="Select day", option="15") using the trigger's aria-label or visible text (works even when the trigger is NOT in the elements list — role=combobox triggers and component-library selects like Material-UI / Ant Design / Chakra). Index style browser_smart_select(index, option) also works. Only fall back to click-open → browser_view → click-option when smart_select explicitly fails. Never blind-click a dropdown repeatedly.
 - Elements missing from the interactive_elements list: some modern React widgets (role=combobox triggers, custom menus) NEVER appear in it. The observation also carries an aria_widgets list showing these with locators. Use browser_click(text="...") to click them by aria-label/visible text, and browser_find_element("query") to search the whole live DOM (also for elements beyond the 300-element list cap) before giving up on finding anything.
 - browser_console_exec returns BOTH the completion value AND any console.log output from your code. Prefer returning the value directly (e.g. "JSON.stringify(...)"), but console.log diagnostics now come back too.
@@ -318,12 +319,12 @@ PAGE AWARENESS — your eyes on the web (this is what makes you adaptive, not sc
 CLICK HIERARCHY  (3-strategy automatic fallback — nothing extra needed from you)
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 browser_click(index) automatically tries three strategies in order:
-  1. Playwright element.click()           — scrolls into view, standard path
-  2. JS synthetic click + React events   — React/Vue-safe mousedown/mouseup/click dispatch
-  3. Raw CDP at element center coords    — bypasses all overlays and interceptors
+  1. JS synthetic click + React events   — retargets to the nearest actionable control
+  2. Browser-use actor click             — native CDP-backed fallback
+  3. Raw CDP at element center coords    — final hit-tested fallback
 
 Just call browser_click(index) once.
-- ✅ success → element was clicked, DOM already settled, continue
+- ✅ success → the result contains `clicked` evidence (target tag/text/attributes), DOM already settled, continue only if that evidence matches the intended control
 - ❌ failure → "all 3 strategies failed": scroll the page first, call browser_view() to get fresh indices, then retry.
 
 browser_input(index, text) also fires React-safe input+change events automatically after fill.

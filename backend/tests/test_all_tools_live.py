@@ -191,6 +191,69 @@ FORM_HTML = """<!doctype html>
 <div style="height:2400px">isi panjang untuk scroll</div>
 </body></html>"""
 
+CALCULATOR_HTML = """<!doctype html>
+<html lang="id">
+<head>
+  <meta charset="utf-8"><title>Kalkulator Uji Klik</title>
+  <style>
+    body { font-family: sans-serif; margin: 24px; }
+    #calc { width: 260px; }
+    #display { box-sizing: border-box; font-size: 28px; text-align: right;
+               width: 100%; margin-bottom: 8px; padding: 8px; }
+    .keys { display: grid; grid-template-columns: repeat(4, 1fr); gap: 6px; }
+    button { min-height: 48px; font-size: 20px; }
+  </style>
+</head>
+<body>
+  <h1>Kalkulator Uji Klik</h1>
+  <main id="calc">
+    <input id="display" value="0" readonly aria-label="Hasil kalkulator" />
+    <div class="keys">
+      <button type="button" data-key="7" onclick="press('7')">7</button>
+      <button type="button" data-key="8" onclick="press('8')">8</button>
+      <button type="button" data-key="9" onclick="press('9')">9</button>
+      <button type="button" data-key="/" onclick="press('/')">÷</button>
+      <button type="button" data-key="4" onclick="press('4')">4</button>
+      <button type="button" data-key="5" onclick="press('5')">5</button>
+      <button type="button" data-key="6" onclick="press('6')">6</button>
+      <button type="button" data-key="*" onclick="press('*')">×</button>
+      <button type="button" data-key="1" onclick="press('1')">1</button>
+      <button type="button" data-key="2" onclick="press('2')">2</button>
+      <button type="button" data-key="3" onclick="press('3')">3</button>
+      <button type="button" data-key="-" onclick="press('-')">−</button>
+      <button type="button" data-key="0" onclick="press('0')">0</button>
+      <button type="button" data-key="C" onclick="press('C')">C</button>
+      <button type="button" data-key="=" onclick="press('=')">=</button>
+      <button type="button" data-key="+" onclick="press('+')">+</button>
+    </div>
+  </main>
+  <script>
+    let left = null, operator = null, replace = true;
+    const display = document.getElementById('display');
+    function press(key) {
+      if (/^[0-9]$/.test(key)) {
+        display.value = replace || display.value === '0' ? key : display.value + key;
+        replace = false;
+        return;
+      }
+      if (key === 'C') {
+        left = null; operator = null; replace = true; display.value = '0'; return;
+      }
+      if ('+-*/'.includes(key)) {
+        left = Number(display.value); operator = key; replace = true; return;
+      }
+      if (key === '=' && operator !== null) {
+        const right = Number(display.value);
+        const result = operator === '+' ? left + right :
+          operator === '-' ? left - right :
+          operator === '*' ? left * right : left / right;
+        display.value = String(result);
+        left = null; operator = null; replace = true;
+      }
+    }
+  </script>
+</body></html>"""
+
 PAGE2_HTML = """<!doctype html>
 <html lang="id">
 <head><meta charset="utf-8"><title>Halaman Kedua</title></head>
@@ -216,6 +279,10 @@ class LocalPageServer:
     def page2_url(self) -> str:
         return f"http://127.0.0.1:{self.port}/hal2"
 
+    @property
+    def calculator_url(self) -> str:
+        return f"http://127.0.0.1:{self.port}/calculator"
+
     async def _handle(self, reader: asyncio.StreamReader, writer) -> None:
         try:
             request_line = (await reader.readline()).decode("utf-8", "replace")
@@ -223,7 +290,12 @@ class LocalPageServer:
                 line = await reader.readline()
                 if line in (b"\r\n", b"\n", b""):
                     break
-            body = PAGE2_HTML if "/hal2" in request_line else FORM_HTML
+            if "/hal2" in request_line:
+                body = PAGE2_HTML
+            elif "/calculator" in request_line:
+                body = CALCULATOR_HTML
+            else:
+                body = FORM_HTML
             payload = body.encode("utf-8")
             writer.write(
                 b"HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\n"
@@ -279,6 +351,12 @@ async def runtime():
 
     yield rt
 
+    # Stop the browser session before the event loop closes. Without this,
+    # browser-use's CDP reconnect watchdog can keep pytest alive after all
+    # assertions passed, masking the real result as a shell timeout.
+    cleanup = getattr(browser, "cleanup", None)
+    if cleanup is not None:
+        await cleanup()
     await server.stop()
 
 
@@ -496,7 +574,98 @@ async def test_browser_click_submit_button(runtime):
     assert res.success, res.message
 
 
+async def _calculator_display(runtime) -> str:
+    probe = await call(
+        runtime.browser_tk,
+        "browser_console_exec",
+        {"javascript": "JSON.stringify({value: document.getElementById('display').value})"},
+    )
+    result = as_dict(probe).get("result")
+    if isinstance(result, str):
+        try:
+            result = json.loads(result)
+        except json.JSONDecodeError:
+            pass
+    if isinstance(result, dict):
+        return str(result.get("value", ""))
+    # Keep the failure diagnostic useful if a browser adapter returns the
+    # completion value in a provider-specific wrapper.
+    blob = json.dumps(as_dict(probe), ensure_ascii=False)
+    match = re.search(r'"value"\s*:\s*"([^"]*)"', blob)
+    return match.group(1) if match else ""
+
+
+async def test_browser_click_calculator_digits_and_expression(runtime):
+    """Regression: clicking 8 must never activate its neighbouring 9.
+
+    Exercise both supported target forms against a deterministic calculator:
+    fresh index clicks for every digit, then text-locator clicks for an
+    arithmetic expression. Each click is checked through the page's actual
+    display, not only through ToolResult.success.
+    """
+    for digit in "0123456789":
+        nav = await call(
+            runtime.browser_tk, "browser_navigate",
+            {"url": runtime.server.calculator_url},
+        )
+        assert nav.success, nav.message
+        view = await call(runtime.browser_tk, "browser_view", {})
+        data = as_dict(view)
+        idx = find_index(data.get("interactive_elements"), f"<button>{digit}</button>")
+        clicked = await call(
+            runtime.browser_tk, "browser_click", {"index": idx},
+        )
+        assert clicked.success, clicked.message
+        evidence = as_dict(clicked).get("clicked") or {}
+        assert evidence.get("requested_index") == idx, evidence
+        assert evidence.get("text") == digit, evidence
+        assert await _calculator_display(runtime) == digit, (
+            f"index click for {digit} activated {await _calculator_display(runtime)}; "
+            f"evidence={evidence}"
+        )
+
+        nav = await call(
+            runtime.browser_tk, "browser_navigate",
+            {"url": runtime.server.calculator_url},
+        )
+        assert nav.success, nav.message
+        located = await call(
+            runtime.browser_tk, "browser_click", {"text": digit},
+        )
+        assert located.success, located.message
+        evidence = as_dict(located).get("clicked") or {}
+        assert evidence.get("text") == digit, evidence
+        assert await _calculator_display(runtime) == digit, (
+            f"text click for {digit} activated {await _calculator_display(runtime)}; "
+            f"evidence={evidence}"
+        )
+
+    nav = await call(
+        runtime.browser_tk, "browser_navigate",
+        {"url": runtime.server.calculator_url},
+    )
+    assert nav.success, nav.message
+    for key in ("8", "+", "9", "="):
+        clicked = await call(
+            runtime.browser_tk, "browser_click", {"text": key},
+        )
+        assert clicked.success, clicked.message
+        evidence = as_dict(clicked).get("clicked") or {}
+        assert evidence.get("text") == key, evidence
+    assert await _calculator_display(runtime) == "17"
+
+
 async def test_browser_wait_for_element(runtime):
+    # Keep this test independent of the ordering of earlier browser tests.
+    # Other live tests may leave the active tab on the calculator or page 2.
+    nav = await call(
+        runtime.browser_tk, "browser_navigate", {"url": runtime.server.form_url},
+    )
+    assert nav.success, nav.message
+    submit = await call(
+        runtime.browser_tk, "browser_click", {"text": "Kirim"},
+    )
+    assert submit.success, submit.message
     res = await call(
         runtime.browser_tk, "browser_wait_for_element",
         {"selector": "#hasil", "text": "terkirim", "timeout": 10},
